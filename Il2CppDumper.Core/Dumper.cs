@@ -635,7 +635,7 @@ namespace Il2CppDumper.Core
             }
         }
 
-        private static Config CloneConfig(Config source)
+        internal static Config CloneConfig(Config source)
         {
             return new Config
             {
@@ -659,7 +659,9 @@ namespace Il2CppDumper.Core
                 StringDecryptor = source.StringDecryptor,
                 StringDecryptorKey = source.StringDecryptorKey,
                 EmitFridaScript = source.EmitFridaScript,
-                EmitBookmarks = source.EmitBookmarks
+                EmitBookmarks = source.EmitBookmarks,
+                BatchMode = source.BatchMode,
+                StopOnFirstError = source.StopOnFirstError
             };
         }
     }

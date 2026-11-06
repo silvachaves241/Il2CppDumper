@@ -51,7 +51,35 @@ The program will then generate all the output files in current working directory
 
 ```
 Il2CppDumper.exe <executable-file> <global-metadata> <output-directory>
+Il2CppDumper.exe --batch <batch-file.json> [--stop-on-first-error]
 ```
+
+#### Batch Mode (`--batch <file>`)
+
+File-driven batch processing: one process dumps N `(executable, metadata, output)` pairs with per-entry configuration overrides, strict per-entry output isolation, and a deterministic aggregate summary file (`batch-result.json`).
+
+* **Exit codes:**
+  * `0`: All entries succeeded.
+  * `1`: Any entry failed (partial failure).
+  * `2`: Malformed batch file, missing batch file path, or duplicate output directories.
+
+##### Batch file format (input)
+```
+[
+  { "executable": "GameAssembly.dll", "metadata": "global-metadata.dat", "output": "out/abc", "config": { "RequireAnyKey": false } },
+  { "executable": "libil2cpp.so",     "metadata": "global-metadata.dat", "output": "out/def" }
+]
+```
+
+##### batch-result.json (aggregate output)
+```
+[
+  { "index": 0, "executable": "GameAssembly.dll", "success": true,  "error": null, "outputs": ["out/abc/dump.cs"] },
+  { "index": 1, "executable": "libil2cpp.so",     "success": false, "error": "...", "outputs": [] }
+]
+```
+
+**Português:** Processamento em lote orientado a arquivo (`--batch <arquivo.json>`): executa o dump de N pares `(executável, metadados, saída)` em um único processo com sobreposição de configuração por entrada, isolamento estrito de saída e geração determinística de `batch-result.json`. Códigos de saída: `0` = todas as entradas com sucesso, `1` = falha em uma ou mais entradas (falha parcial), `2` = arquivo de lote malformado ou diretórios de saída duplicados.
 
 ### Library usage
 
@@ -377,6 +405,10 @@ Available options:
 * `EmitFridaScript`, `EmitBookmarks`
   * Whether to generate native attach glue stubs (`EmitFridaScript` generates `frida_stubs.js`, defaults to `false`; `EmitBookmarks` generates `bookmarks.json`, defaults to `false`). When disabled, no new files are emitted.
   * **Português:** Controla a geração de scripts de attach nativo (`EmitFridaScript` gera `frida_stubs.js`, padrão `false`; `EmitBookmarks` gera `bookmarks.json`, padrão `false`). Quando desativadas, nenhum arquivo adicional é gravado no diretório de saída.
+
+* `BatchMode`, `StopOnFirstError`
+  * Whether to enable file-driven batch processing (`BatchMode`, default `false`) and whether to abort immediately upon encountering the first failed entry in a batch (`StopOnFirstError`, default `false`, which continues processing remaining entries). When `StopOnFirstError` is `true`, entries after the first failure are not attempted and no side effects are performed on their output directories.
+  * **Português:** Configurações de modo em lote (`BatchMode`, padrão `false`) e parada na primeira falha (`StopOnFirstError`, padrão `false`, continuando o processamento das demais entradas). Quando `StopOnFirstError` for `true`, entradas subsequentes à falha não são executadas e seus diretórios de saída permanecem intocados.
 
 ## Common errors
 

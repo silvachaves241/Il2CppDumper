@@ -49,7 +49,35 @@ Unity il2cpp逆向工程
 
 ```
 Il2CppDumper.exe <executable-file> <global-metadata> <output-directory>
+Il2CppDumper.exe --batch <batch-file.json> [--stop-on-first-error]
 ```
+
+#### 批处理模式（Batch Mode, `--batch <file>`）
+
+文件驱动的批处理：在单个进程中批量 dump N 组 `(executable, metadata, output)` 对，支持每条目独立配置覆盖、严格的输出目录隔离，并生成确定性汇总文件 `batch-result.json`。
+
+* **退出码：**
+  * `0`: 所有条目均成功。
+  * `1`: 任何条目失败（部分失败）。
+  * `2`: 批处理文件格式错误、未指定路径或存在重复的输出目录。
+
+##### 批处理文件格式（输入）
+```
+[
+  { "executable": "GameAssembly.dll", "metadata": "global-metadata.dat", "output": "out/abc", "config": { "RequireAnyKey": false } },
+  { "executable": "libil2cpp.so",     "metadata": "global-metadata.dat", "output": "out/def" }
+]
+```
+
+##### batch-result.json（汇总输出）
+```
+[
+  { "index": 0, "executable": "GameAssembly.dll", "success": true,  "error": null, "outputs": ["out/abc/dump.cs"] },
+  { "index": 1, "executable": "libil2cpp.so",     "success": false, "error": "...", "outputs": [] }
+]
+```
+
+**Português:** Processamento em lote orientado a arquivo (`--batch <arquivo.json>`): executa o dump de N pares `(executável, metadados, saída)` em um único processo com sobreposição de configuração por entrada, isolamento estrito de saída e geração determinística de `batch-result.json`. Códigos de saída: `0` = todas as entradas com sucesso, `1` = falha em uma ou mais entradas (falha parcial), `2` = arquivo de lote malformado ou diretórios de saída duplicados.
 
 ### 类库调用（Library usage）
 
@@ -371,6 +399,10 @@ Il2CppDumper.Diff --drift <left> <right> <output>
 * `EmitFridaScript`, `EmitBookmarks`
   * 是否生成原生附加粘合桩代码（`EmitFridaScript` 生成 `frida_stubs.js`，默认值为 `false`；`EmitBookmarks` 生成 `bookmarks.json`，默认值为 `false`）。禁用时不输出任何新文件。
   * **Português:** Controla a geração de scripts de attach nativo (`EmitFridaScript` gera `frida_stubs.js`, padrão `false`; `EmitBookmarks` gera `bookmarks.json`, padrão `false`). Quando desativadas, nenhum arquivo adicional é gravado no diretório de saída.
+
+* `BatchMode`, `StopOnFirstError`
+  * 是否启用文件驱动的批处理模式（`BatchMode`，默认值为 `false`）以及是否在批处理中遇到第一个失败条目时立即终止（`StopOnFirstError`，默认值为 `false`，继续处理后续条目）。当 `StopOnFirstError` 为 `true` 时，失败之后的条目将不会被执行，其输出目录也不会产生任何副作用。
+  * **Português:** Configurações de modo em lote (`BatchMode`, padrão `false`) e parada na primeira falha (`StopOnFirstError`, padrão `false`, continuando o processamento das demais entradas). Quando `StopOnFirstError` for `true`, entradas subsequentes à falha não são executadas e seus diretórios de saída permanecem intocados.
 
 ## 常见问题
 

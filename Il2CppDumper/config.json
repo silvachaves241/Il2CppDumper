@@ -18,5 +18,7 @@
   "NoRedirectedPointer": false,
   "StringDecryptor": "none",
   "EmitFridaScript": false,
-  "EmitBookmarks": false
+  "EmitBookmarks": false,
+  "BatchMode": false,
+  "StopOnFirstError": false
 }
