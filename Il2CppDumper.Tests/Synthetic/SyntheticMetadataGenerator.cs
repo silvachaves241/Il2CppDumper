@@ -344,6 +344,9 @@ namespace Il2CppDumper.Tests.Synthetic
                 // genericContainerIndexSize = 1
                 // parameterIndexSize = (version >= 39 ? 1 : 4)
                 // fieldIndexSize = 4, methodIndexSize = 4, typeIndexSize = 4
+                // Scope Note: Index widths below reflect the current synthetic fixture corpus (1 class, 1 enum, 3 fields, 1 param).
+                // In v38/v39, parameterIndexSize dynamically resolves to 1 (v39 count < 256) or 4 (v38 default).
+                // If the synthetic corpus is expanded in the future with variable counts, adjust or parameterize widths accordingly.
                 var typeDefIdxSize = 1;
                 var genericContainerIdxSize = 1;
                 var paramIdxSize = version >= 39 ? 1 : 4;
@@ -776,6 +779,10 @@ namespace Il2CppDumper.Tests.Synthetic
         /// <summary>
         /// Re-serializes the parsed Metadata object model back to bytes exercising the exact
         /// structural layout unions and index sizes corresponding to the metadata family.
+        /// Note on Scope: This helper is designed for the current fixed-layout synthetic fixture corpus.
+        /// In v38/v39, dynamic index widths (e.g. parameterIndexSize, typeDefIndexSize) are configured
+        /// to match the counts synthesized in this test matrix (1/4-byte widths). If the test corpus expands
+        /// with arbitrary multi-byte boundaries, index width resolution should be generalized accordingly.
         /// </summary>
         public static byte[] ReSerialize(Metadata metadata, MetadataVersionFamily family)
         {
@@ -897,6 +904,9 @@ namespace Il2CppDumper.Tests.Synthetic
             }
             else
             {
+                // Scope Note: Index widths below reflect the current synthetic fixture corpus (1 class, 1 enum, 3 fields, 1 param).
+                // In v38/v39, parameterIndexSize dynamically resolves to 1 (v39 count < 256) or 4 (v38 default).
+                // If the synthetic corpus is expanded in the future with variable counts, adjust or parameterize widths accordingly.
                 var typeDefIdxSize = 1;
                 var genericContainerIdxSize = 1;
                 var paramIdxSize = version >= 39 ? 1 : 4;

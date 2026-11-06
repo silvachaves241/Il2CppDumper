@@ -142,25 +142,13 @@ namespace Il2CppDumper.Tests
 
                 var actualDumpCsPath = Path.Combine(tempDir, "dump.cs");
                 var actualDumpJsonPath = Path.Combine(tempDir, "dump.json");
-
                 var goldenDumpCsPath = Path.Combine(goldensDir, "dump.cs");
                 var goldenDumpJsonPath = Path.Combine(goldensDir, "dump.json");
 
                 var updateGoldens = Environment.GetEnvironmentVariable("UPDATE_GOLDENS") == "1" ||
                                     Environment.GetEnvironmentVariable("REGENERATE_GOLDEN_FILES") == "1";
 
-                if (updateGoldens)
-                {
-                    File.Copy(actualDumpCsPath, goldenDumpCsPath, true);
-                    File.Copy(actualDumpJsonPath, goldenDumpJsonPath, true);
-                }
-                else
-                {
-                    Assert.True(File.Exists(goldenDumpCsPath),
-                        $"Golden file missing: '{goldenDumpCsPath}'. Golden files must not be silently recreated without opt-in. Set UPDATE_GOLDENS=1 to generate or regenerate golden outputs.");
-                    Assert.True(File.Exists(goldenDumpJsonPath),
-                        $"Golden file missing: '{goldenDumpJsonPath}'. Golden files must not be silently recreated without opt-in. Set UPDATE_GOLDENS=1 to generate or regenerate golden outputs.");
-                }
+                AssertOrUpdateGoldenFiles(goldensDir, actualDumpCsPath, actualDumpJsonPath, updateGoldens);
 
                 var expectedCs = File.ReadAllText(goldenDumpCsPath).Replace("\r\n", "\n");
                 var actualCs = File.ReadAllText(actualDumpCsPath).Replace("\r\n", "\n");
@@ -197,28 +185,17 @@ namespace Il2CppDumper.Tests
                 var mockGoldenCsPath = Path.Combine(mockGoldensDir, "dump.cs");
                 Assert.False(File.Exists(mockGoldenCsPath)); // Intentionally missing
 
-                var actualCsContent = "// actual cs content";
-                var actualJsonContent = "{\n  \"actual\": true\n}";
-                File.WriteAllText(Path.Combine(mockTempDir, "dump.cs"), actualCsContent);
-                File.WriteAllText(Path.Combine(mockTempDir, "dump.json"), actualJsonContent);
+                var actualCsPath = Path.Combine(mockTempDir, "dump.cs");
+                var actualJsonPath = Path.Combine(mockTempDir, "dump.json");
+                File.WriteAllText(actualCsPath, "// actual cs content");
+                File.WriteAllText(actualJsonPath, "{\n  \"actual\": true\n}");
 
-                // Simulate normal test execution without UPDATE_GOLDENS=1
+                // Call the exact same shared verification logic without UPDATE_GOLDENS=1
                 var updateGoldens = false;
 
                 var ex = Assert.Throws<Xunit.Sdk.TrueException>(() =>
                 {
-                    if (updateGoldens)
-                    {
-                        File.Copy(Path.Combine(mockTempDir, "dump.cs"), mockGoldenCsPath, true);
-                        File.Copy(Path.Combine(mockTempDir, "dump.json"), mockGoldenJsonPath, true);
-                    }
-                    else
-                    {
-                        Assert.True(File.Exists(mockGoldenCsPath),
-                            $"Golden file missing: '{mockGoldenCsPath}'. Golden files must not be silently recreated without opt-in. Set UPDATE_GOLDENS=1 to generate or regenerate golden outputs.");
-                        Assert.True(File.Exists(mockGoldenJsonPath),
-                            $"Golden file missing: '{mockGoldenJsonPath}'. Golden files must not be silently recreated without opt-in. Set UPDATE_GOLDENS=1 to generate or regenerate golden outputs.");
-                    }
+                    AssertOrUpdateGoldenFiles(mockGoldensDir, actualCsPath, actualJsonPath, updateGoldens);
                 });
 
                 // Verify the missing golden was NOT created and existing sibling was untouched
@@ -231,6 +208,25 @@ namespace Il2CppDumper.Tests
                 {
                     Directory.Delete(tempBase, true);
                 }
+            }
+        }
+
+        internal static void AssertOrUpdateGoldenFiles(string goldensDir, string actualDumpCsPath, string actualDumpJsonPath, bool updateGoldens)
+        {
+            var goldenDumpCsPath = Path.Combine(goldensDir, "dump.cs");
+            var goldenDumpJsonPath = Path.Combine(goldensDir, "dump.json");
+
+            if (updateGoldens)
+            {
+                File.Copy(actualDumpCsPath, goldenDumpCsPath, true);
+                File.Copy(actualDumpJsonPath, goldenDumpJsonPath, true);
+            }
+            else
+            {
+                Assert.True(File.Exists(goldenDumpCsPath),
+                    $"Golden file missing: '{goldenDumpCsPath}'. Golden files must not be silently recreated without opt-in. Set UPDATE_GOLDENS=1 to generate or regenerate golden outputs.");
+                Assert.True(File.Exists(goldenDumpJsonPath),
+                    $"Golden file missing: '{goldenDumpJsonPath}'. Golden files must not be silently recreated without opt-in. Set UPDATE_GOLDENS=1 to generate or regenerate golden outputs.");
             }
         }
 
