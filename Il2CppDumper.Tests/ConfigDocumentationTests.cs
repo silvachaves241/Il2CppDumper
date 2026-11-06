@@ -702,5 +702,55 @@ namespace Il2CppDumper.Tests
             Assert.Contains("转换失败（异常或密钥不匹配）", content);
             Assert.Contains("**Português:**", content);
         }
+
+        [Fact]
+        public void Config_ShippedConfigJson_AlignsWithCodeDefaultsForNativeAttachEmitters()
+        {
+            var repoRoot = FindRepoRoot();
+            var configJsonPath = Path.Combine(repoRoot, "Il2CppDumper", "config.json");
+            Assert.True(File.Exists(configJsonPath), $"Expected config.json at {configJsonPath}");
+
+            var json = File.ReadAllText(configJsonPath);
+            var shippedConfig = JsonSerializer.Deserialize<Config>(json);
+            var codeDefaultConfig = new Config();
+
+            Assert.NotNull(shippedConfig);
+            Assert.False(shippedConfig.EmitFridaScript);
+            Assert.False(shippedConfig.EmitBookmarks);
+            Assert.Equal(codeDefaultConfig.EmitFridaScript, shippedConfig.EmitFridaScript);
+            Assert.Equal(codeDefaultConfig.EmitBookmarks, shippedConfig.EmitBookmarks);
+        }
+
+        [Fact]
+        public void Readme_English_DocumentsNativeAttachEmitters_WithSampleOutputs()
+        {
+            var repoRoot = FindRepoRoot();
+            var readmePath = Path.Combine(repoRoot, "README.md");
+            var content = File.ReadAllText(readmePath);
+
+            Assert.Contains("#### frida_stubs.js", content);
+            Assert.Contains("#### bookmarks.json", content);
+            Assert.Contains("`EmitFridaScript`", content);
+            Assert.Contains("`EmitBookmarks`", content);
+            Assert.Contains("Interceptor.attach(base.add(ptr(method.va)), callbacks)", content);
+            Assert.Contains("\"category\": \"method\"", content);
+            Assert.Contains("**Português:**", content);
+        }
+
+        [Fact]
+        public void Readme_Chinese_DocumentsNativeAttachEmitters_WithSampleOutputs()
+        {
+            var repoRoot = FindRepoRoot();
+            var readmePath = Path.Combine(repoRoot, "README.zh-CN.md");
+            var content = File.ReadAllText(readmePath);
+
+            Assert.Contains("#### frida_stubs.js", content);
+            Assert.Contains("#### bookmarks.json", content);
+            Assert.Contains("`EmitFridaScript`", content);
+            Assert.Contains("`EmitBookmarks`", content);
+            Assert.Contains("Interceptor.attach(base.add(ptr(method.va)), callbacks)", content);
+            Assert.Contains("\"category\": \"method\"", content);
+            Assert.Contains("**Português:**", content);
+        }
     }
 }

@@ -157,6 +157,44 @@ Operational summary file (`GenerateRunManifest`, default `true`) written at the 
 
 **Português:** Arquivo de manifesto operacional de execução (`run-manifest.json`, chave `GenerateRunManifest`, padrão `true`), gravado ao final de cada execução (sucesso ou falha). Registra `tool` (`name`, `version`), `startedAt` (ISO-8601 UTC), `durationMs`, `success`, `effectiveConfig` (snapshot das configurações efetivas aplicadas), `counts` (`types`, `methods`, `fields`, `properties`, `attributes`, `attributesFailed`, `stringLiterals`), `warnings` (`total`, `byCategory` com `attributeDecode`, `stringLiteral` e `stringDecryptor`) e a lista determinística de `outputs` (`path`, `sha256`, `bytes`). Em execuções com falha, o manifesto é gravado com `success: false` e dados parciais, preservando a semântica de código de saída.
 
+#### frida_stubs.js
+
+Per-method native attach stubs for Frida (`EmitFridaScript`, default `false`). Emits deterministic, static method stubs with addresses from `script.json` resolved at runtime against the module base, with typing signatures sourced from `dump.json` when present (degraded path omits `"sig"` without failing when structured dump is absent). The emitted code contains no `eval` or remote network requests.
+
+```javascript
+// frida_stubs.js (generated, static)
+// module: GameAssembly.dll; addresses are file offsets/VAs from script.json, resolved at runtime against module base
+const methods = {
+  "Namespace.Type.Method": { "va": "0x1000", "sig": "int (Type*, int, string)" }
+};
+
+function attach(name, callbacks) {
+  const method = methods[name];
+  if (!method) throw new Error("Method not found: " + name);
+  const base = Module.findBaseAddress("GameAssembly.dll");
+  if (!base) throw new Error("Module not found: GameAssembly.dll");
+  return Interceptor.attach(base.add(ptr(method.va)), callbacks);
+}
+```
+
+**Português:** Gerador de stubs de attach nativo para Frida (`frida_stubs.js`, chave `EmitFridaScript`, padrão `false`). Emite stubs estáticos e determinísticos com endereços de `script.json` resolvidos em runtime contra a base do módulo e assinaturas tipadas de `dump.json` quando disponível (em modo degradado omite `"sig"` sem falhar). Não utiliza `eval` nem chamadas de rede.
+
+#### bookmarks.json
+
+Tool-neutral bookmark export (`EmitBookmarks`, default `false`). Emits structured method entries sorted deterministically by name and address for integration with debuggers and analysis tooling.
+
+```
+[
+  {
+    "name": "Namespace.Type.Method",
+    "address": "0x1000",
+    "category": "method"
+  }
+]
+```
+
+**Português:** Exportação neutra de favoritos/marcadores (`bookmarks.json`, chave `EmitBookmarks`, padrão `false`). Emite entradas de métodos estruturadas e ordenadas deterministicamente por nome e endereço para importação em ferramentas de depuração e análise.
+
 ### Diffing (Il2CppDumper.Diff)
 
 Standalone comparison tool consuming two structured dumps (`dump.json` and `script.json` address maps) and emitting a machine-readable delta `dump-diff.json`.
@@ -335,6 +373,10 @@ Available options:
   * Transform failure (exception or key mismatch) logs a warning with the literal index and emits the raw value without dropping entries.
   * **Trust note for custom hooks:** Custom `IStringLiteralDecryptor` implementations execute arbitrary in-process code in the context of the dumper runner; only register trusted decryptors when processing untrusted metadata.
   * **Português:** Transformação opcional aplicada após a resolução de literais de string dos metadados (padrão `"none"` / `null`, com comportamento idêntico em bytes). Suporta modo embutido `"xor"` (via `StringDecryptorKey` ou `"xor:<chave>"` em hexadecimal) e ganchos customizados via `IStringLiteralDecryptor`. Registra os campos aditivos `raw` (Base64) e `decryptor` enquanto ativo. Falhas registram aviso com o índice e emitem o valor bruto sem abortar a execução. Nota de segurança: ganchos customizados executam código no processo do dumper; use apenas decifradores confiáveis.
+
+* `EmitFridaScript`, `EmitBookmarks`
+  * Whether to generate native attach glue stubs (`EmitFridaScript` generates `frida_stubs.js`, defaults to `false`; `EmitBookmarks` generates `bookmarks.json`, defaults to `false`). When disabled, no new files are emitted.
+  * **Português:** Controla a geração de scripts de attach nativo (`EmitFridaScript` gera `frida_stubs.js`, padrão `false`; `EmitBookmarks` gera `bookmarks.json`, padrão `false`). Quando desativadas, nenhum arquivo adicional é gravado no diretório de saída.
 
 ## Common errors
 

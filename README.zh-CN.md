@@ -155,6 +155,44 @@ else
 
 **Português:** Arquivo de manifesto operacional de execução (`run-manifest.json`, chave `GenerateRunManifest`, padrão `true`), gravado ao final de cada execução (sucesso ou falha). Registra `tool` (`name`, `version`), `startedAt` (ISO-8601 UTC), `durationMs`, `success`, `effectiveConfig` (snapshot das configurações efetivas aplicadas), `counts` (`types`, `methods`, `fields`, `properties`, `attributes`, `attributesFailed`, `stringLiterals`), `warnings` (`total`, `byCategory` com `attributeDecode`, `stringLiteral` e `stringDecryptor`) e a lista determinística de `outputs` (`path`, `sha256`, `bytes`). Em execuções com falha, o manifesto é gravado com `success: false` e dados parciais, preservando a semântica de código de saída.
 
+#### frida_stubs.js
+
+用于 Frida 的原生附加桩代码生成（`EmitFridaScript`，默认值为 `false`）。生成确定性、纯静态的方法桩代码，使用 `script.json` 中的地址并在运行时基于模块基地址解析，并在存在 `dump.json` 时整合类型签名（降级路径下省略 `"sig"` 且不报错）。生成的代码不包含 `eval` 或远程网络请求。
+
+```javascript
+// frida_stubs.js (generated, static)
+// module: GameAssembly.dll; addresses are file offsets/VAs from script.json, resolved at runtime against module base
+const methods = {
+  "Namespace.Type.Method": { "va": "0x1000", "sig": "int (Type*, int, string)" }
+};
+
+function attach(name, callbacks) {
+  const method = methods[name];
+  if (!method) throw new Error("Method not found: " + name);
+  const base = Module.findBaseAddress("GameAssembly.dll");
+  if (!base) throw new Error("Module not found: GameAssembly.dll");
+  return Interceptor.attach(base.add(ptr(method.va)), callbacks);
+}
+```
+
+**Português:** Gerador de stubs de attach nativo para Frida (`frida_stubs.js`, chave `EmitFridaScript`, padrão `false`). Emite stubs estáticos e determinísticos com endereços de `script.json` resolvidos em runtime contra a base do módulo e assinaturas tipadas de `dump.json` quando disponível (em modo degradado omite `"sig"` sem falhar). Não utiliza `eval` nem chamadas de rede.
+
+#### bookmarks.json
+
+工具中立的通用书签导出（`EmitBookmarks`，默认值为 `false`）。以确定性顺序按名称和地址导出结构化的方法项，便于导入反汇编器或调试器等外部逆向工具。
+
+```
+[
+  {
+    "name": "Namespace.Type.Method",
+    "address": "0x1000",
+    "category": "method"
+  }
+]
+```
+
+**Português:** Exportação neutra de favoritos/marcadores (`bookmarks.json`, chave `EmitBookmarks`, padrão `false`). Emite entradas de métodos estruturadas e ordenadas deterministicamente por nome e endereço para importação em ferramentas de depuração e análise.
+
 ### 差异对比 (Diffing / Il2CppDumper.Diff)
 
 独立结构化比对工具，消费两次分析生成的结构化转储（`dump.json` 与 `script.json` 地址映射），输出机器可读的增量差异报告 `dump-diff.json`。
@@ -329,6 +367,10 @@ Il2CppDumper.Diff --drift <left> <right> <output>
   * 转换失败（异常或密钥不匹配）时将记录包含 literal 索引的警告日志，并安全输出 raw 原始值，不丢弃条目且不中断运行。
   * **自定义 Hook 安全提示（Trust note）：** 自定义 `IStringLiteralDecryptor` 实现是在 dumper 进程上下文中执行代码；在分析不可信的 metadata 时，请仅注册受信任的解密插件。
   * **Português:** Transformação opcional aplicada após a resolução de literais de string dos metadados (padrão `"none"` / `null`, com comportamento idêntico em bytes). Suporta modo embutido `"xor"` (via `StringDecryptorKey` ou `"xor:<chave>"` em hexadecimal) e ganchos customizados via `IStringLiteralDecryptor`. Registra os campos aditivos `raw` (Base64) e `decryptor` enquanto ativo. Falhas registram aviso com o índice e emitem o valor bruto sem abortar a execução. Nota de segurança: ganchos customizados executam código no processo do dumper; use apenas decifradores confiáveis.
+
+* `EmitFridaScript`, `EmitBookmarks`
+  * 是否生成原生附加粘合桩代码（`EmitFridaScript` 生成 `frida_stubs.js`，默认值为 `false`；`EmitBookmarks` 生成 `bookmarks.json`，默认值为 `false`）。禁用时不输出任何新文件。
+  * **Português:** Controla a geração de scripts de attach nativo (`EmitFridaScript` gera `frida_stubs.js`, padrão `false`; `EmitBookmarks` gera `bookmarks.json`, padrão `false`). Quando desativadas, nenhum arquivo adicional é gravado no diretório de saída.
 
 ## 常见问题
 

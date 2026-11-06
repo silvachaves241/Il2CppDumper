@@ -22,5 +22,7 @@ namespace Il2CppDumper
         public bool NoRedirectedPointer { get; set; } = false;
         public string? StringDecryptor { get; set; } = "none";
         public string? StringDecryptorKey { get; set; } = null;
+        public bool EmitFridaScript { get; set; } = false;
+        public bool EmitBookmarks { get; set; } = false;
     }
 }

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using static Il2CppDumper.Il2CppConstants;
 
 namespace Il2CppDumper
@@ -37,6 +38,7 @@ namespace Il2CppDumper
         public long CustomAttributeFailedCount { get; private set; }
         public string ErrorMessage { get; private set; }
         public List<string> WrittenFiles { get; } = new();
+        public JsonDumpModel DumpModel { get; private set; }
 
         public Il2CppDecompiler(Il2CppExecutor il2CppExecutor)
         {
@@ -449,8 +451,10 @@ namespace Il2CppDumper
             {
                 try
                 {
-                    JsonDumpGenerator.Write(outputDir, this, executor, config);
-                    WrittenFiles.Add(Path.Combine(outputDir, "dump.json"));
+                    DumpModel = JsonDumpGenerator.Create(this, executor, config);
+                    var json = JsonSerializer.Serialize(DumpModel, JsonDumpGenerator.JsonOptions);
+                    File.WriteAllText(Path.Combine(outputDir, JsonDumpGenerator.FileName), json, new UTF8Encoding(false));
+                    WrittenFiles.Add(Path.Combine(outputDir, JsonDumpGenerator.FileName));
                 }
                 catch (Exception e)
                 {
