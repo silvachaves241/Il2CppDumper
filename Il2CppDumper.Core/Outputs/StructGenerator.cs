@@ -35,6 +35,7 @@ namespace Il2CppDumper
 
         public int StringLiteralsCount { get; private set; }
         public int StringLiteralsFailedCount { get; private set; }
+        public List<string> WrittenFiles { get; } = new();
 
         public StructGenerator(Il2CppExecutor il2CppExecutor)
         {
@@ -378,13 +379,16 @@ namespace Il2CppDumper
             }).ToArray();
             var jsonOptions = new JsonSerializerOptions() { WriteIndented = true, IncludeFields = true };
             File.WriteAllText(outputDir + "stringliteral.json", JsonSerializer.Serialize(stringLiterals, jsonOptions), new UTF8Encoding(false));
+            WrittenFiles.Add(Path.Combine(outputDir, "stringliteral.json"));
             //输出按索引排序的完整StringLiteral取证表
             var indexedStringLiterals = metadata.DumpStringLiterals(out var failedLiterals);
-            StringLiteralsCount = indexedStringLiterals.Count;
             StringLiteralsFailedCount = failedLiterals;
             File.WriteAllText(outputDir + "stringliteral-indexed.json", JsonSerializer.Serialize(indexedStringLiterals, jsonOptions), new UTF8Encoding(false));
+            StringLiteralsCount = indexedStringLiterals.Count;
+            WrittenFiles.Add(Path.Combine(outputDir, "stringliteral-indexed.json"));
             //写入文件
             File.WriteAllText(outputDir + "script.json", JsonSerializer.Serialize(json, jsonOptions));
+            WrittenFiles.Add(Path.Combine(outputDir, "script.json"));
             //il2cpp.h
             for (int i = 0; i < genericClassList.Count; i++)
             {
@@ -442,6 +446,7 @@ namespace Il2CppDumper
             sb.Append(arrayClassHeader);
             sb.Append(methodInfoHeader);
             File.WriteAllText(outputDir + "il2cpp.h", sb.ToString());
+            WrittenFiles.Add(Path.Combine(outputDir, "il2cpp.h"));
         }
 
         private void AddMetadataUsageTypeInfo(ScriptJson json, uint index, ulong address)

@@ -7,8 +7,9 @@ namespace Il2CppDumper
 {
     public static class DummyAssemblyExporter
     {
-        public static void Export(Il2CppExecutor il2CppExecutor, string outputDir, bool addToken)
+        public static List<string> Export(Il2CppExecutor il2CppExecutor, string outputDir, bool addToken)
         {
+            var written = new List<string>();
             var dummyDllDirectory = Path.Combine(outputDir, "DummyDll");
             if (Directory.Exists(dummyDllDirectory))
                 Directory.Delete(dummyDllDirectory, true);
@@ -19,8 +20,11 @@ namespace Il2CppDumper
                 SanitizeConstants(assembly);
                 SanitizeMemberReferences(assembly);
                 SanitizeCustomAttributes(assembly);
-                File.WriteAllBytes(Path.Combine(dummyDllDirectory, assembly.MainModule.Name), WriteAssembly(assembly));
+                var targetFile = Path.Combine(dummyDllDirectory, assembly.MainModule.Name);
+                File.WriteAllBytes(targetFile, WriteAssembly(assembly));
+                written.Add(targetFile);
             }
+            return written;
         }
 
         private static byte[] WriteAssembly(AssemblyDefinition assembly)

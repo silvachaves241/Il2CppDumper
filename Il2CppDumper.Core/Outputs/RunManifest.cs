@@ -1,7 +1,9 @@
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
@@ -119,7 +121,7 @@ namespace Il2CppDumper
             };
         }
 
-        public static List<RunManifestOutput> CollectOutputs(string outputDir)
+        public static List<RunManifestOutput> CollectOutputs(string outputDir, IEnumerable<string>? producedFiles = null)
         {
             var list = new List<RunManifestOutput>();
             if (string.IsNullOrEmpty(outputDir) || !Directory.Exists(outputDir))
@@ -127,42 +129,71 @@ namespace Il2CppDumper
                 return list;
             }
 
-            var knownNames = new[]
+            var fullOutputDir = Path.GetFullPath(outputDir);
+            if (!fullOutputDir.EndsWith(Path.DirectorySeparatorChar.ToString()) && !fullOutputDir.EndsWith(Path.AltDirectorySeparatorChar.ToString()))
             {
-                DumpMetadataWriter.FileName,
-                "dump.cs",
-                "dump.json",
-                "script.json",
-                "stringliteral.json",
-                "stringliteral-indexed.json",
-                "il2cpp.h"
-            };
+                fullOutputDir += Path.DirectorySeparatorChar;
+            }
 
-            foreach (var name in knownNames)
+            var filesToProcess = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            if (producedFiles != null)
             {
-                var filePath = Path.Combine(outputDir, name);
-                if (File.Exists(filePath))
+                foreach (var file in producedFiles)
                 {
-                    var info = new FileInfo(filePath);
-                    using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 81920, useAsync: false);
-                    var sha256 = DumpMetadataWriter.ComputeStreamSha256(stream);
-                    list.Add(new RunManifestOutput
+                    if (string.IsNullOrWhiteSpace(file))
+                        continue;
+
+                    var fullPath = Path.IsPathRooted(file)
+                        ? Path.GetFullPath(file)
+                        : Path.GetFullPath(Path.Combine(fullOutputDir, file));
+
+                    if (!File.Exists(fullPath))
+                        continue;
+
+                    if (string.Equals(Path.GetFileName(fullPath), FileName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    filesToProcess.Add(fullPath);
+                }
+            }
+            else
+            {
+                var knownNames = new[]
+                {
+                    DumpMetadataWriter.FileName,
+                    "dump.cs",
+                    "dump.json",
+                    "script.json",
+                    "stringliteral.json",
+                    "stringliteral-indexed.json",
+                    "il2cpp.h"
+                };
+
+                foreach (var name in knownNames)
+                {
+                    var filePath = Path.Combine(fullOutputDir, name);
+                    if (File.Exists(filePath))
+                        filesToProcess.Add(filePath);
+                }
+
+                var dummyDllDir = Path.Combine(fullOutputDir, "DummyDll");
+                if (Directory.Exists(dummyDllDir))
+                {
+                    foreach (var file in Directory.EnumerateFiles(dummyDllDir, "*", SearchOption.AllDirectories))
                     {
-                        Path = name,
-                        Sha256 = sha256,
-                        Bytes = info.Length
-                    });
+                        filesToProcess.Add(file);
+                    }
                 }
             }
 
-            var dummyDllDir = Path.Combine(outputDir, "DummyDll");
-            if (Directory.Exists(dummyDllDir))
+            foreach (var fullPath in filesToProcess.OrderBy(p => p, StringComparer.Ordinal))
             {
-                foreach (var file in Directory.EnumerateFiles(dummyDllDir, "*", SearchOption.AllDirectories))
+                var relPath = Path.GetRelativePath(fullOutputDir, fullPath).Replace('\\', '/');
+                try
                 {
-                    var relPath = Path.GetRelativePath(outputDir, file).Replace('\\', '/');
-                    var info = new FileInfo(file);
-                    using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 81920, useAsync: false);
+                    var info = new FileInfo(fullPath);
+                    using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 81920, useAsync: false);
                     var sha256 = DumpMetadataWriter.ComputeStreamSha256(stream);
                     list.Add(new RunManifestOutput
                     {
@@ -170,6 +201,10 @@ namespace Il2CppDumper
                         Sha256 = sha256,
                         Bytes = info.Length
                     });
+                }
+                catch (Exception ex)
+                {
+                    CoreLogger.WriteLine($"WARNING: Could not hash output file '{relPath}': {ex.Message}");
                 }
             }
 
@@ -184,9 +219,10 @@ namespace Il2CppDumper
             bool success,
             RunManifestCounts counts,
             RunManifestWarnings warnings,
-            string outputDir)
+            string outputDir,
+            IEnumerable<string>? producedFiles = null)
         {
-            var outputs = CollectOutputs(outputDir);
+            var outputs = CollectOutputs(outputDir, producedFiles);
             return new RunManifest
             {
                 Tool = GetToolInfo(),
@@ -207,7 +243,8 @@ namespace Il2CppDumper
             long durationMs,
             bool success,
             RunManifestCounts counts,
-            RunManifestWarnings warnings)
+            RunManifestWarnings warnings,
+            IEnumerable<string>? producedFiles = null)
         {
             if (config != null && !config.GenerateRunManifest)
             {
@@ -215,7 +252,7 @@ namespace Il2CppDumper
             }
 
             Directory.CreateDirectory(outputDir);
-            var manifest = Create(config ?? new Config(), startedAtUtc, durationMs, success, counts, warnings, outputDir);
+            var manifest = Create(config ?? new Config(), startedAtUtc, durationMs, success, counts, warnings, outputDir, producedFiles);
             var manifestPath = Path.Combine(outputDir, FileName);
             var json = JsonSerializer.Serialize(manifest, JsonOptions);
             File.WriteAllText(manifestPath, json, new UTF8Encoding(false));

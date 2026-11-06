@@ -36,6 +36,7 @@ namespace Il2CppDumper
         public long CustomAttributeWrittenCount { get; private set; }
         public long CustomAttributeFailedCount { get; private set; }
         public string ErrorMessage { get; private set; }
+        public List<string> WrittenFiles { get; } = new();
 
         public Il2CppDecompiler(Il2CppExecutor il2CppExecutor)
         {
@@ -54,7 +55,10 @@ namespace Il2CppDumper
             PropertiesCount = 0;
             CustomAttributeWrittenCount = 0;
             CustomAttributeFailedCount = 0;
-            var writer = new StreamWriter(new FileStream(outputDir + "dump.cs", FileMode.Create), new UTF8Encoding(false));
+            WrittenFiles.Clear();
+            var dumpCsPath = Path.Combine(outputDir, "dump.cs");
+            var writer = new StreamWriter(new FileStream(dumpCsPath, FileMode.Create), new UTF8Encoding(false));
+            WrittenFiles.Add(dumpCsPath);
             //dump image
             for (var imageIndex = 0; imageIndex < metadata.imageDefs.Length; imageIndex++)
             {
@@ -71,7 +75,6 @@ namespace Il2CppDumper
                     for (int typeDefIndex = imageDef.typeStart; typeDefIndex < typeEnd; typeDefIndex++)
                     {
                         var typeDef = metadata.typeDefs[typeDefIndex];
-                        TypesCount++;
                         var extends = new List<string>();
                         if (typeDef.parentIndex >= 0)
                         {
@@ -141,6 +144,7 @@ namespace Il2CppDumper
                             writer.Write($" // TypeDefIndex: {typeDefIndex}\n{{");
                         else
                             writer.Write("\n{");
+                        TypesCount++;
                         //dump field
                         if (config.DumpField && typeDef.field_count > 0)
                         {
@@ -149,7 +153,6 @@ namespace Il2CppDumper
                             for (var i = typeDef.fieldStart; i < fieldEnd; ++i)
                             {
                                 var fieldDef = metadata.fieldDefs[i];
-                                FieldsCount++;
                                 var fieldType = il2Cpp.types[fieldDef.typeIndex];
                                 var isStatic = false;
                                 var isConst = false;
@@ -228,6 +231,7 @@ namespace Il2CppDumper
                                     writer.Write("; // 0x{0:X}\n", il2Cpp.GetFieldOffsetFromIndex(typeDefIndex, i - typeDef.fieldStart, i, typeDef.IsValueType, isStatic));
                                 else
                                     writer.Write(";\n");
+                                FieldsCount++;
                             }
                         }
                         //dump property
@@ -238,7 +242,6 @@ namespace Il2CppDumper
                             for (var i = typeDef.propertyStart; i < propertyEnd; ++i)
                             {
                                 var propertyDef = metadata.propertyDefs[i];
-                                PropertiesCount++;
                                 if (config.DumpAttribute)
                                 {
                                     writer.Write(GetCustomAttribute(imageDef, propertyDef.customAttributeIndex, propertyDef.token, "\t", $"{metadata.GetStringFromIndex(typeDef.nameIndex)}.{metadata.GetStringFromIndex(propertyDef.nameIndex)}"));
@@ -272,6 +275,7 @@ namespace Il2CppDumper
                                     writer.Write("set; ");
                                 writer.Write("}");
                                 writer.Write("\n");
+                                PropertiesCount++;
                             }
                         }
                         //dump method
@@ -283,7 +287,6 @@ namespace Il2CppDumper
                                 var i = metadata.GetMethodIndexFromTypeDefinition(typeDefIndex, methodIndexInType);
                                 writer.Write("\n");
                                 var methodDef = metadata.methodDefs[i];
-                                MethodsCount++;
                                 var isAbstract = (methodDef.flags & METHOD_ATTRIBUTE_ABSTRACT) != 0;
                                 if (config.DumpAttribute)
                                 {
@@ -395,6 +398,7 @@ namespace Il2CppDumper
                                 {
                                     writer.Write(") { }\n");
                                 }
+                                MethodsCount++;
 
                                 if (il2Cpp.methodDefinitionMethodSpecs.TryGetValue(i, out var methodSpecs))
                                 {
@@ -446,6 +450,7 @@ namespace Il2CppDumper
                 try
                 {
                     JsonDumpGenerator.Write(outputDir, this, executor, config);
+                    WrittenFiles.Add(Path.Combine(outputDir, "dump.json"));
                 }
                 catch (Exception e)
                 {
@@ -479,6 +484,8 @@ namespace Il2CppDumper
                         var typeIndex = metadata.attributeTypes[attributeTypeRange.start + i];
                         var attrStr = $"[{executor.GetTypeName(il2Cpp.types[typeIndex], false, false)}] // RVA: 0x{fixedMethodPointer:X} Offset: 0x{il2Cpp.MapVATR(methodPointer):X} VA: 0x{methodPointer:X}";
                         result.Add(attrStr);
+                        if (countMetrics && CustomAttributeWrittenCount < long.MaxValue)
+                            CustomAttributeWrittenCount++;
                     }
                     return result;
                 }

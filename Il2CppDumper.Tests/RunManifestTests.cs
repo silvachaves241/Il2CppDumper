@@ -556,5 +556,216 @@ namespace Il2CppDumper.Tests
                 }
             }
         }
-    }
+
+        [Fact]
+        public void Regression_P1_PreexistingFilesFromPreviousRuns_AreExcludedFromOutputs()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "manifest_regr_p1_stale_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var fixturesDir = Path.Combine(tempDir, "fixtures");
+                Directory.CreateDirectory(fixturesDir);
+                var (wasmPath, metaPath) = CreateSyntheticFixtures(fixturesDir);
+
+                var outDir = Path.Combine(tempDir, "out");
+                Directory.CreateDirectory(outDir);
+
+                // Place stale outputs from a simulated previous run
+                var staleJson = Path.Combine(outDir, "dump.json");
+                File.WriteAllText(staleJson, "{\"stale\": true}");
+                var staleDllDir = Path.Combine(outDir, "DummyDll");
+                Directory.CreateDirectory(staleDllDir);
+                var staleDll = Path.Combine(staleDllDir, "old.dll");
+                File.WriteAllText(staleDll, "stale-dll-content");
+
+                var req = new DumpRequest
+                {
+                    ExecutablePath = wasmPath,
+                    MetadataPath = metaPath,
+                    OutputDirectory = outDir,
+                    Config = new Config
+                    {
+                        GenerateRunManifest = true,
+                        GenerateJsonDump = false,
+                        GenerateDummyDll = false,
+                        GenerateStruct = false
+                    }
+                };
+
+                var result = Dumper.Dump(req);
+                Assert.True(result.Success, result.Error);
+
+                var manifestPath = Path.Combine(outDir, "run-manifest.json");
+                Assert.True(File.Exists(manifestPath));
+                var manifest = JsonSerializer.Deserialize<RunManifest>(File.ReadAllText(manifestPath))!;
+
+                // Stale files must NOT be in manifest.Outputs
+                Assert.DoesNotContain(manifest.Outputs, o => o.Path == "dump.json");
+                Assert.DoesNotContain(manifest.Outputs, o => o.Path.Contains("old.dll"));
+
+                // Generated outputs of this run MUST be present
+                Assert.Contains(manifest.Outputs, o => o.Path == "dump.cs");
+                Assert.Contains(manifest.Outputs, o => o.Path == "dump-metadata.json");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void Regression_P1_UnwritableManifestDestination_LogsWarningAndPopulatesResultWarnings()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "manifest_regr_p1_unwritable_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var fixturesDir = Path.Combine(tempDir, "fixtures");
+                Directory.CreateDirectory(fixturesDir);
+                var (wasmPath, metaPath) = CreateSyntheticFixtures(fixturesDir);
+
+                var outDir = Path.Combine(tempDir, "out");
+                Directory.CreateDirectory(outDir);
+
+                // Create a directory where the manifest file would be written
+                var blockerDir = Path.Combine(outDir, "run-manifest.json");
+                Directory.CreateDirectory(blockerDir);
+
+                var req = new DumpRequest
+                {
+                    ExecutablePath = wasmPath,
+                    MetadataPath = metaPath,
+                    OutputDirectory = outDir,
+                    Config = new Config
+                    {
+                        GenerateRunManifest = true,
+                        GenerateJsonDump = false,
+                        GenerateDummyDll = false,
+                        GenerateStruct = false
+                    }
+                };
+
+                var result = Dumper.Dump(req);
+                Assert.True(result.Success);
+                Assert.False(result.Outputs.ContainsKey("run-manifest.json"));
+                Assert.Contains(result.Warnings, w => w.Contains("Failed to emit run manifest"));
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void Regression_P1_LockedOutputFile_DoesNotAbortEntireManifestEmission()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "manifest_regr_p1_locked_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var file1 = Path.Combine(tempDir, "file1.txt");
+                File.WriteAllText(file1, "hello");
+                var file2 = Path.Combine(tempDir, "file2.txt");
+                File.WriteAllText(file2, "world");
+
+                // Lock file1 with FileShare.None
+                using var lockedStream = new FileStream(file1, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+                var outputs = RunManifestWriter.CollectOutputs(tempDir, new[] { file1, file2 });
+
+                // file2 was still hashed successfully despite file1 being locked
+                Assert.Contains(outputs, o => o.Path == "file2.txt");
+                Assert.DoesNotContain(outputs, o => o.Path == "file1.txt");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void Regression_P2_LegacyV24_CustomAttributes_IncrementsAttributesCount()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "manifest_regr_p2_v24_attrs_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var (metadata, il2Cpp, executor) = SyntheticEnvironment.Create(MetadataVersionFamily.V24, seed: 42);
+
+                // Add an attribute type range and attribute type for custom attribute index 0
+                metadata.attributeTypeRanges = new Il2CppCustomAttributeTypeRange[]
+                {
+                    new Il2CppCustomAttributeTypeRange { start = 0, count = 1 }
+                };
+                metadata.attributeTypes = new[] { 2 }; // maps to types[2] (int)
+                executor.customAttributeGenerators = new ulong[] { 0x1000 };
+
+                var decompiler = new Il2CppDecompiler(executor);
+                var config = new Config
+                {
+                    DumpAttribute = true,
+                    DumpField = false,
+                    DumpMethod = false,
+                    DumpProperty = false
+                };
+
+                // Type 0 has customAttributeIndex = 0
+                metadata.typeDefs[0].customAttributeIndex = 0;
+
+                var success = decompiler.Decompile(config, tempDir + Path.DirectorySeparatorChar);
+                Assert.True(success);
+                Assert.True(decompiler.CustomAttributeWrittenCount >= 1, "Legacy v24 custom attributes must increment CustomAttributeWrittenCount.");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void Regression_P2_CorruptedParentIndex_ExecutionFailsBeforeEmittingType_CountsTypesZero()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "manifest_regr_p2_corrupt_parent_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var (metadata, il2Cpp, _) = SyntheticEnvironment.Create(MetadataVersionFamily.V24, seed: 42);
+
+                // Corrupt parent index of first type so resolution throws before type definition header is emitted
+                metadata.typeDefs[0].parentIndex = int.MaxValue;
+
+                var config = new Config
+                {
+                    DumpAttribute = false,
+                    DumpField = false,
+                    DumpMethod = false,
+                    DumpProperty = false
+                };
+
+                var success = Dumper.ExecuteDump(metadata, il2Cpp, config, tempDir + Path.DirectorySeparatorChar, out _, out var counts, out _);
+                Assert.False(success);
+                Assert.Equal(0, counts.Types);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+}
 }

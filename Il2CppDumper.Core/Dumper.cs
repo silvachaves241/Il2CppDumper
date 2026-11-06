@@ -62,19 +62,44 @@ namespace Il2CppDumper.Core
                 }
 
                 var config = request.Config != null ? CloneConfig(request.Config) : new Config();
+                var writtenFiles = new List<string>();
+
+                if (config.GenerateRunManifest && Directory.Exists(outputDir))
+                {
+                    var manifestPath = Path.Combine(outputDir, RunManifestWriter.FileName);
+                    if (File.Exists(manifestPath))
+                    {
+                        try { File.Delete(manifestPath); } catch { }
+                    }
+                }
 
                 void WriteRunManifest(bool success)
                 {
+                    if (!config.GenerateRunManifest)
+                        return;
+
                     try
                     {
-                        if (config.GenerateRunManifest)
+                        var manifest = RunManifestWriter.Write(
+                            outputDir,
+                            config,
+                            startedAtUtc,
+                            stopwatch.ElapsedMilliseconds,
+                            success,
+                            counts,
+                            manifestWarnings,
+                            writtenFiles
+                        );
+                        if (manifest != null)
                         {
-                            RunManifestWriter.Write(outputDir, config, startedAtUtc, stopwatch.ElapsedMilliseconds, success, counts, manifestWarnings);
+                            outputs["run-manifest.json"] = Path.Combine(outputDir, RunManifestWriter.FileName);
                         }
                     }
-                    catch
+                    catch (Exception ex)
                     {
-                        // ignored
+                        var warn = $"WARNING: Failed to emit run manifest: {ex.Message}";
+                        CoreLogger.WriteLine(warn);
+                        warnings.Add(warn);
                     }
                 }
 
@@ -137,6 +162,7 @@ namespace Il2CppDumper.Core
                 try
                 {
                     dumpMetadata = DumpMetadataWriter.WriteInitial(outputDir, il2cppPath, metadataPath, config);
+                    writtenFiles.Add(Path.Combine(outputDir, DumpMetadataWriter.FileName));
                     PopulateOutputs(outputDir, outputs);
                 }
                 catch (Exception e)
@@ -160,7 +186,8 @@ namespace Il2CppDumper.Core
                         return new DumpResult(false, "ERROR: An error occurred while processing.", warnings, outputs);
                     }
 
-                    var dumpSuccess = ExecuteDump(metadata, il2Cpp, config, outputDir, out var dumpError, out counts, out manifestWarnings);
+                    var dumpSuccess = ExecuteDump(metadata, il2Cpp, config, outputDir, out var dumpError, out counts, out manifestWarnings, out var execWrittenFiles);
+                    writtenFiles.AddRange(execWrittenFiles);
                     WriteRunManifest(dumpSuccess);
                     PopulateOutputs(outputDir, outputs);
 
@@ -407,12 +434,14 @@ namespace Il2CppDumper.Core
             string outputDir,
             out string? errorMessage,
             out RunManifestCounts counts,
-            out RunManifestWarnings manifestWarnings)
+            out RunManifestWarnings manifestWarnings,
+            out List<string> writtenFiles)
         {
             var success = true;
             var errors = new List<string>();
             counts = new RunManifestCounts();
             manifestWarnings = new RunManifestWarnings();
+            writtenFiles = new List<string>();
 
             CoreLogger.WriteLine("Dumping...");
             var executor = new Il2CppExecutor(metadata, il2Cpp);
@@ -429,6 +458,7 @@ namespace Il2CppDumper.Core
                     errors.Add("ERROR: Some errors in dumping");
                 }
             }
+            writtenFiles.AddRange(decompiler.WrittenFiles);
             CoreLogger.WriteLine("Done!");
 
             counts.Types = decompiler.TypesCount;
@@ -439,6 +469,7 @@ namespace Il2CppDumper.Core
             counts.AttributesFailed = decompiler.CustomAttributeFailedCount;
             manifestWarnings.ByCategory.AttributeDecode = (int)decompiler.CustomAttributeFailedCount;
 
+
             StructGenerator? scriptGenerator = null;
             if (config.GenerateStruct)
             {
@@ -447,8 +478,6 @@ namespace Il2CppDumper.Core
                 {
                     scriptGenerator = new StructGenerator(executor);
                     scriptGenerator.WriteScript(outputDir);
-                    counts.StringLiterals = scriptGenerator.StringLiteralsCount;
-                    manifestWarnings.ByCategory.StringLiteral = scriptGenerator.StringLiteralsFailedCount;
                     CoreLogger.WriteLine("Done!");
                 }
                 catch (Exception e)
@@ -458,13 +487,23 @@ namespace Il2CppDumper.Core
                     errors.Add("ERROR: Some errors in generating struct");
                     success = false;
                 }
+                finally
+                {
+                    if (scriptGenerator != null)
+                    {
+                        counts.StringLiterals = scriptGenerator.StringLiteralsCount;
+                        manifestWarnings.ByCategory.StringLiteral = scriptGenerator.StringLiteralsFailedCount;
+                        writtenFiles.AddRange(scriptGenerator.WrittenFiles);
+                    }
+                }
             }
             if (config.GenerateDummyDll)
             {
                 CoreLogger.WriteLine("Generate dummy dll...");
                 try
                 {
-                    DummyAssemblyExporter.Export(executor, outputDir, config.DummyDllAddToken);
+                    var dummyFiles = DummyAssemblyExporter.Export(executor, outputDir, config.DummyDllAddToken);
+                    writtenFiles.AddRange(dummyFiles);
                     CoreLogger.WriteLine("Done!");
                 }
                 catch (Exception e)
@@ -479,6 +518,18 @@ namespace Il2CppDumper.Core
             manifestWarnings.Total = manifestWarnings.ByCategory.AttributeDecode + manifestWarnings.ByCategory.StringLiteral;
             errorMessage = errors.Count > 0 ? string.Join(Environment.NewLine, errors) : null;
             return success;
+        }
+
+        internal static bool ExecuteDump(
+            Metadata metadata,
+            Il2Cpp il2Cpp,
+            Config config,
+            string outputDir,
+            out string? errorMessage,
+            out RunManifestCounts counts,
+            out RunManifestWarnings manifestWarnings)
+        {
+            return ExecuteDump(metadata, il2Cpp, config, outputDir, out errorMessage, out counts, out manifestWarnings, out _);
         }
 
         internal static bool ExecuteDump(Metadata metadata, Il2Cpp il2Cpp, Config config, string outputDir, out string? errorMessage)
@@ -509,7 +560,7 @@ namespace Il2CppDumper.Core
             foreach (var name in candidates)
             {
                 var fullPath = Path.Combine(outputDir, name);
-                if (File.Exists(fullPath) || Directory.Exists(fullPath))
+                if (name == "DummyDll" ? Directory.Exists(fullPath) : File.Exists(fullPath))
                 {
                     outputs[name] = fullPath;
                 }
