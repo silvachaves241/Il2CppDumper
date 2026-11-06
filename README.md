@@ -1,6 +1,6 @@
 # Il2CppDumper
 
-[![Build status](https://ci.appveyor.com/api/projects/status/anhqw33vcpmp8ofa?svg=true)](https://ci.appveyor.com/project/Perfare/il2cppdumper/branch/master/artifacts)
+[![GitHub Release](https://img.shields.io/github/v/release/silvachaves241/Il2CppDumper?include_prereleases&label=release)](https://github.com/silvachaves241/Il2CppDumper/releases)
 [![CI](https://github.com/silvachaves241/Il2CppDumper/actions/workflows/dotnet.yml/badge.svg)](https://github.com/silvachaves241/Il2CppDumper/actions/workflows/dotnet.yml)
 
 中文说明请戳[这里](README.zh-CN.md)
@@ -12,6 +12,34 @@ Unity il2cpp reverse engineer
 This fork includes experimental adaptations for newer Unity/IL2CPP metadata versions, including v35/v38/v39 used by Unity 6000.x. The changes improve metadata parsing, method address recovery, DummyDll generation, and `il2cpp.h` generation for newer versions.
 
 The newer-version support has only been self-tested on a small number of games. IL2CPP layouts, metadata formats, and protections vary by Unity version, platform, and project. If a specific game cannot be dumped, you need to debug and modify the source code yourself. I do not provide one-by-one adaptation for every game or protected build.
+
+## Releases & Downloads
+
+Pre-built self-contained packages for Windows x64 and Linux x64 are available on the [Releases page](https://github.com/silvachaves241/Il2CppDumper/releases). No .NET SDK or runtime installation is required.
+
+### Release Artifacts
+- **`Il2CppDumper-<version>-win-x64.zip`**: Standalone Windows x64 CLI dumper bundled with Python IDA/Ghidra scripts, `config.json`, and license.
+- **`Il2CppDumper-<version>-linux-x64.tar.gz`**: Standalone Linux x64 CLI dumper with execution permissions preserved.
+- **`Il2CppDumper-Diff-<version>-win-x64.zip`**: Standalone Windows x64 diff and struct drift analysis CLI tool.
+- **`Il2CppDumper-Diff-<version>-linux-x64.tar.gz`**: Standalone Linux x64 diff and struct drift analysis CLI tool.
+- **`SHA256SUMS.txt`**: SHA-256 checksums to verify archive integrity.
+
+### Quick Execution
+- **Windows**:
+  ```cmd
+  Il2CppDumper.exe <executable-file> <global-metadata.dat> <output-directory>
+  ```
+- **Linux**:
+  ```bash
+  tar -xzvf Il2CppDumper-v0.1.0-linux-x64.tar.gz
+  chmod +x Il2CppDumper
+  ./Il2CppDumper <executable-file> <global-metadata.dat> <output-directory>
+  ```
+
+### Release Versioning and Maintenance
+- **Version Convention**: Releases follow semantic versioning tags in the form `vX.Y.Z` (e.g., `v0.1.0`).
+- **Automated Workflow**: Pushing a tag matching `v*` or triggering `.github/workflows/release.yml` manually builds, smoke-tests on native OS runners, generates checksums, and creates a GitHub Release draft with the exact commit SHA recorded.
+- **Português:** Pacotes independentes (self-contained) para Windows x64 e Linux x64 estão disponíveis na página de [Releases](https://github.com/silvachaves241/Il2CppDumper/releases), dispensando a instalação prévia do .NET SDK ou runtime. No Linux, extraia o `.tar.gz` e atribua permissão com `chmod +x Il2CppDumper`. A convenção de tags segue o padrão `vX.Y.Z` e o workflow em `.github/workflows/release.yml` valida build, testes e execuções de fumaça antes de criar/anexar a release e seus checksums SHA-256.
 
 ## Positioning
 

@@ -157,7 +157,8 @@ namespace Il2CppDumper.Tests
                 Assert.True(toolEl.TryGetProperty("version", out var toolVersionEl));
                 Assert.True(toolEl.TryGetProperty("commit", out var toolCommitEl));
                 Assert.Equal("Il2CppDumper", toolNameEl.GetString());
-                Assert.Equal("1.0.0.0", toolVersionEl.GetString());
+                Assert.Equal(typeof(DumpMetadata).Assembly.GetName().Version?.ToString(), toolVersionEl.GetString());
+                Assert.False(string.IsNullOrEmpty(toolVersionEl.GetString()));
                 Assert.NotNull(toolCommitEl.GetString());
 
                 Assert.True(root.TryGetProperty("inputs", out var inputsEl));

@@ -1536,5 +1536,32 @@ namespace Il2CppDumper.Tests
                 }
             }
         }
+
+        [Fact]
+        public void DiffCli_VersionAndHelpFlags_ExitZero()
+        {
+            // 1. --version
+            var (verExit, verOut, verErr) = RunDiffCli("--version");
+            Assert.Equal(0, verExit);
+            Assert.Contains("Il2CppDumper.Diff", verOut);
+            Assert.Empty(verErr);
+
+            // 2. -v
+            var (shortVerExit, shortVerOut, _) = RunDiffCli("-v");
+            Assert.Equal(0, shortVerExit);
+            Assert.Contains("Il2CppDumper.Diff", shortVerOut);
+
+            // 3. --help
+            var (helpExit, helpOut, helpErr) = RunDiffCli("--help");
+            Assert.Equal(0, helpExit);
+            Assert.Contains("usage: Il2CppDumper.Diff", helpOut);
+            Assert.Contains("--version", helpOut);
+            Assert.Empty(helpErr);
+
+            // 4. -h
+            var (shortHelpExit, shortHelpOut, _) = RunDiffCli("-h");
+            Assert.Equal(0, shortHelpExit);
+            Assert.Contains("usage: Il2CppDumper.Diff", shortHelpOut);
+        }
     }
 }

@@ -1,0 +1,493 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag or version to release (e.g. v0.1.0)'
+        required: false
+        default: 'v0.1.0'
+      draft:
+        description: 'Create as draft release'
+        type: boolean
+        default: true
+      prerelease:
+        description: 'Mark as pre-release'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve Target & Metadata
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      clean_version: ${{ steps.resolve.outputs.clean_version }}
+      assembly_version: ${{ steps.resolve.outputs.assembly_version }}
+      informational_version: ${{ steps.resolve.outputs.informational_version }}
+      commit_sha: ${{ steps.resolve.outputs.commit_sha }}
+      draft: ${{ steps.resolve.outputs.draft }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve target reference and version parameters
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+            DRAFT="${{ inputs.draft }}"
+            PRERELEASE="${{ inputs.prerelease }}"
+          else
+            TAG="${{ github.ref_name }}"
+            DRAFT="true"
+            PRERELEASE="false"
+          fi
+          if [ -z "$TAG" ]; then TAG="v0.1.0"; fi
+
+          # Fetch remote tags to ensure full reference visibility
+          git fetch --tags --force origin 2>/dev/null || true
+
+          # Resolve commit SHA dereferencing annotated tags if present (R1)
+          if git rev-parse -q --verify "refs/tags/${TAG}^{commit}" >/dev/null 2>&1; then
+            COMMIT_SHA="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          elif git rev-parse -q --verify "${TAG}^{commit}" >/dev/null 2>&1; then
+            COMMIT_SHA="$(git rev-parse "${TAG}^{commit}")"
+          elif git rev-parse -q --verify "${TAG}" >/dev/null 2>&1; then
+            COMMIT_SHA="$(git rev-parse "${TAG}")"
+          else
+            COMMIT_SHA="${{ github.sha }}"
+          fi
+
+          CLEAN_VERSION="${TAG#v}"
+          ASSEMBLY_VERSION="${CLEAN_VERSION}.0"
+          INFORMATIONAL_VERSION="${CLEAN_VERSION}+${COMMIT_SHA}"
+
+          echo "Resolved Tag: $TAG"
+          echo "Resolved Commit SHA: $COMMIT_SHA"
+          echo "Clean Version: $CLEAN_VERSION"
+          echo "Assembly Version: $ASSEMBLY_VERSION"
+          echo "Informational Version: $INFORMATIONAL_VERSION"
+          echo "Draft: $DRAFT"
+          echo "Prerelease: $PRERELEASE"
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "clean_version=$CLEAN_VERSION" >> $GITHUB_OUTPUT
+          echo "assembly_version=$ASSEMBLY_VERSION" >> $GITHUB_OUTPUT
+          echo "informational_version=$INFORMATIONAL_VERSION" >> $GITHUB_OUTPUT
+          echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          echo "draft=$DRAFT" >> $GITHUB_OUTPUT
+          echo "prerelease=$PRERELEASE" >> $GITHUB_OUTPUT
+
+  test:
+    name: Test ${{ matrix.os }} (${{ matrix.framework }})
+    needs: resolve
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        framework: [net6.0, net8.0]
+
+    steps:
+      - name: Checkout target commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit_sha }}
+          fetch-depth: 0
+
+      - name: Setup .NET SDKs
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            6.0.x
+            8.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build solution
+        run: dotnet build --no-restore
+
+      - name: Run tests (${{ matrix.framework }})
+        run: dotnet test Il2CppDumper.Tests/Il2CppDumper.Tests.csproj -f ${{ matrix.framework }} --no-build
+
+  build-windows:
+    name: Build Windows x64 Packages
+    needs: [resolve, test]
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout target commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit_sha }}
+          fetch-depth: 0
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish Il2CppDumper (win-x64)
+        shell: pwsh
+        run: |
+          dotnet publish Il2CppDumper/Il2CppDumper.csproj `
+            -c Release `
+            -f net8.0 `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=false `
+            -p:PublishTrimmed=false `
+            -p:Version="${{ needs.resolve.outputs.clean_version }}" `
+            -p:AssemblyVersion="${{ needs.resolve.outputs.assembly_version }}" `
+            -p:FileVersion="${{ needs.resolve.outputs.assembly_version }}" `
+            -p:InformationalVersion="${{ needs.resolve.outputs.informational_version }}" `
+            -o publish/Il2CppDumper
+          Copy-Item LICENSE publish/Il2CppDumper/LICENSE
+
+      - name: Smoke test Il2CppDumper (win-x64)
+        shell: pwsh
+        run: |
+          $verOutput = & .\publish\Il2CppDumper\Il2CppDumper.exe --version
+          Write-Host "Output: $verOutput"
+          if ($LASTEXITCODE -ne 0 -or -not ($verOutput -match "Il2CppDumper")) {
+            throw "Smoke test failed for Il2CppDumper.exe --version"
+          }
+          & .\publish\Il2CppDumper\Il2CppDumper.exe --help
+          if ($LASTEXITCODE -ne 0) {
+            throw "Smoke test failed for Il2CppDumper.exe --help"
+          }
+
+      - name: Package Il2CppDumper (win-x64)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          $zipName = "dist/Il2CppDumper-${{ needs.resolve.outputs.tag }}-win-x64.zip"
+          Compress-Archive -Path publish/Il2CppDumper/* -DestinationPath $zipName
+          # Verify extracted package
+          Expand-Archive -Path $zipName -DestinationPath test-extract-dumper
+          $testOut = & .\test-extract-dumper\Il2CppDumper.exe --version
+          if ($LASTEXITCODE -ne 0) { throw "Verification of extracted zip failed" }
+
+      - name: Publish Il2CppDumper.Diff (win-x64)
+        shell: pwsh
+        run: |
+          dotnet publish Il2CppDumper.Diff/Il2CppDumper.Diff.csproj `
+            -c Release `
+            -f net8.0 `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=false `
+            -p:PublishTrimmed=false `
+            -p:Version="${{ needs.resolve.outputs.clean_version }}" `
+            -p:AssemblyVersion="${{ needs.resolve.outputs.assembly_version }}" `
+            -p:FileVersion="${{ needs.resolve.outputs.assembly_version }}" `
+            -p:InformationalVersion="${{ needs.resolve.outputs.informational_version }}" `
+            -o publish/Il2CppDumper.Diff
+          Copy-Item LICENSE publish/Il2CppDumper.Diff/LICENSE
+
+      - name: Smoke test Il2CppDumper.Diff (win-x64)
+        shell: pwsh
+        run: |
+          $verOutput = & .\publish\Il2CppDumper.Diff\Il2CppDumper.Diff.exe --version
+          Write-Host "Output: $verOutput"
+          if ($LASTEXITCODE -ne 0 -or -not ($verOutput -match "Il2CppDumper.Diff")) {
+            throw "Smoke test failed for Il2CppDumper.Diff.exe --version"
+          }
+          & .\publish\Il2CppDumper.Diff\Il2CppDumper.Diff.exe --help
+          if ($LASTEXITCODE -ne 0) {
+            throw "Smoke test failed for Il2CppDumper.Diff.exe --help"
+          }
+
+      - name: Package Il2CppDumper.Diff (win-x64)
+        shell: pwsh
+        run: |
+          $zipName = "dist/Il2CppDumper-Diff-${{ needs.resolve.outputs.tag }}-win-x64.zip"
+          Compress-Archive -Path publish/Il2CppDumper.Diff/* -DestinationPath $zipName
+          # Verify extracted package
+          Expand-Archive -Path $zipName -DestinationPath test-extract-diff
+          $testOut = & .\test-extract-diff\Il2CppDumper.Diff.exe --version
+          if ($LASTEXITCODE -ne 0) { throw "Verification of extracted diff zip failed" }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-packages
+          path: dist/*
+          retention-days: 1
+
+  build-linux:
+    name: Build Linux x64 Packages
+    needs: [resolve, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout target commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit_sha }}
+          fetch-depth: 0
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish Il2CppDumper (linux-x64)
+        run: |
+          dotnet publish Il2CppDumper/Il2CppDumper.csproj \
+            -c Release \
+            -f net8.0 \
+            -r linux-x64 \
+            --self-contained true \
+            -p:PublishSingleFile=false \
+            -p:PublishTrimmed=false \
+            -p:Version="${{ needs.resolve.outputs.clean_version }}" \
+            -p:AssemblyVersion="${{ needs.resolve.outputs.assembly_version }}" \
+            -p:FileVersion="${{ needs.resolve.outputs.assembly_version }}" \
+            -p:InformationalVersion="${{ needs.resolve.outputs.informational_version }}" \
+            -o publish/Il2CppDumper
+          cp LICENSE publish/Il2CppDumper/LICENSE
+          chmod +x publish/Il2CppDumper/Il2CppDumper
+
+      - name: Smoke test Il2CppDumper (linux-x64)
+        run: |
+          ./publish/Il2CppDumper/Il2CppDumper --version
+          ./publish/Il2CppDumper/Il2CppDumper --help
+
+      - name: Package Il2CppDumper (linux-x64)
+        run: |
+          mkdir -p dist
+          tar -czvf "dist/Il2CppDumper-${{ needs.resolve.outputs.tag }}-linux-x64.tar.gz" -C publish/Il2CppDumper .
+          # Verify extracted package
+          mkdir test-extract-dumper
+          tar -xzvf "dist/Il2CppDumper-${{ needs.resolve.outputs.tag }}-linux-x64.tar.gz" -C test-extract-dumper
+          ./test-extract-dumper/Il2CppDumper --version
+
+      - name: Publish Il2CppDumper.Diff (linux-x64)
+        run: |
+          dotnet publish Il2CppDumper.Diff/Il2CppDumper.Diff.csproj \
+            -c Release \
+            -f net8.0 \
+            -r linux-x64 \
+            --self-contained true \
+            -p:PublishSingleFile=false \
+            -p:PublishTrimmed=false \
+            -p:Version="${{ needs.resolve.outputs.clean_version }}" \
+            -p:AssemblyVersion="${{ needs.resolve.outputs.assembly_version }}" \
+            -p:FileVersion="${{ needs.resolve.outputs.assembly_version }}" \
+            -p:InformationalVersion="${{ needs.resolve.outputs.informational_version }}" \
+            -o publish/Il2CppDumper.Diff
+          cp LICENSE publish/Il2CppDumper.Diff/LICENSE
+          chmod +x publish/Il2CppDumper.Diff/Il2CppDumper.Diff
+
+      - name: Smoke test Il2CppDumper.Diff (linux-x64)
+        run: |
+          ./publish/Il2CppDumper.Diff/Il2CppDumper.Diff --version
+          ./publish/Il2CppDumper.Diff/Il2CppDumper.Diff --help
+
+      - name: Package Il2CppDumper.Diff (linux-x64)
+        run: |
+          tar -czvf "dist/Il2CppDumper-Diff-${{ needs.resolve.outputs.tag }}-linux-x64.tar.gz" -C publish/Il2CppDumper.Diff .
+          # Verify extracted package
+          mkdir test-extract-diff
+          tar -xzvf "dist/Il2CppDumper-Diff-${{ needs.resolve.outputs.tag }}-linux-x64.tar.gz" -C test-extract-diff
+          ./test-extract-diff/Il2CppDumper.Diff --version
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: dist/*
+          retention-days: 1
+
+  release:
+    name: Publish GitHub Release
+    needs: [resolve, test, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout target commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit_sha }}
+          fetch-depth: 0
+
+      - name: Download all built packages
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded
+
+      - name: Consolidate packages and generate SHA256SUMS
+        id: prep
+        run: |
+          mkdir -p dist
+          cp downloaded/win-packages/* dist/
+          cp downloaded/linux-packages/* dist/
+
+          cd dist
+          sha256sum Il2CppDumper-*.zip Il2CppDumper-*.tar.gz > SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+          cd ..
+
+          TAG="${{ needs.resolve.outputs.tag }}"
+          COMMIT_SHA="${{ needs.resolve.outputs.commit_sha }}"
+          DATE="$(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          echo "date=$DATE" >> $GITHUB_OUTPUT
+
+      - name: Generate release notes
+        run: |
+          TAG="${{ steps.prep.outputs.tag }}"
+          COMMIT_SHA="${{ steps.prep.outputs.commit_sha }}"
+          DATE="${{ steps.prep.outputs.date }}"
+          CHECKSUMS="$(cat dist/SHA256SUMS.txt)"
+
+          cat <<EOF > release-notes.md
+          ## Il2CppDumper ${TAG}
+
+          **Commit:** \`${COMMIT_SHA}\`  
+          **Built at:** ${DATE}  
+
+          ### Packages
+          Self-contained standalone binaries for Windows x64 and Linux x64. Ready to execute after extraction without installing the .NET SDK or runtime.
+
+          | Package | Target Platform | Description |
+          |---|---|---|
+          | \`Il2CppDumper-${TAG}-win-x64.zip\` | Windows x64 | Main CLI dumper with Python IDA/Ghidra scripts, default \`config.json\`, and license |
+          | \`Il2CppDumper-${TAG}-linux-x64.tar.gz\` | Linux x64 | Main CLI dumper for Linux with Python scripts, default \`config.json\`, and executable permissions preserved |
+          | \`Il2CppDumper-Diff-${TAG}-win-x64.zip\` | Windows x64 | Standalone diff and struct field-offset drift analysis CLI tool |
+          | \`Il2CppDumper-Diff-${TAG}-linux-x64.tar.gz\` | Linux x64 | Standalone diff and struct field-offset drift analysis CLI tool for Linux |
+          | \`SHA256SUMS.txt\` | All | Cryptographic SHA-256 verification checksums for all release archives |
+
+          ### Quick Start
+          - **Windows**:
+            1. Download and extract \`Il2CppDumper-${TAG}-win-x64.zip\`.
+            2. Run: \`Il2CppDumper.exe <executable-file> <global-metadata.dat> <output-directory>\`
+          - **Linux**:
+            1. Download and extract \`Il2CppDumper-${TAG}-linux-x64.tar.gz\`: \`tar -xzvf Il2CppDumper-${TAG}-linux-x64.tar.gz\`
+            2. Verify execution permission: \`chmod +x Il2CppDumper\`
+            3. Run: \`./Il2CppDumper <executable-file> <global-metadata.dat> <output-directory>\`
+
+          ### Key Capabilities in this Fork
+          - **Batch Processing Mode** (\`--batch <batch.json>\`): Execute multi-target extraction runs in a single process with pre-validation, output isolation, and aggregate \`batch-result.json\`.
+          - **Protection Diagnostics** (\`GenerateProtectionReport\`): Pre-analysis side-channel (\`protection-report.json\`) reporting Shannon section entropy ($\ge 7.20$), generic packer signatures (\`UPX\`, \`.themida\`, \`.vmp0\`, \`PELOCK\`, etc.), pointer redirection heuristics, and metadata integrity.
+          - **Native Attach & Bookmarks Stubs**: Generate Frida 17+ glue stubs (\`frida_stubs.js\`) and neutral disassembly bookmarks (\`bookmarks.json\`).
+          - **Run Manifest**: Comprehensive audit manifest (\`run-manifest.json\`) cataloging tool version, commit, inputs, configuration, and produced files.
+          - **Dump Diff & Field Offset Drift**: Inspect differences across builds and detect native struct field-offset drift with \`Il2CppDumper.Diff\`.
+          - **Experimental Metadata Support**: Experimental parsing and dump recovery for newer Unity/IL2CPP metadata versions (including v35/v38/v39 Unity 6000.x).
+
+          > **Note:** Newer metadata versions and protection bypasses are experimental and validated on selective targets. Game-specific adaptations may require custom source modifications.
+
+          ### SHA-256 Checksums
+          \`\`\`
+          ${CHECKSUMS}
+          \`\`\`
+          EOF
+
+      - name: Verify release status and publish assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.prep.outputs.tag }}"
+          COMMIT_SHA="${{ steps.prep.outputs.commit_sha }}"
+          IS_DRAFT="${{ needs.resolve.outputs.draft }}"
+          IS_PRERELEASE="${{ needs.resolve.outputs.prerelease }}"
+
+          # Fetch remote tags to ensure full reference visibility for verification
+          git fetch --tags --force origin 2>/dev/null || true
+
+          # 1. Anti-collision check on remote git tag if present
+          REMOTE_TAG_SHA=$(git ls-remote --tags origin "refs/tags/${TAG}^{}" | awk '{print $1}')
+          if [ -z "$REMOTE_TAG_SHA" ]; then
+            REMOTE_TAG_SHA=$(git ls-remote --tags origin "refs/tags/${TAG}" | awk '{print $1}')
+          fi
+
+          if [ -n "$REMOTE_TAG_SHA" ] && [ "$REMOTE_TAG_SHA" != "$COMMIT_SHA" ]; then
+            echo "Error: Tag ${TAG} already exists on remote pointing to commit ${REMOTE_TAG_SHA}, while current build commit is ${COMMIT_SHA}. Refusing to overwrite existing tag reference." >&2
+            exit 1
+          fi
+
+          # 2. Check if a GitHub release already exists for this tag
+          EXISTING_JSON=$(gh release view "$TAG" --json isDraft,targetCommitish 2>/dev/null || echo "")
+
+          if [ -n "$EXISTING_JSON" ]; then
+            IS_EXISTING_DRAFT=$(echo "$EXISTING_JSON" | jq -r '.isDraft')
+            if [ "$IS_EXISTING_DRAFT" = "false" ]; then
+              # R2: Refuse to mutate or overwrite assets on an already-published release
+              echo "Error: Release for tag ${TAG} is already published. Refusing to overwrite assets of an existing published release." >&2
+              exit 1
+            fi
+
+            # R1: Check effective target of existing draft release
+            EXISTING_TARGET=$(echo "$EXISTING_JSON" | jq -r '.targetCommitish // empty')
+            if [ -n "$EXISTING_TARGET" ]; then
+              if git rev-parse -q --verify "${EXISTING_TARGET}^{commit}" >/dev/null 2>&1; then
+                EFFECTIVE_DRAFT_SHA="$(git rev-parse "${EXISTING_TARGET}^{commit}")"
+              elif git rev-parse -q --verify "${EXISTING_TARGET}" >/dev/null 2>&1; then
+                EFFECTIVE_DRAFT_SHA="$(git rev-parse "${EXISTING_TARGET}")"
+              else
+                EFFECTIVE_DRAFT_SHA="$EXISTING_TARGET"
+              fi
+
+              if [ "$EFFECTIVE_DRAFT_SHA" != "$COMMIT_SHA" ] && [ "$EXISTING_TARGET" != "$COMMIT_SHA" ]; then
+                echo "Error: Draft release for ${TAG} targets commit '${EXISTING_TARGET}' (resolved: '${EFFECTIVE_DRAFT_SHA}'), while current build commit is '${COMMIT_SHA}'. Refusing to overwrite assets of a draft targeting a different commit." >&2
+                exit 1
+              fi
+            fi
+
+            echo "Existing draft release found for ${TAG} targeting matching commit ${COMMIT_SHA}. Uploading and refreshing assets..."
+            gh release upload "$TAG" dist/* --clobber
+          else
+            echo "Creating initial draft release for ${TAG}..."
+            gh release create "$TAG" dist/* \
+              --title "Il2CppDumper ${TAG}" \
+              --notes-file release-notes.md \
+              --draft \
+              --target "$COMMIT_SHA"
+          fi
+
+          # 3. Verify that all 5 assets are present on the release before finalizing state
+          ASSET_COUNT=$(gh release view "$TAG" --json assets -q '.assets | length')
+          if [ "$ASSET_COUNT" -lt 5 ]; then
+            echo "Error: Release asset verification failed. Expected at least 5 assets, found ${ASSET_COUNT}." >&2
+            exit 1
+          fi
+
+          # 4. Update release notes, target commitish, and apply final draft / prerelease states atomically after assets are confirmed
+          EDIT_ARGS=("--title" "Il2CppDumper ${TAG}" "--notes-file" "release-notes.md" "--target" "$COMMIT_SHA")
+          if [ "$IS_DRAFT" = "false" ]; then
+            EDIT_ARGS+=("--draft=false")
+          else
+            EDIT_ARGS+=("--draft")
+          fi
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            EDIT_ARGS+=("--prerelease")
+          else
+            EDIT_ARGS+=("--prerelease=false")
+          fi
+
+          gh release edit "$TAG" "${EDIT_ARGS[@]}"

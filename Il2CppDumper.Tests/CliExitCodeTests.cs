@@ -499,5 +499,46 @@ namespace Il2CppDumper.Tests
                 }
             }
         }
+
+        [Fact]
+        public void Cli_VersionAndHelpFlags_ExitZeroWithoutInteractivePrompt()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "cli-ver-help-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var appDir = SetupIsolatedApp(tempDir);
+
+                // 1. --version flag
+                var (verExit, verOut, verErr) = RunCli(appDir, "--version");
+                Assert.Equal(0, verExit);
+                Assert.Contains("Il2CppDumper", verOut);
+                Assert.Empty(verErr);
+
+                // 2. -v flag
+                var (shortVerExit, shortVerOut, _) = RunCli(appDir, "-v");
+                Assert.Equal(0, shortVerExit);
+                Assert.Contains("Il2CppDumper", shortVerOut);
+
+                // 3. --help flag
+                var (helpExit, helpOut, helpErr) = RunCli(appDir, "--help");
+                Assert.Equal(0, helpExit);
+                Assert.Contains("usage:", helpOut);
+                Assert.Contains("--version", helpOut);
+                Assert.Empty(helpErr);
+
+                // 4. -h flag
+                var (shortHelpExit, shortHelpOut, _) = RunCli(appDir, "-h");
+                Assert.Equal(0, shortHelpExit);
+                Assert.Contains("usage:", shortHelpOut);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
     }
 }
