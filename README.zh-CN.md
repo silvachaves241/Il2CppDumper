@@ -183,6 +183,24 @@ else
 
 **Português:** Arquivo de manifesto operacional de execução (`run-manifest.json`, chave `GenerateRunManifest`, padrão `true`), gravado ao final de cada execução (sucesso ou falha). Registra `tool` (`name`, `version`), `startedAt` (ISO-8601 UTC), `durationMs`, `success`, `effectiveConfig` (snapshot das configurações efetivas aplicadas), `counts` (`types`, `methods`, `fields`, `properties`, `attributes`, `attributesFailed`, `stringLiterals`), `warnings` (`total`, `byCategory` com `attributeDecode`, `stringLiteral` e `stringDecryptor`) e a lista determinística de `outputs` (`path`, `sha256`, `bytes`). Em execuções com falha, o manifesto é gravado com `success: false` e dados parciais, preservando a semântica de código de saída.
 
+#### protection-report.json
+
+预分析防护诊断报告（`GenerateProtectionReport`，默认值为 `true`），在转储分析前作为辅助侧信道生成。该诊断 pass 解释受保护或被混淆目标失败的根本原因，绝不会阻塞转储流程或更改转储行为。包含的诊断词汇（`findings`）：
+- `HighEntropySection`：当二进制节的香农熵（Shannon entropy，0.00 至 8.00 bits/byte 尺度）达到或超过 `7.20` 时触发，指示加密、加壳或压缩的代码/数据。
+- `PackerSectionSignature`：节名称匹配通用加壳器特征列表（`UPX0`、`UPX1`、`UPX2`、`.aspack`、`.adata`、`.mpress1`、`.mpress2`、`.themida`、`.vmp0`、`.vmp1`、`.pack`、`PELOCK`）。
+- `RedirectionHeuristic`：检测重定位表剥离、虚拟尺寸与原始尺寸严重不匹配或动态初始化标记（`DT_INIT`、`.init_proc`、`LC_ENCRYPTION_INFO`），指示潜在的指针重定向。
+- `MetadataSanity`：对 `global-metadata.dat` 的 magic（`0xFAB11BAF`）与版本范围（16 至 31）进行预检，输出 `ok: true` 或 `ok: false`。
+
+修复建议字符串仅引用现有的有效配置项（`NoRedirectedPointer=true`、`ForceDump=true`、`ForceIl2CppVersion=true`、`ForceVersion=<version>`）。当 `GenerateProtectionReport` 设置为 `false` 时，不会写入该文件。
+
+**Português:** Relatório de diagnóstico de proteção pré-análise (`protection-report.json`, chave `GenerateProtectionReport`, padrão `true`), gerado como canal auxiliar antes da tentativa de dump. O diagnóstico esclarece o motivo pelo qual alvos protegidos ou ofuscados falham, sem alterar o fluxo do dump nem bloquear o processo. Vocabulário de achados (`findings`):
+- `HighEntropySection`: Acionado quando a entropia da seção atinge ou supera `7.20` na escala de Shannon (0.00 a 8.00 bits por byte), indicando código/dados compactados, criptografados ou empacotados.
+- `PackerSectionSignature`: Nome de seção compatível com assinaturas genéricas de packers (`UPX0`, `UPX1`, `UPX2`, `.aspack`, `.adata`, `.mpress1`, `.mpress2`, `.themida`, `.vmp0`, `.vmp1`, `.pack`, `PELOCK`).
+- `RedirectionHeuristic`: Identifica remoção de realocações, discrepâncias entre tamanho virtual e dados brutos, ou tags dinâmicas (`DT_INIT`, `.init_proc`, `LC_ENCRYPTION_INFO`) indicando redirecionamento de ponteiros.
+- `MetadataSanity`: Valida o cabeçalho do `global-metadata.dat` quanto ao magic (`0xFAB11BAF`) e faixa de versões suportadas (16 a 31), emitindo `ok: true` ou `ok: false`.
+
+Orientações de remediação recomendam opções de configuração existentes (`NoRedirectedPointer=true`, `ForceDump=true`, `ForceIl2CppVersion=true`, `ForceVersion=<version>`). Se `GenerateProtectionReport` for `false`, nenhum arquivo é gerado.
+
 #### frida_stubs.js
 
 用于 Frida 的原生附加桩代码生成（`EmitFridaScript`，默认值为 `false`）。生成确定性、纯静态的方法桩代码，使用 `script.json` 中的地址并在运行时基于模块基地址解析，并在存在 `dump.json` 时整合类型签名（降级路径下省略 `"sig"` 且不报错）。生成的代码不包含 `eval` 或远程网络请求。
@@ -369,8 +387,8 @@ Il2CppDumper.Diff --drift <left> <right> <output>
 * `DumpMethod`，`DumpField`，`DumpProperty`，`DumpAttribute`，`DumpFieldOffset`, `DumpMethodOffset`, `DumpTypeDefIndex`
   * 是否在dump.cs输出相应的内容（`DumpProperty` 和 `DumpAttribute` 默认值为 `true`）
 
-* `GenerateDummyDll`，`GenerateStruct`，`GenerateJsonDump`，`GenerateRunManifest`
-  * 是否生成这些内容（`GenerateStruct` 控制 `StructGenerator` 输出的内容：`script.json`、`stringliteral.json`、`stringliteral-indexed.json` 和 `il2cpp.h`；`GenerateJsonDump` 控制 `dump.json` 输出，默认值为 `false`；`GenerateRunManifest` 控制运行状态清单 `run-manifest.json` 的输出，默认值为 `true`）
+* `GenerateDummyDll`，`GenerateStruct`，`GenerateJsonDump`，`GenerateRunManifest`，`GenerateProtectionReport`
+  * 是否生成这些内容（`GenerateStruct` 控制 `StructGenerator` 输出的内容：`script.json`、`stringliteral.json`、`stringliteral-indexed.json` 和 `il2cpp.h`；`GenerateJsonDump` 控制 `dump.json` 输出，默认值为 `false`；`GenerateRunManifest` 控制运行状态清单 `run-manifest.json` 的输出，默认值为 `true`；`GenerateProtectionReport` 控制预分析诊断报告 `protection-report.json` 的输出，默认值为 `true`）
 
 * `DummyDllAddToken`
   * 是否在DummyDll中添加token
