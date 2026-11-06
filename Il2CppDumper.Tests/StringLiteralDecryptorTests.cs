@@ -557,6 +557,95 @@ namespace Il2CppDumper.Tests
             Assert.Null(records[0].decryptor);
         }
 
+        /// <summary>
+        /// Regression C4 (Partial Execution):
+        /// When StructGenerator fails early (e.g. I/O write error on stringliteral.json),
+        /// decryptor warnings already accumulated during metadata usage processing
+        /// are preserved in run-manifest.json warnings.byCategory.stringDecryptor and total,
+        /// while preserving Success = false.
+        /// </summary>
+        [Fact]
+        public void Regression_C4_PartialExecution_IoFailureInStructGenerator_PreservesDecryptorWarningInManifest()
+        {
+            var metadataBytes = SyntheticMetadataGenerator.Generate(MetadataVersionFamily.V35, seed: 42);
+            var outDir = CreateTempDir();
+
+            // Pre-create a directory named "stringliteral.json" to trigger deterministic I/O write failure
+            Directory.CreateDirectory(Path.Combine(outDir, "stringliteral.json"));
+
+            // Create synthetic binary containing a string literal metadata usage token pointing to index 0
+            var ilBytes = new byte[4096];
+            var token = ((uint)Il2CppMetadataUsage.kIl2CppMetadataUsageStringLiteral << 29) | (0u << 1) + 1;
+            BitConverter.GetBytes(token).CopyTo(ilBytes, 1024);
+
+            var sectionHelper = new SectionHelper(new WebAssemblyMemory(new MemoryStream(new byte[16]), 0), 0, 0, 0, 0);
+            sectionHelper.SetSection(SearchSectionType.Data, new SearchSection { offset = 1024, offsetEnd = 2048 });
+
+            using var il2cpp = new TestIl2CppWithUsage(new MemoryStream(ilBytes), sectionHelper);
+            using var metadata = new Metadata(new MemoryStream(metadataBytes))
+            {
+                StringDecryptor = new FaultyDecryptor(throwOnIndex: 0)
+            };
+
+            var config = new Config
+            {
+                GenerateStruct = true,
+                GenerateRunManifest = true
+            };
+
+            var warnings = new List<string>();
+            bool success;
+            RunManifestCounts counts;
+            RunManifestWarnings manifestWarnings;
+            List<string> writtenFiles;
+
+            using (CoreLogger.Scope(TextWriter.Null, warnings))
+            {
+                success = Dumper.ExecuteDump(
+                    metadata,
+                    il2cpp,
+                    config,
+                    outDir,
+                    out var errorMessage,
+                    out counts,
+                    out manifestWarnings,
+                    out writtenFiles);
+            }
+
+            // Dump fails because stringliteral.json could not be written (destination is an existing directory)
+            Assert.False(success);
+            Assert.Equal(1, metadata.StringDecryptorFailedCount);
+            Assert.Equal(1, manifestWarnings.ByCategory.StringDecryptor);
+            Assert.Equal(1, manifestWarnings.Total);
+            Assert.Equal(0, manifestWarnings.ByCategory.StringLiteral);
+
+            // Write and deserialize run-manifest.json to assert persistence on partial/failed execution
+            var manifest = RunManifestWriter.Write(
+                outDir,
+                config,
+                DateTime.UtcNow,
+                100,
+                success,
+                counts,
+                manifestWarnings,
+                writtenFiles);
+
+            Assert.NotNull(manifest);
+            Assert.False(manifest.Success);
+            Assert.Equal(1, manifest.Warnings.Total);
+            Assert.Equal(1, manifest.Warnings.ByCategory.StringDecryptor);
+            Assert.Equal(0, manifest.Warnings.ByCategory.StringLiteral);
+
+            var manifestPath = Path.Combine(outDir, "run-manifest.json");
+            Assert.True(File.Exists(manifestPath));
+            var reloaded = JsonSerializer.Deserialize<RunManifest>(File.ReadAllText(manifestPath));
+            Assert.NotNull(reloaded);
+            Assert.False(reloaded!.Success);
+            Assert.Equal(1, reloaded.Warnings.Total);
+            Assert.Equal(1, reloaded.Warnings.ByCategory.StringDecryptor);
+            Assert.Equal(0, reloaded.Warnings.ByCategory.StringLiteral);
+        }
+
         private sealed class FaultyIdDecryptor : IStringLiteralDecryptor
         {
             public string Id => throw new InvalidOperationException("Exploding Id getter fault");

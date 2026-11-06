@@ -508,13 +508,9 @@ namespace Il2CppDumper.Core
                     {
                         counts.StringLiterals = scriptGenerator.StringLiteralsCount;
                         manifestWarnings.ByCategory.StringLiteral = scriptGenerator.StringLiteralsFailedCount;
-                        manifestWarnings.ByCategory.StringDecryptor = scriptGenerator.StringDecryptorFailedCount;
                         writtenFiles.AddRange(scriptGenerator.WrittenFiles);
                     }
-                    else
-                    {
-                        manifestWarnings.ByCategory.StringDecryptor = metadata.StringDecryptorFailedCount;
-                    }
+                    manifestWarnings.ByCategory.StringDecryptor = metadata.StringDecryptorFailedCount;
                 }
             }
             if (config.GenerateDummyDll)
