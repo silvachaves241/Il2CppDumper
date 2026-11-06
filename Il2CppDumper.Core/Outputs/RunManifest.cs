@@ -87,6 +87,9 @@ namespace Il2CppDumper
 
         [JsonPropertyName("stringLiteral")]
         public int StringLiteral { get; set; }
+
+        [JsonPropertyName("outputHash")]
+        public int OutputHash { get; set; }
     }
 
     public class RunManifestOutput
@@ -121,7 +124,7 @@ namespace Il2CppDumper
             };
         }
 
-        public static List<RunManifestOutput> CollectOutputs(string outputDir, IEnumerable<string>? producedFiles = null)
+        public static List<RunManifestOutput> CollectOutputs(string outputDir, IEnumerable<string>? producedFiles = null, RunManifestWarnings? warnings = null)
         {
             var list = new List<RunManifestOutput>();
             if (string.IsNullOrEmpty(outputDir) || !Directory.Exists(outputDir))
@@ -205,6 +208,11 @@ namespace Il2CppDumper
                 catch (Exception ex)
                 {
                     CoreLogger.WriteLine($"WARNING: Could not hash output file '{relPath}': {ex.Message}");
+                    if (warnings != null)
+                    {
+                        warnings.ByCategory.OutputHash++;
+                        warnings.Total++;
+                    }
                 }
             }
 
@@ -222,7 +230,8 @@ namespace Il2CppDumper
             string outputDir,
             IEnumerable<string>? producedFiles = null)
         {
-            var outputs = CollectOutputs(outputDir, producedFiles);
+            var manifestWarnings = warnings ?? new RunManifestWarnings();
+            var outputs = CollectOutputs(outputDir, producedFiles, manifestWarnings);
             return new RunManifest
             {
                 Tool = GetToolInfo(),
@@ -231,7 +240,7 @@ namespace Il2CppDumper
                 Success = success,
                 EffectiveConfig = config ?? new Config(),
                 Counts = counts ?? new RunManifestCounts(),
-                Warnings = warnings ?? new RunManifestWarnings(),
+                Warnings = manifestWarnings,
                 Outputs = outputs
             };
         }

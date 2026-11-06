@@ -135,6 +135,7 @@ namespace Il2CppDumper.Core
                             try
                             {
                                 DumpMetadataWriter.WriteInitial(outputDir, il2cppPath, metadataPath, config);
+                                writtenFiles.Add(Path.Combine(outputDir, DumpMetadataWriter.FileName));
                             }
                             catch
                             {
@@ -502,8 +503,8 @@ namespace Il2CppDumper.Core
                 CoreLogger.WriteLine("Generate dummy dll...");
                 try
                 {
-                    var dummyFiles = DummyAssemblyExporter.Export(executor, outputDir, config.DummyDllAddToken);
-                    writtenFiles.AddRange(dummyFiles);
+                    DummyAssemblyExporter.Export(executor, outputDir, config.DummyDllAddToken, writtenFiles);
+
                     CoreLogger.WriteLine("Done!");
                 }
                 catch (Exception e)
@@ -547,7 +548,6 @@ namespace Il2CppDumper.Core
             var candidates = new[]
             {
                 DumpMetadataWriter.FileName,
-                RunManifestWriter.FileName,
                 "dump.cs",
                 "dump.json",
                 "script.json",

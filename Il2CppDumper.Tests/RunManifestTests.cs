@@ -767,5 +767,218 @@ namespace Il2CppDumper.Tests
                 }
             }
         }
+
+        [Fact]
+        public void Regression_R1_CliMetadataInvalid_DoesNotIncludeStaleFiles()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "manifest_regr_r1_cli_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var appDir = SetupIsolatedApp(tempDir, cfg =>
+                {
+                    cfg.GenerateRunManifest = true;
+                    cfg.GenerateJsonDump = false;
+                    cfg.GenerateDummyDll = false;
+                    cfg.GenerateStruct = false;
+                });
+
+                var fixturesDir = Path.Combine(tempDir, "fixtures");
+                Directory.CreateDirectory(fixturesDir);
+                var (wasmPath, _) = CreateSyntheticFixtures(fixturesDir);
+
+                // Create invalid metadata
+                var badMetaPath = Path.Combine(fixturesDir, "bad_meta.dat");
+                File.WriteAllBytes(badMetaPath, new byte[] { 0x01, 0x02, 0x03, 0x04 });
+
+                var outDir = Path.Combine(tempDir, "out");
+                Directory.CreateDirectory(outDir);
+
+                // Stale files
+                File.WriteAllText(Path.Combine(outDir, "dump.json"), "{\"stale\": true}");
+                var staleDllDir = Path.Combine(outDir, "DummyDll");
+                Directory.CreateDirectory(staleDllDir);
+                File.WriteAllText(Path.Combine(staleDllDir, "old.dll"), "stale-dll");
+
+                var exePath = Path.Combine(appDir, "Il2CppDumper.exe");
+                var psi = new ProcessStartInfo
+                {
+                    FileName = exePath,
+                    Arguments = $"\"{wasmPath}\" \"{badMetaPath}\" \"{outDir}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WorkingDirectory = appDir
+                };
+
+                using var proc = Process.Start(psi)!;
+                proc.WaitForExit(15000);
+                Assert.Equal(1, proc.ExitCode);
+
+                var manifestPath = Path.Combine(outDir, "run-manifest.json");
+                Assert.True(File.Exists(manifestPath));
+                var manifest = JsonSerializer.Deserialize<RunManifest>(File.ReadAllText(manifestPath))!;
+                Assert.False(manifest.Success);
+
+                // Must not include stale files
+                Assert.DoesNotContain(manifest.Outputs, o => o.Path == "dump.json");
+                Assert.DoesNotContain(manifest.Outputs, o => o.Path.Contains("old.dll"));
+
+                // Must include dump-metadata.json
+                Assert.Contains(manifest.Outputs, o => o.Path == "dump-metadata.json");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void Regression_R2_LockedPriorManifest_IsNotPublishedInOutputs()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "manifest_regr_r2_locked_manifest_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var fixturesDir = Path.Combine(tempDir, "fixtures");
+                Directory.CreateDirectory(fixturesDir);
+                var (wasmPath, metaPath) = CreateSyntheticFixtures(fixturesDir);
+
+                var outDir = Path.Combine(tempDir, "out");
+                Directory.CreateDirectory(outDir);
+
+                // Pre-create old manifest with past startedAt
+                var oldManifest = new RunManifest
+                {
+                    StartedAt = "2000-01-01T00:00:00Z",
+                    Success = true
+                };
+                var manifestFile = Path.Combine(outDir, "run-manifest.json");
+                File.WriteAllText(manifestFile, JsonSerializer.Serialize(oldManifest));
+
+                // Lock it with FileShare.Read so delete and overwrite fail
+                using var fs = new FileStream(manifestFile, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+                var req = new DumpRequest
+                {
+                    ExecutablePath = wasmPath,
+                    MetadataPath = metaPath,
+                    OutputDirectory = outDir,
+                    Config = new Config
+                    {
+                        GenerateRunManifest = true,
+                        GenerateJsonDump = false,
+                        GenerateDummyDll = false,
+                        GenerateStruct = false
+                    }
+                };
+
+                var result = Dumper.Dump(req);
+                Assert.True(result.Success);
+                Assert.False(result.Outputs.ContainsKey("run-manifest.json"));
+                Assert.Contains(result.Warnings, w => w.Contains("Failed to emit run manifest"));
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void Regression_R3_InvalidMetadataHeader_IncludesSidecarInManifestOutputs()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "manifest_regr_r3_invalid_header_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var fixturesDir = Path.Combine(tempDir, "fixtures");
+                Directory.CreateDirectory(fixturesDir);
+                var (wasmPath, _) = CreateSyntheticFixtures(fixturesDir);
+
+                var badMetaPath = Path.Combine(fixturesDir, "bad_header.dat");
+                File.WriteAllBytes(badMetaPath, new byte[] { 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x00, 0x00 });
+
+                var outDir = Path.Combine(tempDir, "out");
+                Directory.CreateDirectory(outDir);
+
+                var req = new DumpRequest
+                {
+                    ExecutablePath = wasmPath,
+                    MetadataPath = badMetaPath,
+                    OutputDirectory = outDir,
+                    Config = new Config
+                    {
+                        GenerateRunManifest = true
+                    }
+                };
+
+                var result = Dumper.Dump(req);
+                Assert.False(result.Success);
+
+                var manifestPath = Path.Combine(outDir, "run-manifest.json");
+                Assert.True(File.Exists(manifestPath));
+                var manifest = JsonSerializer.Deserialize<RunManifest>(File.ReadAllText(manifestPath))!;
+                Assert.False(manifest.Success);
+
+                // dump-metadata.json must be present in manifest.Outputs
+                Assert.Contains(manifest.Outputs, o => o.Path == "dump-metadata.json");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void Regression_R4_LockedOutputFile_PersistsOutputHashWarningInManifest()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "manifest_regr_r4_hash_warning_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var file1 = Path.Combine(tempDir, "file1.txt");
+                File.WriteAllText(file1, "content1");
+                var file2 = Path.Combine(tempDir, "file2.txt");
+                File.WriteAllText(file2, "content2");
+
+                using var locked = new FileStream(file1, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+                var manifest = RunManifestWriter.Write(
+                    tempDir,
+                    new Config { GenerateRunManifest = true },
+                    DateTime.UtcNow,
+                    10,
+                    true,
+                    new RunManifestCounts(),
+                    new RunManifestWarnings(),
+                    new[] { file1, file2 }
+                );
+
+                Assert.NotNull(manifest);
+                Assert.True(manifest.Warnings.ByCategory.OutputHash >= 1);
+                Assert.True(manifest.Warnings.Total >= 1);
+
+                var reloaded = JsonSerializer.Deserialize<RunManifest>(File.ReadAllText(Path.Combine(tempDir, "run-manifest.json")))!;
+                Assert.True(reloaded.Warnings.ByCategory.OutputHash >= 1);
+                Assert.True(reloaded.Warnings.Total >= 1);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
 }
 }
