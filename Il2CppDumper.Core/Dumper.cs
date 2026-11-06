@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 
 namespace Il2CppDumper.Core
 {
@@ -187,7 +188,7 @@ namespace Il2CppDumper.Core
                         return new DumpResult(false, "ERROR: An error occurred while processing.", warnings, outputs);
                     }
 
-                    var dumpSuccess = ExecuteDump(metadata, il2Cpp, config, outputDir, out var dumpError, out counts, out manifestWarnings, out var execWrittenFiles);
+                    var dumpSuccess = ExecuteDump(metadata, il2Cpp, config, outputDir, out var dumpError, out counts, out manifestWarnings, out var execWrittenFiles, Path.GetFileName(request.ExecutablePath));
                     writtenFiles.AddRange(execWrittenFiles);
                     WriteRunManifest(dumpSuccess);
                     PopulateOutputs(outputDir, outputs);
@@ -442,7 +443,8 @@ namespace Il2CppDumper.Core
             out string? errorMessage,
             out RunManifestCounts counts,
             out RunManifestWarnings manifestWarnings,
-            out List<string> writtenFiles)
+            out List<string> writtenFiles,
+            string? moduleName = null)
         {
             if (!outputDir.EndsWith(Path.DirectorySeparatorChar.ToString()) && !outputDir.EndsWith(Path.AltDirectorySeparatorChar.ToString()))
             {
@@ -531,6 +533,55 @@ namespace Il2CppDumper.Core
                 }
             }
 
+            if (config.EmitFridaScript || config.EmitBookmarks)
+            {
+                var scriptJson = scriptGenerator?.ScriptJson;
+                if (scriptJson == null)
+                {
+                    CoreLogger.WriteLine("WARNING: Native attach emitters skipped: script.json was not generated in the current execution.");
+                }
+                else
+                {
+                    var dumpModel = decompiler?.DumpModel;
+
+                    if (config.EmitFridaScript)
+                    {
+                        CoreLogger.WriteLine("Generate frida stubs...");
+                        try
+                        {
+                            var fridaPath = FridaScriptGenerator.Write(outputDir, scriptJson, dumpModel, moduleName);
+                            writtenFiles.Add(fridaPath);
+                            CoreLogger.WriteLine("Done!");
+                        }
+                        catch (Exception e)
+                        {
+                            CoreLogger.WriteLine(e);
+                            CoreLogger.WriteLine("ERROR: Some errors in generating frida stubs");
+                            errors.Add("ERROR: Some errors in generating frida stubs");
+                            success = false;
+                        }
+                    }
+
+                    if (config.EmitBookmarks)
+                    {
+                        CoreLogger.WriteLine("Generate bookmarks...");
+                        try
+                        {
+                            var bookmarksPath = BookmarksGenerator.Write(outputDir, scriptJson);
+                            writtenFiles.Add(bookmarksPath);
+                            CoreLogger.WriteLine("Done!");
+                        }
+                        catch (Exception e)
+                        {
+                            CoreLogger.WriteLine(e);
+                            CoreLogger.WriteLine("ERROR: Some errors in generating bookmarks");
+                            errors.Add("ERROR: Some errors in generating bookmarks");
+                            success = false;
+                        }
+                    }
+                }
+            }
+
             manifestWarnings.Total = manifestWarnings.ByCategory.AttributeDecode + manifestWarnings.ByCategory.StringLiteral + manifestWarnings.ByCategory.StringDecryptor;
             errorMessage = errors.Count > 0 ? string.Join(Environment.NewLine, errors) : null;
             return success;
@@ -569,6 +620,8 @@ namespace Il2CppDumper.Core
                 "stringliteral.json",
                 "stringliteral-indexed.json",
                 "il2cpp.h",
+                "frida_stubs.js",
+                "bookmarks.json",
                 "DummyDll"
             };
 
@@ -604,7 +657,9 @@ namespace Il2CppDumper.Core
                 ForceDump = source.ForceDump,
                 NoRedirectedPointer = source.NoRedirectedPointer,
                 StringDecryptor = source.StringDecryptor,
-                StringDecryptorKey = source.StringDecryptorKey
+                StringDecryptorKey = source.StringDecryptorKey,
+                EmitFridaScript = source.EmitFridaScript,
+                EmitBookmarks = source.EmitBookmarks
             };
         }
     }

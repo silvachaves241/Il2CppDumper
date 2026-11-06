@@ -37,6 +37,7 @@ namespace Il2CppDumper
         public int StringLiteralsFailedCount { get; private set; }
         public int StringDecryptorFailedCount => metadata.StringDecryptorFailedCount;
         public List<string> WrittenFiles { get; } = new();
+        public ScriptJson ScriptJson { get; private set; }
 
         public StructGenerator(Il2CppExecutor il2CppExecutor)
         {
@@ -48,6 +49,7 @@ namespace Il2CppDumper
         public void WriteScript(string outputDir)
         {
             var json = new ScriptJson();
+            ScriptJson = json;
             // 生成唯一名称
             for (var imageIndex = 0; imageIndex < metadata.imageDefs.Length; imageIndex++)
             {

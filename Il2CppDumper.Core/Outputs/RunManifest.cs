@@ -173,7 +173,9 @@ namespace Il2CppDumper
                     "script.json",
                     "stringliteral.json",
                     "stringliteral-indexed.json",
-                    "il2cpp.h"
+                    "il2cpp.h",
+                    "frida_stubs.js",
+                    "bookmarks.json"
                 };
 
                 foreach (var name in knownNames)
