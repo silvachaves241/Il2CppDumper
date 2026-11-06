@@ -196,6 +196,7 @@ namespace Il2CppDumper.Tests
                 "GenerateDummyDll",
                 "GenerateStruct",
                 "GenerateJsonDump",
+                "GenerateRunManifest",
                 "DummyDllAddToken",
                 "RequireAnyKey",
                 "ForceIl2CppVersion",
@@ -230,6 +231,7 @@ namespace Il2CppDumper.Tests
                 "GenerateDummyDll",
                 "GenerateStruct",
                 "GenerateJsonDump",
+                "GenerateRunManifest",
                 "DummyDllAddToken",
                 "RequireAnyKey",
                 "ForceIl2CppVersion",
@@ -567,6 +569,88 @@ namespace Il2CppDumper.Tests
             Assert.Equal("shifted", parsed.structs[0].fields[0].drift);
             Assert.Equal("mp", parsed.structs[0].fields[1].name);
             Assert.Equal("removed", parsed.structs[0].fields[1].drift);
+        }
+        [Fact]
+        public void Config_DefaultConstructor_HasGenerateRunManifestTrueByDefault()
+        {
+            var config = new Config();
+            Assert.True(config.GenerateRunManifest);
+        }
+
+        [Fact]
+        public void Config_DeserializingEmptyJson_ProducesTrueForGenerateRunManifest()
+        {
+            var config = JsonSerializer.Deserialize<Config>("{}");
+            Assert.NotNull(config);
+            Assert.True(config.GenerateRunManifest);
+        }
+
+        [Fact]
+        public void Config_DeserializingGenerateRunManifestTrue_EnablesGenerationGate()
+        {
+            const string json = "{\"GenerateRunManifest\": true}";
+            var config = JsonSerializer.Deserialize<Config>(json);
+            Assert.NotNull(config);
+            Assert.True(config.GenerateRunManifest);
+        }
+
+        [Fact]
+        public void Config_DeserializingGenerateRunManifestFalse_DisablesGenerationGate()
+        {
+            const string json = "{\"GenerateRunManifest\": false}";
+            var config = JsonSerializer.Deserialize<Config>(json);
+            Assert.NotNull(config);
+            Assert.False(config.GenerateRunManifest);
+        }
+
+        [Fact]
+        public void Config_ShippedConfigJson_AlignsWithCodeDefaultsForGenerateRunManifest()
+        {
+            var repoRoot = FindRepoRoot();
+            var configJsonPath = Path.Combine(repoRoot, "Il2CppDumper", "config.json");
+            Assert.True(File.Exists(configJsonPath), $"Expected config.json at {configJsonPath}");
+
+            var json = File.ReadAllText(configJsonPath);
+            var shippedConfig = JsonSerializer.Deserialize<Config>(json);
+            var codeDefaultConfig = new Config();
+
+            Assert.NotNull(shippedConfig);
+            Assert.True(shippedConfig.GenerateRunManifest);
+            Assert.Equal(codeDefaultConfig.GenerateRunManifest, shippedConfig.GenerateRunManifest);
+        }
+
+        [Fact]
+        public void Readme_English_DocumentsRunManifestJson_WithPortugueseSection()
+        {
+            var repoRoot = FindRepoRoot();
+            var readmePath = Path.Combine(repoRoot, "README.md");
+            var content = File.ReadAllText(readmePath);
+
+            Assert.Contains("#### run-manifest.json", content);
+            Assert.Contains("`GenerateRunManifest`", content);
+            Assert.Contains("`effectiveConfig`", content);
+            Assert.Contains("`counts`", content);
+            Assert.Contains("`warnings`", content);
+            Assert.Contains("`outputs`", content);
+            Assert.Contains("**Português:**", content);
+            Assert.Contains("manifesto operacional de execução", content);
+        }
+
+        [Fact]
+        public void Readme_Chinese_DocumentsRunManifestJson_WithPortugueseSection()
+        {
+            var repoRoot = FindRepoRoot();
+            var readmePath = Path.Combine(repoRoot, "README.zh-CN.md");
+            var content = File.ReadAllText(readmePath);
+
+            Assert.Contains("#### run-manifest.json", content);
+            Assert.Contains("`GenerateRunManifest`", content);
+            Assert.Contains("`effectiveConfig`", content);
+            Assert.Contains("`counts`", content);
+            Assert.Contains("`warnings`", content);
+            Assert.Contains("`outputs`", content);
+            Assert.Contains("**Português:**", content);
+            Assert.Contains("manifesto operacional de execução", content);
         }
     }
 }

@@ -29,9 +29,14 @@ namespace Il2CppDumper
         private readonly Il2Cpp il2Cpp;
         private readonly Dictionary<Il2CppMethodDefinition, string> methodModifiers;
         public DecompilerLogger log { get; set; } = new();
+        public int TypesCount { get; private set; }
+        public int MethodsCount { get; private set; }
+        public int FieldsCount { get; private set; }
+        public int PropertiesCount { get; private set; }
         public long CustomAttributeWrittenCount { get; private set; }
         public long CustomAttributeFailedCount { get; private set; }
         public string ErrorMessage { get; private set; }
+        public List<string> WrittenFiles { get; } = new();
 
         public Il2CppDecompiler(Il2CppExecutor il2CppExecutor)
         {
@@ -44,9 +49,16 @@ namespace Il2CppDumper
         public bool Decompile(Config config, string outputDir)
         {
             var success = true;
+            TypesCount = 0;
+            MethodsCount = 0;
+            FieldsCount = 0;
+            PropertiesCount = 0;
             CustomAttributeWrittenCount = 0;
             CustomAttributeFailedCount = 0;
-            var writer = new StreamWriter(new FileStream(outputDir + "dump.cs", FileMode.Create), new UTF8Encoding(false));
+            WrittenFiles.Clear();
+            var dumpCsPath = Path.Combine(outputDir, "dump.cs");
+            var writer = new StreamWriter(new FileStream(dumpCsPath, FileMode.Create), new UTF8Encoding(false));
+            WrittenFiles.Add(dumpCsPath);
             //dump image
             for (var imageIndex = 0; imageIndex < metadata.imageDefs.Length; imageIndex++)
             {
@@ -132,6 +144,7 @@ namespace Il2CppDumper
                             writer.Write($" // TypeDefIndex: {typeDefIndex}\n{{");
                         else
                             writer.Write("\n{");
+                        TypesCount++;
                         //dump field
                         if (config.DumpField && typeDef.field_count > 0)
                         {
@@ -218,6 +231,7 @@ namespace Il2CppDumper
                                     writer.Write("; // 0x{0:X}\n", il2Cpp.GetFieldOffsetFromIndex(typeDefIndex, i - typeDef.fieldStart, i, typeDef.IsValueType, isStatic));
                                 else
                                     writer.Write(";\n");
+                                FieldsCount++;
                             }
                         }
                         //dump property
@@ -261,6 +275,7 @@ namespace Il2CppDumper
                                     writer.Write("set; ");
                                 writer.Write("}");
                                 writer.Write("\n");
+                                PropertiesCount++;
                             }
                         }
                         //dump method
@@ -383,6 +398,7 @@ namespace Il2CppDumper
                                 {
                                     writer.Write(") { }\n");
                                 }
+                                MethodsCount++;
 
                                 if (il2Cpp.methodDefinitionMethodSpecs.TryGetValue(i, out var methodSpecs))
                                 {
@@ -434,6 +450,7 @@ namespace Il2CppDumper
                 try
                 {
                     JsonDumpGenerator.Write(outputDir, this, executor, config);
+                    WrittenFiles.Add(Path.Combine(outputDir, "dump.json"));
                 }
                 catch (Exception e)
                 {
@@ -467,6 +484,8 @@ namespace Il2CppDumper
                         var typeIndex = metadata.attributeTypes[attributeTypeRange.start + i];
                         var attrStr = $"[{executor.GetTypeName(il2Cpp.types[typeIndex], false, false)}] // RVA: 0x{fixedMethodPointer:X} Offset: 0x{il2Cpp.MapVATR(methodPointer):X} VA: 0x{methodPointer:X}";
                         result.Add(attrStr);
+                        if (countMetrics && CustomAttributeWrittenCount < long.MaxValue)
+                            CustomAttributeWrittenCount++;
                     }
                     return result;
                 }
