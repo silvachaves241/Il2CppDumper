@@ -21,11 +21,71 @@ namespace Il2CppDumper
             string outputDir = null;
 
             var argList = args.ToList();
-            if (argList.Remove("--output-json"))
+            if (argList.RemoveAll(a => a.Equals("--output-json", StringComparison.OrdinalIgnoreCase)) > 0)
             {
                 config.GenerateJsonDump = true;
-                args = argList.ToArray();
             }
+            if (argList.RemoveAll(a => a.Equals("--stop-on-first-error", StringComparison.OrdinalIgnoreCase)) > 0)
+            {
+                config.StopOnFirstError = true;
+            }
+
+            bool batchMode = false;
+            string batchFilePath = null;
+            for (int i = 0; i < argList.Count; i++)
+            {
+                var a = argList[i];
+                if (a.Equals("--batch", StringComparison.OrdinalIgnoreCase))
+                {
+                    batchMode = true;
+                    argList.RemoveAt(i);
+                    if (i < argList.Count && !argList[i].StartsWith("--"))
+                    {
+                        batchFilePath = argList[i];
+                        argList.RemoveAt(i);
+                    }
+                    break;
+                }
+                if (a.StartsWith("--batch=", StringComparison.OrdinalIgnoreCase))
+                {
+                    batchMode = true;
+                    batchFilePath = a.Substring("--batch=".Length);
+                    argList.RemoveAt(i);
+                    break;
+                }
+            }
+
+            if (!batchMode && config.BatchMode)
+            {
+                if (argList.Count == 1 && (File.Exists(argList[0]) || argList[0].EndsWith(".json", StringComparison.OrdinalIgnoreCase)))
+                {
+                    batchMode = true;
+                    batchFilePath = argList[0];
+                    argList.RemoveAt(0);
+                }
+                else if (argList.Count == 0 && File.Exists("batch.json"))
+                {
+                    batchMode = true;
+                    batchFilePath = "batch.json";
+                }
+            }
+
+            if (batchMode)
+            {
+                if (string.IsNullOrWhiteSpace(batchFilePath))
+                {
+                    Console.Error.WriteLine("ERROR: Missing batch file path for --batch.");
+                    Environment.ExitCode = 2;
+                    return 2;
+                }
+
+                string customResultPath = argList.FirstOrDefault();
+                var batchRunResult = BatchProcessor.RunBatch(batchFilePath, config, Console.Out, Console.Error, customResultPath);
+                Environment.ExitCode = batchRunResult.ExitCode;
+                return batchRunResult.ExitCode;
+            }
+
+            args = argList.ToArray();
 
             if (args.Length == 1)
             {
@@ -257,6 +317,7 @@ namespace Il2CppDumper
         static void ShowHelp()
         {
             Console.WriteLine($"usage: {AppDomain.CurrentDomain.FriendlyName} <executable-file> <global-metadata> <output-directory> [--output-json]");
+            Console.WriteLine($"       {AppDomain.CurrentDomain.FriendlyName} --batch <batch-file> [--stop-on-first-error] [--output-json]");
         }
 
         private static bool Init(string il2cppPath, string metadataPath, out Metadata metadata, out Il2Cpp il2Cpp, string outputDir = null, DumpMetadata dumpMetadata = null)

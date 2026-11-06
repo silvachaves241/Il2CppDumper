@@ -25,7 +25,7 @@ namespace Il2CppDumper
         private readonly List<ulong> genericClassList = new();
         private readonly StringBuilder arrayClassHeader = new();
         private readonly StringBuilder methodInfoHeader = new();
-        private static readonly HashSet<ulong> methodInfoCache = new();
+        private readonly HashSet<ulong> methodInfoCache = new();
         private const long MaxGenericArgumentCount = 1024;
         private static readonly HashSet<string> keyword = new(StringComparer.Ordinal)
         { "klass", "monitor", "register", "_cs", "auto", "friend", "template", "flat", "default", "_ds", "interrupt",

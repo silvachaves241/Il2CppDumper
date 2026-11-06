@@ -24,5 +24,7 @@ namespace Il2CppDumper
         public string? StringDecryptorKey { get; set; } = null;
         public bool EmitFridaScript { get; set; } = false;
         public bool EmitBookmarks { get; set; } = false;
+        public bool BatchMode { get; set; } = false;
+        public bool StopOnFirstError { get; set; } = false;
     }
 }

@@ -754,5 +754,53 @@ namespace Il2CppDumper.Tests
             Assert.Contains("\"category\": \"method\"", content);
             Assert.Contains("**Português:**", content);
         }
+
+        [Fact]
+        public void Config_ShippedConfigJson_AlignsWithCodeDefaultsForBatchMode()
+        {
+            var repoRoot = FindRepoRoot();
+            var configJsonPath = Path.Combine(repoRoot, "Il2CppDumper", "config.json");
+            Assert.True(File.Exists(configJsonPath), $"Expected config.json at {configJsonPath}");
+
+            var json = File.ReadAllText(configJsonPath);
+            var shippedConfig = JsonSerializer.Deserialize<Config>(json);
+            var codeDefaultConfig = new Config();
+
+            Assert.NotNull(shippedConfig);
+            Assert.False(shippedConfig.BatchMode);
+            Assert.False(shippedConfig.StopOnFirstError);
+            Assert.Equal(codeDefaultConfig.BatchMode, shippedConfig.BatchMode);
+            Assert.Equal(codeDefaultConfig.StopOnFirstError, shippedConfig.StopOnFirstError);
+        }
+
+        [Fact]
+        public void Readme_English_DocumentsBatchMode_AndStopOnFirstError()
+        {
+            var repoRoot = FindRepoRoot();
+            var readmePath = Path.Combine(repoRoot, "README.md");
+            var content = File.ReadAllText(readmePath);
+
+            Assert.Contains("--batch <batch-file.json>", content);
+            Assert.Contains("#### Batch Mode (`--batch <file>`)", content);
+            Assert.Contains("batch-result.json", content);
+            Assert.Contains("`BatchMode`, `StopOnFirstError`", content);
+            Assert.Contains("**Português:**", content);
+            Assert.Contains("Processamento em lote orientado a arquivo", content);
+        }
+
+        [Fact]
+        public void Readme_Chinese_DocumentsBatchMode_AndStopOnFirstError()
+        {
+            var repoRoot = FindRepoRoot();
+            var readmePath = Path.Combine(repoRoot, "README.zh-CN.md");
+            var content = File.ReadAllText(readmePath);
+
+            Assert.Contains("--batch <batch-file.json>", content);
+            Assert.Contains("#### 批处理模式（Batch Mode, `--batch <file>`）", content);
+            Assert.Contains("batch-result.json", content);
+            Assert.Contains("`BatchMode`, `StopOnFirstError`", content);
+            Assert.Contains("**Português:**", content);
+            Assert.Contains("Processamento em lote orientado a arquivo", content);
+        }
     }
 }

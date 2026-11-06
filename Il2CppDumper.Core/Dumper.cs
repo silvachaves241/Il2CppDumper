@@ -93,7 +93,9 @@ namespace Il2CppDumper.Core
                         );
                         if (manifest != null)
                         {
-                            outputs["run-manifest.json"] = Path.Combine(outputDir, RunManifestWriter.FileName);
+                            var manifestPath = Path.Combine(outputDir, RunManifestWriter.FileName);
+                            outputs["run-manifest.json"] = manifestPath;
+                            writtenFiles.Add(manifestPath);
                         }
                     }
                     catch (Exception ex)
@@ -197,7 +199,8 @@ namespace Il2CppDumper.Core
                         dumpSuccess,
                         dumpSuccess ? null : dumpError ?? "ERROR: An error occurred while processing.",
                         warnings,
-                        outputs
+                        outputs,
+                        writtenFiles.Where(File.Exists).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
                     );
                 }
                 catch (Exception e)
@@ -635,7 +638,7 @@ namespace Il2CppDumper.Core
             }
         }
 
-        private static Config CloneConfig(Config source)
+        internal static Config CloneConfig(Config source)
         {
             return new Config
             {
@@ -659,7 +662,9 @@ namespace Il2CppDumper.Core
                 StringDecryptor = source.StringDecryptor,
                 StringDecryptorKey = source.StringDecryptorKey,
                 EmitFridaScript = source.EmitFridaScript,
-                EmitBookmarks = source.EmitBookmarks
+                EmitBookmarks = source.EmitBookmarks,
+                BatchMode = source.BatchMode,
+                StopOnFirstError = source.StopOnFirstError
             };
         }
     }
