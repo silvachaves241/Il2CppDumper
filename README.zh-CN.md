@@ -1,6 +1,6 @@
 # Il2CppDumper
 
-[![Build status](https://ci.appveyor.com/api/projects/status/anhqw33vcpmp8ofa?svg=true)](https://ci.appveyor.com/project/Perfare/il2cppdumper/branch/master/artifacts)
+[![GitHub Release](https://img.shields.io/github/v/release/silvachaves241/Il2CppDumper?include_prereleases&label=release)](https://github.com/silvachaves241/Il2CppDumper/releases)
 [![CI](https://github.com/silvachaves241/Il2CppDumper/actions/workflows/dotnet.yml/badge.svg)](https://github.com/silvachaves241/Il2CppDumper/actions/workflows/dotnet.yml)
 
 Unity il2cpp逆向工程
@@ -10,6 +10,33 @@ Unity il2cpp逆向工程
 此 Fork 针对 Unity/IL2CPP 高版本 metadata 做了实验性适配，包括 Unity 6000.x 使用的 v35/v38/v39。当前主要改动包括高版本 metadata 解析、方法地址恢复、DummyDll 生成修复，以及高版本 `il2cpp.h` 生成。
 
 高版本适配只在少量游戏上做过自测。不同 Unity 版本、平台、项目配置和保护方式都会影响 dump 结果。如果遇到无法 dump 的游戏，需要自行调试并修改源码适配。本项目不承诺对每个游戏或每个保护壳做一一适配。
+
+## 发布与下载 (Releases & Downloads)
+
+可在本 Fork 的 [Releases 页面](https://github.com/silvachaves241/Il2CppDumper/releases) 下载适用于 Windows x64 和 Linux x64 的独立自包含（self-contained）安装包，无需在系统中预先安装 .NET SDK 或 Runtime。
+
+### 发布产物
+- **`Il2CppDumper-<version>-win-x64.zip`**：包含主 dump 工具、IDA/Ghidra Python 脚本、`config.json` 与许可证的 Windows x64 独立运行包。
+- **`Il2CppDumper-<version>-linux-x64.tar.gz`**：包含完整可执行权限的 Linux x64 独立运行包。
+- **`Il2CppDumper-Diff-<version>-win-x64.zip`**：Windows x64 独立 Diff 与结构体偏移漂移分析工具。
+- **`Il2CppDumper-Diff-<version>-linux-x64.tar.gz`**：Linux x64 独立 Diff 与结构体偏移漂移分析工具。
+- **`SHA256SUMS.txt`**：用于校验所有发布压缩包完整性的 SHA-256 校验和清单。
+
+### 运行方式
+- **Windows**：
+  ```cmd
+  Il2CppDumper.exe <executable-file> <global-metadata.dat> <output-directory>
+  ```
+- **Linux**：
+  ```bash
+  tar -xzvf Il2CppDumper-v0.1.0-linux-x64.tar.gz
+  chmod +x Il2CppDumper
+  ./Il2CppDumper <executable-file> <global-metadata.dat> <output-directory>
+  ```
+
+### 版本规范与发布维护
+- **版本规范**：Fork 采用语义化版本标签，格式为 `vX.Y.Z`（例如 `v0.1.0`）。
+- **自动化工作流**：推送 `v*` 标签或通过 GitHub Actions 手动触发 `.github/workflows/release.yml`，系统会在原生 Windows 和 Linux 运行环境中完成全量测试、自包含编译、解压冒烟测试，并自动生成带有精确 commit SHA 与校验和的 GitHub Release。
 
 ## 定位
 

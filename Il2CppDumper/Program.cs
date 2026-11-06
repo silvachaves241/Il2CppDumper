@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using Il2CppDumper.Core;
@@ -14,7 +15,26 @@ namespace Il2CppDumper
         [STAThread]
         static int Main(string[] args)
         {
-            config = JsonSerializer.Deserialize<Config>(File.ReadAllText(AppDomain.CurrentDomain.BaseDirectory + @"config.json"));
+            if (args.Length == 1)
+            {
+                if (args[0] == "-h" || args[0] == "--help" || args[0] == "/?" || args[0] == "/h")
+                {
+                    ShowHelp();
+                    return 0;
+                }
+                if (args[0] == "-v" || args[0] == "--version")
+                {
+                    ShowVersion();
+                    return 0;
+                }
+            }
+
+            var configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
+            if (File.Exists(configPath))
+            {
+                config = JsonSerializer.Deserialize<Config>(File.ReadAllText(configPath));
+            }
+            config ??= new Config();
             string il2cppPath = null;
             string metadataPath = null;
             string candidateMetadataPath = null;
@@ -314,10 +334,20 @@ namespace Il2CppDumper
             }
         }
 
+        static void ShowVersion()
+        {
+            var version = typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+                ?? typeof(Program).Assembly.GetName().Version?.ToString()
+                ?? "0.1.0";
+            Console.WriteLine($"Il2CppDumper {version}");
+        }
+
         static void ShowHelp()
         {
             Console.WriteLine($"usage: {AppDomain.CurrentDomain.FriendlyName} <executable-file> <global-metadata> <output-directory> [--output-json]");
             Console.WriteLine($"       {AppDomain.CurrentDomain.FriendlyName} --batch <batch-file> [--stop-on-first-error] [--output-json]");
+            Console.WriteLine($"       {AppDomain.CurrentDomain.FriendlyName} --help | -h");
+            Console.WriteLine($"       {AppDomain.CurrentDomain.FriendlyName} --version | -v");
         }
 
         private static bool Init(string il2cppPath, string metadataPath, out Metadata metadata, out Il2Cpp il2Cpp, string outputDir = null, DumpMetadata dumpMetadata = null)
