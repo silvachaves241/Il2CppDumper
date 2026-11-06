@@ -1,4 +1,5 @@
-﻿using System;
+﻿#nullable enable
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -11,6 +12,14 @@ namespace Il2CppDumper
     {
         public Metadata metadata;
         public Il2Cpp il2Cpp;
+        private readonly HashSet<int> constantDecodeFailedIndices = new();
+
+        /// <summary>Number of distinct default-value entries that failed to decode into a constant.</summary>
+        public int ConstantDecodeFailedCount => constantDecodeFailedIndices.Count;
+
+        /// <summary>Diagnostic details (byte, position, entry identity) of the first constant decode failure, if any.</summary>
+        public string? ConstantDecodeFirstFailureDetails { get; private set; }
+
         private static readonly Dictionary<int, string> TypeString = new()
         {
             {1,"void"},
@@ -344,16 +353,24 @@ namespace Il2CppDumper
             var pointer = metadata.GetDefaultValueFromIndex(dataIndex);
             var defaultValueType = il2Cpp.types[typeIndex];
             metadata.Position = pointer;
-            if (GetConstantValueFromBlob(defaultValueType.type, metadata.Reader, out var blobValue))
+            try
             {
-                value = blobValue.Value;
-                return true;
+                if (GetConstantValueFromBlob(defaultValueType.type, metadata.Reader, out var blobValue))
+                {
+                    value = blobValue.Value;
+                    return true;
+                }
             }
-            else
+            catch (InvalidCompressedIntegerException e)
             {
-                value = pointer;
-                return false;
+                if (constantDecodeFailedIndices.Add(dataIndex))
+                {
+                    ConstantDecodeFirstFailureDetails ??=
+                        $"type 0x{(int)defaultValueType.type:X}, dataIndex {dataIndex}, pointer 0x{pointer:X}: {e.Message}";
+                }
             }
+            value = pointer;
+            return false;
         }
 
         public bool GetConstantValueFromBlob(Il2CppTypeEnum type, BinaryReader reader, out BlobValue value)

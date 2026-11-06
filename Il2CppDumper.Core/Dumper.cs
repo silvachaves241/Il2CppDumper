@@ -513,6 +513,11 @@ namespace Il2CppDumper.Core
             counts.Attributes = decompiler.CustomAttributeWrittenCount;
             counts.AttributesFailed = decompiler.CustomAttributeFailedCount;
             manifestWarnings.ByCategory.AttributeDecode = (int)decompiler.CustomAttributeFailedCount;
+            manifestWarnings.ByCategory.ConstantDecode = executor.ConstantDecodeFailedCount;
+            if (executor.ConstantDecodeFailedCount > 0)
+            {
+                CoreLogger.LogWarning($"WARNING: Constant default value decoding completed with {executor.ConstantDecodeFailedCount} failure(s) taking the metadata-offset fallback path. First failure: {executor.ConstantDecodeFirstFailureDetails}");
+            }
 
 
             StructGenerator? scriptGenerator = null;
@@ -610,7 +615,7 @@ namespace Il2CppDumper.Core
                 }
             }
 
-            manifestWarnings.Total = manifestWarnings.ByCategory.AttributeDecode + manifestWarnings.ByCategory.StringLiteral + manifestWarnings.ByCategory.StringDecryptor;
+            manifestWarnings.Total = manifestWarnings.ByCategory.AttributeDecode + manifestWarnings.ByCategory.StringLiteral + manifestWarnings.ByCategory.StringDecryptor + manifestWarnings.ByCategory.ConstantDecode;
             errorMessage = errors.Count > 0 ? string.Join(Environment.NewLine, errors) : null;
             return success;
         }
