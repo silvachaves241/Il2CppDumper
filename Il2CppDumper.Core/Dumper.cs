@@ -508,7 +508,12 @@ namespace Il2CppDumper.Core
                     {
                         counts.StringLiterals = scriptGenerator.StringLiteralsCount;
                         manifestWarnings.ByCategory.StringLiteral = scriptGenerator.StringLiteralsFailedCount;
+                        manifestWarnings.ByCategory.StringDecryptor = scriptGenerator.StringDecryptorFailedCount;
                         writtenFiles.AddRange(scriptGenerator.WrittenFiles);
+                    }
+                    else
+                    {
+                        manifestWarnings.ByCategory.StringDecryptor = metadata.StringDecryptorFailedCount;
                     }
                 }
             }
@@ -530,7 +535,7 @@ namespace Il2CppDumper.Core
                 }
             }
 
-            manifestWarnings.Total = manifestWarnings.ByCategory.AttributeDecode + manifestWarnings.ByCategory.StringLiteral;
+            manifestWarnings.Total = manifestWarnings.ByCategory.AttributeDecode + manifestWarnings.ByCategory.StringLiteral + manifestWarnings.ByCategory.StringDecryptor;
             errorMessage = errors.Count > 0 ? string.Join(Environment.NewLine, errors) : null;
             return success;
         }

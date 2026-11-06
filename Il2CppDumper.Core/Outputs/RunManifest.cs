@@ -88,6 +88,9 @@ namespace Il2CppDumper
         [JsonPropertyName("stringLiteral")]
         public int StringLiteral { get; set; }
 
+        [JsonPropertyName("stringDecryptor")]
+        public int StringDecryptor { get; set; }
+
         [JsonPropertyName("outputHash")]
         public int OutputHash { get; set; }
     }

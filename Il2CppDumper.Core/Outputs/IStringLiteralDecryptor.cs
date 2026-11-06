@@ -190,28 +190,32 @@ namespace Il2CppDumper
             }
 
             var trimmed = decryptorSpec.Trim();
-            var colonIdx = trimmed.IndexOf(':');
-            string name;
-            string? param = fallbackKey;
 
+            // Prioritize exact match for registered full spec or instance ID (resolves C3)
+            if (Factories.TryGetValue(trimmed, out var exactFactory))
+            {
+                return exactFactory(fallbackKey);
+            }
+
+            // Parse scheme name and embedded parameter; explicit embedded parameter prevails over fallbackKey (resolves C2)
+            string name;
+            string? param;
+            var colonIdx = trimmed.IndexOf(':');
             if (colonIdx >= 0)
             {
-                name = trimmed.Substring(0, colonIdx);
-                param ??= trimmed.Substring(colonIdx + 1);
+                name = trimmed.Substring(0, colonIdx).Trim();
+                var explicitParam = trimmed.Substring(colonIdx + 1).Trim();
+                param = explicitParam.Length > 0 ? explicitParam : fallbackKey;
             }
             else
             {
                 name = trimmed;
+                param = fallbackKey;
             }
 
             if (Factories.TryGetValue(name, out var factory))
             {
                 return factory(param);
-            }
-
-            if (Factories.TryGetValue(trimmed, out var fullFactory))
-            {
-                return fullFactory(param);
             }
 
             throw new KeyNotFoundException($"No string literal decryptor registered with name '{name}' (spec: '{decryptorSpec}').");

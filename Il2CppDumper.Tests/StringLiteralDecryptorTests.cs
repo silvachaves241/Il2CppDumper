@@ -370,6 +370,213 @@ namespace Il2CppDumper.Tests
             }
         }
 
+        /// <summary>
+        /// Regression C1:
+        /// An exception in the Id getter is contained safely without escaping:
+        /// raw fallback is preserved, warning is logged with index, and full Core dump succeeds.
+        /// </summary>
+        [Fact]
+        public void Regression_C1_IdGetterException_ContainedWithRawFallback_AndSuccessExitCode()
+        {
+            var rawText = "HelloSynthetic";
+            var rawBytes = Encoding.UTF8.GetBytes(rawText);
+            var rawBase64 = Convert.ToBase64String(rawBytes);
+
+            var metadataBytes = SyntheticMetadataGenerator.Generate(MetadataVersionFamily.V35, seed: 42);
+            using var metadata = new Metadata(new MemoryStream(metadataBytes));
+            var (_, il2cpp, _) = SyntheticEnvironment.Create(MetadataVersionFamily.V35, seed: 42);
+
+            metadata.StringDecryptor = new FaultyIdDecryptor();
+
+            var warnings = new List<string>();
+            using (CoreLogger.Scope(TextWriter.Null, warnings))
+            {
+                // Direct call emits raw value and logs warning without throwing unhandled exception
+                var val = metadata.GetStringLiteralFromIndex(0);
+                Assert.Equal(rawText, val);
+                Assert.Contains(warnings, w => w.Contains("index 0") && w.Contains("Exploding Id getter fault"));
+            }
+
+            // Real Core dump execution succeeds, emits raw fallback, and generates stringliteral-indexed.json
+            var outDir = CreateTempDir();
+            var config = new Config { GenerateStruct = true };
+            var success = Dumper.ExecuteDump(metadata, il2cpp, config, outDir, out var errorMessage);
+            Assert.True(success, $"Expected Success=true but got error: {errorMessage}");
+
+            var indexedPath = Path.Combine(outDir, "stringliteral-indexed.json");
+            Assert.True(File.Exists(indexedPath));
+            var indexedJson = File.ReadAllText(indexedPath);
+            var records = JsonSerializer.Deserialize<List<StringLiteralRecord>>(indexedJson);
+            Assert.NotNull(records);
+            Assert.NotEmpty(records);
+            Assert.Equal(rawText, records[0].value);
+            Assert.Equal(rawBase64, records[0].raw);
+            Assert.Null(records[0].decryptor);
+        }
+
+        /// <summary>
+        /// Regression C2:
+        /// Explicit key in specification (e.g. "xor:2b") takes precedence over fallbackKey (e.g. "00").
+        /// </summary>
+        [Fact]
+        public void Regression_C2_ExplicitKeyInSpec_PrevailsOverFallbackKey()
+        {
+            const string expectedPlaintext = "HelloSynthetic";
+
+            // Resolve with conflicting explicit key "2b" and fallback "00"
+            var decryptor = StringLiteralDecryptorRegistry.Resolve("xor:2b", "00");
+            Assert.NotNull(decryptor);
+            Assert.Equal("xor:2b", decryptor!.Id);
+
+            var metadataBytes = SyntheticMetadataGenerator.Generate(
+                MetadataVersionFamily.V35,
+                seed: 42,
+                corruption: MetadataCorruptionType.ObfuscatedStringLiteral);
+
+            var (_, il2cpp, _) = SyntheticEnvironment.Create(MetadataVersionFamily.V35, seed: 42);
+            using var metadata = new Metadata(new MemoryStream(metadataBytes));
+
+            var outDir = CreateTempDir();
+            var config = new Config
+            {
+                StringDecryptor = "xor:2b",
+                StringDecryptorKey = "00",
+                GenerateStruct = true
+            };
+
+            var success = Dumper.ExecuteDump(metadata, il2cpp, config, outDir, out var errorMessage);
+            Assert.True(success, errorMessage);
+
+            var indexedPath = Path.Combine(outDir, "stringliteral-indexed.json");
+            var indexedJson = File.ReadAllText(indexedPath);
+            var records = JsonSerializer.Deserialize<List<StringLiteralRecord>>(indexedJson);
+            Assert.NotNull(records);
+            Assert.NotEmpty(records);
+
+            // Plaintext must be decrypted with 0x2b ("HelloSynthetic"), not corrupted with 0x00 ("cNGGD")
+            Assert.Equal(expectedPlaintext, records[0].value);
+            Assert.Equal("xor:2b", records[0].decryptor);
+        }
+
+        /// <summary>
+        /// Regression C3:
+        /// A registered instance with an Id containing ':' (e.g. "xor:profile") is matched exactly
+        /// and not shadowed by built-in scheme resolution.
+        /// </summary>
+        [Fact]
+        public void Regression_C3_RegisteredInstanceWithColonId_NotShadowedBySchemePrefix()
+        {
+            var customInstance = new ProfileDecryptorWithColonId();
+            StringLiteralDecryptorRegistry.Register(customInstance);
+
+            var resolved = StringLiteralDecryptorRegistry.Resolve("xor:profile");
+            Assert.NotNull(resolved);
+            Assert.Same(customInstance, resolved);
+            Assert.Equal("xor:profile", resolved!.Id);
+
+            var dummyBytes = Encoding.UTF8.GetBytes("test_input");
+            var output = resolved.Decrypt(0, dummyBytes);
+            Assert.Equal("custom_profile_decrypted", output);
+        }
+
+        /// <summary>
+        /// Regression C4:
+        /// String decryptor failure is recorded in run-manifest.json under warnings.byCategory.stringDecryptor
+        /// and summed into warnings.total, while preserving raw fallback and success.
+        /// </summary>
+        [Fact]
+        public void Regression_C4_DecryptorFault_PersistedInRunManifestWarningCategoriesAndTotal()
+        {
+            var rawText = "HelloSynthetic";
+            var rawBytes = Encoding.UTF8.GetBytes(rawText);
+            var rawBase64 = Convert.ToBase64String(rawBytes);
+
+            var metadataBytes = SyntheticMetadataGenerator.Generate(MetadataVersionFamily.V35, seed: 42);
+            var outDir = CreateTempDir();
+            var config = new Config
+            {
+                GenerateStruct = true,
+                GenerateRunManifest = true
+            };
+
+            var (_, il2cpp, _) = SyntheticEnvironment.Create(MetadataVersionFamily.V35, seed: 42);
+            using var metadata = new Metadata(new MemoryStream(metadataBytes))
+            {
+                StringDecryptor = new FaultyDecryptor(throwOnIndex: 0)
+            };
+
+            var success = Dumper.ExecuteDump(
+                metadata,
+                il2cpp,
+                config,
+                outDir,
+                out var errorMessage,
+                out var counts,
+                out var manifestWarnings,
+                out var writtenFiles);
+
+            Assert.True(success, errorMessage);
+            Assert.Equal(1, manifestWarnings.Total);
+            Assert.Equal(1, manifestWarnings.ByCategory.StringDecryptor);
+            Assert.Equal(0, manifestWarnings.ByCategory.StringLiteral);
+            Assert.Equal(0, manifestWarnings.ByCategory.AttributeDecode);
+
+            // Write and deserialize run-manifest.json
+            var manifest = RunManifestWriter.Write(
+                outDir,
+                config,
+                DateTime.UtcNow,
+                100,
+                success,
+                counts,
+                manifestWarnings,
+                writtenFiles);
+
+            Assert.NotNull(manifest);
+            Assert.Equal(1, manifest.Warnings.Total);
+            Assert.Equal(1, manifest.Warnings.ByCategory.StringDecryptor);
+            Assert.Equal(0, manifest.Warnings.ByCategory.StringLiteral);
+
+            var manifestPath = Path.Combine(outDir, "run-manifest.json");
+            Assert.True(File.Exists(manifestPath));
+            var manifestJson = File.ReadAllText(manifestPath);
+            var reloaded = JsonSerializer.Deserialize<RunManifest>(manifestJson);
+            Assert.NotNull(reloaded);
+            Assert.Equal(1, reloaded!.Warnings.Total);
+            Assert.Equal(1, reloaded.Warnings.ByCategory.StringDecryptor);
+            Assert.Equal(0, reloaded.Warnings.ByCategory.StringLiteral);
+
+            // Verify raw fallback in stringliteral-indexed.json
+            var indexedPath = Path.Combine(outDir, "stringliteral-indexed.json");
+            Assert.True(File.Exists(indexedPath));
+            var records = JsonSerializer.Deserialize<List<StringLiteralRecord>>(File.ReadAllText(indexedPath));
+            Assert.NotNull(records);
+            Assert.NotEmpty(records);
+            Assert.Equal(rawText, records[0].value);
+            Assert.Equal(rawBase64, records[0].raw);
+            Assert.Null(records[0].decryptor);
+        }
+
+        private sealed class FaultyIdDecryptor : IStringLiteralDecryptor
+        {
+            public string Id => throw new InvalidOperationException("Exploding Id getter fault");
+
+            public string Decrypt(uint index, byte[] rawBytes)
+            {
+                return Encoding.UTF8.GetString(rawBytes);
+            }
+        }
+
+        private sealed class ProfileDecryptorWithColonId : IStringLiteralDecryptor
+        {
+            public string Id => "xor:profile";
+
+            public string Decrypt(uint index, byte[] rawBytes)
+            {
+                return "custom_profile_decrypted";
+            }
+        }
+
         private sealed class CustomRot13Decryptor : IStringLiteralDecryptor
         {
             public string Id => "rot13";

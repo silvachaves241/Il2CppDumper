@@ -24,6 +24,8 @@ namespace Il2CppDumper
         private readonly Dictionary<Il2CppImageDefinition, Dictionary<uint, int>> attributeTypeRangesDic;
         public Il2CppStringLiteral[] stringLiterals;
         public IStringLiteralDecryptor StringDecryptor { get; set; }
+        private readonly HashSet<uint> stringDecryptorFailedIndices = new();
+        public int StringDecryptorFailedCount => stringDecryptorFailedIndices.Count;
         private readonly Il2CppMetadataUsageList[] metadataUsageLists;
         private readonly Il2CppMetadataUsagePair[] metadataUsagePairs;
         public int[] attributeTypes;
@@ -967,14 +969,28 @@ namespace Il2CppDumper
                 if (StringDecryptor != null)
                 {
                     rawBase64 = Convert.ToBase64String(rawBytes);
+                    string safeId = "<unknown>";
                     try
                     {
-                        value = StringDecryptor.Decrypt(index, rawBytes);
-                        decryptorId = StringDecryptor.Id;
+                        try
+                        {
+                            safeId = StringDecryptor.Id ?? "<unknown>";
+                        }
+                        catch (Exception idEx)
+                        {
+                            throw new InvalidOperationException($"Decryptor Id getter failed: {idEx.Message}", idEx);
+                        }
+
+                        var decrypted = StringDecryptor.Decrypt(index, rawBytes);
+                        value = decrypted;
+                        decryptorId = safeId;
                     }
                     catch (Exception ex)
                     {
-                        CoreLogger.LogWarning($"WARNING: String literal decryptor '{StringDecryptor.Id}' failed at index {index}: {ex.Message}");
+                        if (stringDecryptorFailedIndices.Add(index))
+                        {
+                            CoreLogger.LogWarning($"WARNING: String literal decryptor '{safeId}' failed at index {index}: {ex.Message}");
+                        }
                         value = rawText;
                         decryptorId = null;
                     }
