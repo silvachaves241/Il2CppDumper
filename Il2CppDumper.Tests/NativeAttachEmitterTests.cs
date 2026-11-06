@@ -179,8 +179,8 @@ namespace Il2CppDumper.Tests
 
             // 5. Assert attach helper function
             Assert.Contains("function attach(name, callbacks) {", js1);
-            Assert.Contains("Module.findBaseAddress(\"GameAssembly.dll\")", js1);
-            Assert.Contains("Interceptor.attach(base.add(ptr(method.va)), callbacks)", js1);
+            Assert.Contains("Process.findModuleByName(\"GameAssembly.dll\")", js1);
+            Assert.Contains("Interceptor.attach(mod.base.add(ptr(method.va)), callbacks)", js1);
 
             // 6. Assert emitted JS is strictly static: scan for forbidden dynamic / network mechanisms
             Assert.DoesNotContain("eval", js1, StringComparison.OrdinalIgnoreCase);
@@ -251,7 +251,7 @@ namespace Il2CppDumper.Tests
 
             Assert.NotNull(js);
             Assert.Contains("// module: libil2cpp.so", js);
-            Assert.Contains("Module.findBaseAddress(\"libil2cpp.so\")", js);
+            Assert.Contains("Process.findModuleByName(\"libil2cpp.so\")", js);
 
             // Assert stubs still generated
             Assert.Contains("\"MyGame.Player.TakeDamage\": { \"va\": \"0x1000\" }", js);
@@ -425,6 +425,267 @@ namespace Il2CppDumper.Tests
 
             Assert.Contains("\"Player.Attack\": { \"va\": \"0x1000\" }", js);
             Assert.Contains("\"Player.Attack_0x1050\": { \"va\": \"0x1050\" }", js);
+        }
+
+        [Fact]
+        public void R1_Frida17Api_CompilesAndAttachesInNodeWithProcessFindModuleByName()
+        {
+            var script = CreateSampleScriptJson();
+            var dump = CreateSampleDumpModel();
+            var js = FridaScriptGenerator.Generate(script, dump, "GameAssembly.dll");
+
+            // Verify API surface conforms strictly to Frida 17+
+            Assert.DoesNotContain("Module.findBaseAddress", js);
+            Assert.Contains("Process.findModuleByName(\"GameAssembly.dll\")", js);
+            Assert.Contains("mod.base.add(ptr(method.va))", js);
+
+            // Execute in Node.js with modeled Frida 17 runtime surface
+            var tempJs = Path.Combine(Path.GetTempPath(), "frida17_test_" + Guid.NewGuid().ToString("N") + ".js");
+            var harnessJs = js + @"
+
+const mockProcess = {
+    findModuleByName: (name) => {
+        if (name === ""GameAssembly.dll"") {
+            return {
+                name: ""GameAssembly.dll"",
+                base: {
+                    add: (p) => ""0xBase_"" + p
+                }
+            };
+        }
+        return null;
+    }
+};
+
+const mockInterceptor = {
+    attach: (target, callbacks) => {
+        return { attachedTo: target };
+    }
+};
+
+globalThis.Process = mockProcess;
+globalThis.Interceptor = mockInterceptor;
+globalThis.ptr = (v) => v;
+
+const res = attach(""MyGame.Player.TakeDamage"", {});
+if (!res || res.attachedTo !== ""0xBase_0x1000"") {
+    console.error(""Failed to attach properly:"", res);
+    process.exit(1);
+}
+
+// Verify missing method error
+try {
+    attach(""NonExistent.Method"", {});
+    process.exit(2);
+} catch (e) {
+    if (!e.message.includes(""Method not found: NonExistent.Method"")) {
+        process.exit(3);
+    }
+}
+
+console.log(""R1_SUCCESS"");
+";
+            File.WriteAllText(tempJs, harnessJs);
+            try
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo("node", tempJs)
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false
+                };
+                using var p = System.Diagnostics.Process.Start(psi)!;
+                p.WaitForExit(5000);
+                var stdout = p.StandardOutput.ReadToEnd();
+                Assert.Equal(0, p.ExitCode);
+                Assert.Contains("R1_SUCCESS", stdout);
+            }
+            finally
+            {
+                try { File.Delete(tempJs); } catch { }
+            }
+        }
+
+        [Fact]
+        public void R2_ReusedOutputDirectoryWithStaleJsonResidues_DoesNotConsumeStaleArtifacts()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "emitter_r2_stale_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var fixturesDir = Path.Combine(tempDir, "fixtures");
+                var outDir = Path.Combine(tempDir, "out");
+                Directory.CreateDirectory(fixturesDir);
+                Directory.CreateDirectory(outDir);
+
+                var (wasmPath, metaPath) = CreateSyntheticFixtures(fixturesDir);
+
+                // Plant stale residues from a completely different previous run in outDir
+                var staleScriptPath = Path.Combine(outDir, "script.json");
+                File.WriteAllText(staleScriptPath, JsonSerializer.Serialize(new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Address = 0xDEADBEEF, Name = "Other.Target.Old$$OldMethod" }
+                    }
+                }, new JsonSerializerOptions { IncludeFields = true }));
+
+                var staleDumpPath = Path.Combine(outDir, "dump.json");
+                File.WriteAllText(staleDumpPath, JsonSerializer.Serialize(new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            fullName = "Other.Target.Old",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "OldMethod", returnType = "void", isStatic = true }
+                            }
+                        }
+                    }
+                }));
+
+                // Run with GenerateStruct=false, but EmitFridaScript=true and EmitBookmarks=true
+                var request = new DumpRequest
+                {
+                    ExecutablePath = wasmPath,
+                    MetadataPath = metaPath,
+                    OutputDirectory = outDir,
+                    Config = new Config
+                    {
+                        GenerateRunManifest = true,
+                        GenerateStruct = false, // structs NOT generated in this run!
+                        GenerateJsonDump = false,
+                        GenerateDummyDll = false,
+                        EmitFridaScript = true,
+                        EmitBookmarks = true
+                    }
+                };
+
+                var result = Dumper.Dump(request);
+                Assert.True(result.Success, result.Error);
+
+                // Stale files should NOT be consumed, so neither frida_stubs.js nor bookmarks.json should be created
+                var fridaPath = Path.Combine(outDir, "frida_stubs.js");
+                var bookmarksPath = Path.Combine(outDir, "bookmarks.json");
+                Assert.False(File.Exists(fridaPath), "frida_stubs.js must not be created from stale residues");
+                Assert.False(File.Exists(bookmarksPath), "bookmarks.json must not be created from stale residues");
+                Assert.False(result.Outputs.ContainsKey("frida_stubs.js"));
+                Assert.False(result.Outputs.ContainsKey("bookmarks.json"));
+
+                // Explicit diagnostic warning should be logged
+                Assert.Contains(result.Warnings, w => w.Contains("Native attach emitters skipped: script.json was not generated"));
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void R3_OverloadedMethodsWithSameArityDifferentTypes_OmitsAmbiguousSignatures()
+        {
+            // Overloaded methods with same arity: Set(int) and Set(string)
+            var script = new ScriptJson
+            {
+                ScriptMethod = new List<ScriptMethod>
+                {
+                    new() { Address = 0x1000, Name = "N.Player$$Set" },
+                    new() { Address = 0x1050, Name = "N.Player$$Set" },
+                    new() { Address = 0x2000, Name = "N.Player$$UniqueMethod" }
+                }
+            };
+
+            var dump = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        fullName = "N.Player",
+                        methods = new List<JsonDumpMethod>
+                        {
+                            new()
+                            {
+                                name = "Set",
+                                returnType = "void",
+                                isStatic = false,
+                                parameters = new List<JsonDumpParameter> { new() { name = "val", type = "int" } }
+                            },
+                            new()
+                            {
+                                name = "Set",
+                                returnType = "void",
+                                isStatic = false,
+                                parameters = new List<JsonDumpParameter> { new() { name = "val", type = "string" } }
+                            },
+                            new()
+                            {
+                                name = "UniqueMethod",
+                                returnType = "int",
+                                isStatic = false,
+                                parameters = new List<JsonDumpParameter>()
+                            }
+                        }
+                    }
+                }
+            };
+
+            var js = FridaScriptGenerator.Generate(script, dump, "GameAssembly.dll");
+
+            // Overloaded RVAs must be preserved with address keys
+            Assert.Contains("\"N.Player.Set\": { \"va\": \"0x1000\" }", js);
+            Assert.Contains("\"N.Player.Set_0x1050\": { \"va\": \"0x1050\" }", js);
+
+            // Ambiguous overloads must NOT receive any sig (neither string nor int)
+            var setMatch = Regex.Match(js, @"""N\.Player\.Set""\s*:\s*\{[^}]*\}");
+            Assert.True(setMatch.Success);
+            Assert.DoesNotContain("\"sig\"", setMatch.Value);
+
+            var set2Match = Regex.Match(js, @"""N\.Player\.Set_0x1050""\s*:\s*\{[^}]*\}");
+            Assert.True(set2Match.Success);
+            Assert.DoesNotContain("\"sig\"", set2Match.Value);
+
+            // Unambiguous method receives exact typing signature
+            Assert.Contains("\"N.Player.UniqueMethod\": { \"va\": \"0x2000\", \"sig\": \"int (Player*)\" }", js);
+        }
+
+        [Fact]
+        public void R4_ObfuscatedMethodNamesWithControlCharacters_SerializesValidJsAndPreservesCharacters()
+        {
+            var script = new ScriptJson
+            {
+                ScriptMethod = new List<ScriptMethod>
+                {
+                    new() { Address = 0x1000, Name = "N.Type$$Line\nBreak\t\"Quote\"" }
+                }
+            };
+
+            var js = FridaScriptGenerator.Generate(script, null, "Game\nAssembly.dll");
+
+            // Header comment should have newlines normalized to spaces
+            Assert.Contains("// module: Game Assembly.dll;", js);
+
+            // Generated JS should compile cleanly with node -c
+            var tempJs = Path.Combine(Path.GetTempPath(), "r4_ctrl_" + Guid.NewGuid().ToString("N") + ".js");
+            File.WriteAllText(tempJs, js);
+            try
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo("node", $"-c \"{tempJs}\"")
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false
+                };
+                using var p = System.Diagnostics.Process.Start(psi)!;
+                p.WaitForExit(5000);
+                Assert.Equal(0, p.ExitCode);
+            }
+            finally
+            {
+                try { File.Delete(tempJs); } catch { }
+            }
         }
     }
 }

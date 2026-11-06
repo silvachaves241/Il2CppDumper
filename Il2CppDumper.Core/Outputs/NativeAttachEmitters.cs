@@ -72,90 +72,47 @@ namespace Il2CppDumper
                 var methodsByName = type.methods.GroupBy(m => m.name, StringComparer.Ordinal);
                 foreach (var group in methodsByName)
                 {
-                    var methodName = group.Key;
-                    var methodList = group.ToList();
+                    // R3: Associate signatures only when there is an unambiguous 1:1 match.
+                    // Overloaded methods in structured dump are ambiguous without exact type resolution,
+                    // so we omit sig rather than guessing or picking an incorrect overload.
+                    if (group.Count() != 1)
+                        continue;
 
-                    for (int i = 0; i < methodList.Count; i++)
+                    var method = group.First();
+                    var retType = string.IsNullOrWhiteSpace(method.returnType) ? "void" : method.returnType;
+                    var paramList = new List<string>();
+
+                    if (!method.isStatic)
                     {
-                        var method = methodList[i];
-                        var retType = string.IsNullOrWhiteSpace(method.returnType) ? "void" : method.returnType;
-                        var paramList = new List<string>();
+                        paramList.Add($"{typeShort}*");
+                    }
 
-                        if (!method.isStatic)
+                    if (method.parameters != null)
+                    {
+                        foreach (var p in method.parameters)
                         {
-                            paramList.Add($"{typeShort}*");
-                        }
-
-                        if (method.parameters != null)
-                        {
-                            foreach (var p in method.parameters)
-                            {
-                                var pType = string.IsNullOrWhiteSpace(p.type) ? "void*" : p.type;
-                                paramList.Add(pType);
-                            }
-                        }
-
-                        var sig = $"{retType} ({string.Join(", ", paramList)})";
-                        var paramCount = method.parameters?.Count ?? 0;
-
-                        // Key 1: Type.Method#ParamCount for overload precision
-                        var overloadKey = $"{type.fullName}.{methodName}#{paramCount}";
-                        map[overloadKey] = sig;
-
-                        // Key 2: Type.Method (first method takes precedence for non-overloaded or default lookup)
-                        var baseKey = $"{type.fullName}.{methodName}";
-                        if (!map.ContainsKey(baseKey))
-                        {
-                            map[baseKey] = sig;
+                            var pType = string.IsNullOrWhiteSpace(p.type) ? "void*" : p.type;
+                            paramList.Add(pType);
                         }
                     }
+
+                    var sig = $"{retType} ({string.Join(", ", paramList)})";
+                    map[$"{type.fullName}.{group.Key}"] = sig;
                 }
             }
 
             return map;
         }
 
-        private static string? ResolveOverloadSignature(Dictionary<string, string> sigMap, string baseName, ScriptMethod method)
-        {
-            // Try matching parameter count if signature text or type signature exists
-            if (!string.IsNullOrEmpty(method.Signature))
-            {
-                var sigText = method.Signature;
-                var openParen = sigText.IndexOf('(');
-                var closeParen = sigText.LastIndexOf(')');
-                if (openParen >= 0 && closeParen > openParen)
-                {
-                    var paramSpan = sigText.Substring(openParen + 1, closeParen - openParen - 1).Trim();
-                    if (string.IsNullOrEmpty(paramSpan))
-                    {
-                        if (sigMap.TryGetValue($"{baseName}#0", out var s0))
-                            return s0;
-                    }
-                    else
-                    {
-                        var parts = paramSpan.Split(',');
-                        // Count user parameters: exclude __this and MethodInfo* method
-                        var userParams = parts.Count(p => !p.Contains("__this") && !p.Contains("MethodInfo*"));
-                        if (sigMap.TryGetValue($"{baseName}#{userParams}", out var su))
-                            return su;
-                    }
-                }
-            }
-
-            if (sigMap.TryGetValue(baseName, out var s))
-                return s;
-
-            return null;
-        }
-
         public static string Generate(ScriptJson? scriptJson, JsonDumpModel? dumpModel = null, string? moduleName = null)
         {
             var resolvedModuleName = string.IsNullOrWhiteSpace(moduleName) ? "GameAssembly.dll" : moduleName.Trim();
-            var escapedModuleName = resolvedModuleName.Replace("\\", "\\\\").Replace("\"", "\\\"");
+            // R4: Normalize newlines in header comment to prevent broken comment lines
+            var cleanModuleComment = resolvedModuleName.Replace("\r", " ").Replace("\n", " ");
 
             var sb = new StringBuilder();
             sb.Append("// frida_stubs.js (generated, static)\n");
-            sb.Append($"// module: {resolvedModuleName}; addresses are file offsets/VAs from script.json, resolved at runtime against module base\n");
+            sb.Append($"// module: {cleanModuleComment}; addresses are file offsets/VAs from script.json, resolved at runtime against module base\n");
 
             if (scriptJson?.ScriptMethod == null || scriptJson.ScriptMethod.Count == 0)
             {
@@ -186,12 +143,15 @@ namespace Il2CppDumper
 
                     if (methods.Count == 1)
                     {
+                        // Unambiguous method in script.json
                         var m = methods[0];
                         sigMap.TryGetValue(baseName, out var sig);
                         entries.Add((baseName, $"0x{m.Address:X}", sig));
                     }
                     else
                     {
+                        // R3: Ambiguous overloads in script.json — omit sig to guarantee
+                        // no RVA receives a mismatched signature, while preserving all RVAs with address keys.
                         var seenKeys = new HashSet<string>(StringComparer.Ordinal);
                         for (int i = 0; i < methods.Count; i++)
                         {
@@ -201,8 +161,7 @@ namespace Il2CppDumper
                             {
                                 key = $"{baseName}_0x{m.Address:X}";
                             }
-                            var sig = ResolveOverloadSignature(sigMap, baseName, m);
-                            entries.Add((key, $"0x{m.Address:X}", sig));
+                            entries.Add((key, $"0x{m.Address:X}", null));
                         }
                     }
                 }
@@ -215,27 +174,36 @@ namespace Il2CppDumper
                     var entry = entries[i];
                     var isLast = i == entries.Count - 1;
                     var comma = isLast ? "" : ",";
-                    var escapedKey = entry.Key.Replace("\\", "\\\\").Replace("\"", "\\\"");
+
+                    // R4: Serialize strings with JsonSerializer.Serialize to properly escape control characters (LF, CR, quotes)
+                    var serializedKey = JsonSerializer.Serialize(entry.Key);
+                    var serializedVa = JsonSerializer.Serialize(entry.Va);
 
                     if (!string.IsNullOrEmpty(entry.Sig))
                     {
-                        var escapedSig = entry.Sig.Replace("\\", "\\\\").Replace("\"", "\\\"");
-                        sb.Append($"  \"{escapedKey}\": {{ \"va\": \"{entry.Va}\", \"sig\": \"{escapedSig}\" }}{comma}\n");
+                        var serializedSig = JsonSerializer.Serialize(entry.Sig);
+                        sb.Append($"  {serializedKey}: {{ \"va\": {serializedVa}, \"sig\": {serializedSig} }}{comma}\n");
                     }
                     else
                     {
-                        sb.Append($"  \"{escapedKey}\": {{ \"va\": \"{entry.Va}\" }}{comma}\n");
+                        sb.Append($"  {serializedKey}: {{ \"va\": {serializedVa} }}{comma}\n");
                     }
                 }
                 sb.Append("};\n\n");
             }
 
+            // R1 & R4: Use Process.findModuleByName and mod.base (Frida 17+ compatible)
+            // with JSON-serialized literals for module name and error messages.
+            var modStr = JsonSerializer.Serialize(resolvedModuleName);
+            var errMethodStr = JsonSerializer.Serialize("Method not found: ");
+            var errModStr = JsonSerializer.Serialize("Module not found: " + resolvedModuleName);
+
             sb.Append("function attach(name, callbacks) {\n");
             sb.Append("  const method = methods[name];\n");
-            sb.Append("  if (!method) throw new Error(\"Method not found: \" + name);\n");
-            sb.Append($"  const base = Module.findBaseAddress(\"{escapedModuleName}\");\n");
-            sb.Append($"  if (!base) throw new Error(\"Module not found: {escapedModuleName}\");\n");
-            sb.Append("  return Interceptor.attach(base.add(ptr(method.va)), callbacks);\n");
+            sb.Append($"  if (!method) throw new Error({errMethodStr} + name);\n");
+            sb.Append($"  const mod = Process.findModuleByName({modStr});\n");
+            sb.Append($"  if (!mod) throw new Error({errModStr});\n");
+            sb.Append("  return Interceptor.attach(mod.base.add(ptr(method.va)), callbacks);\n");
             sb.Append("}\n");
 
             return sb.ToString();

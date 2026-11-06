@@ -732,7 +732,8 @@ namespace Il2CppDumper.Tests
             Assert.Contains("#### bookmarks.json", content);
             Assert.Contains("`EmitFridaScript`", content);
             Assert.Contains("`EmitBookmarks`", content);
-            Assert.Contains("Interceptor.attach(base.add(ptr(method.va)), callbacks)", content);
+            Assert.Contains("Process.findModuleByName", content);
+            Assert.Contains("Interceptor.attach(mod.base.add(ptr(method.va)), callbacks)", content);
             Assert.Contains("\"category\": \"method\"", content);
             Assert.Contains("**Português:**", content);
         }
@@ -748,7 +749,8 @@ namespace Il2CppDumper.Tests
             Assert.Contains("#### bookmarks.json", content);
             Assert.Contains("`EmitFridaScript`", content);
             Assert.Contains("`EmitBookmarks`", content);
-            Assert.Contains("Interceptor.attach(base.add(ptr(method.va)), callbacks)", content);
+            Assert.Contains("Process.findModuleByName", content);
+            Assert.Contains("Interceptor.attach(mod.base.add(ptr(method.va)), callbacks)", content);
             Assert.Contains("\"category\": \"method\"", content);
             Assert.Contains("**Português:**", content);
         }

@@ -169,9 +169,9 @@ const methods = {
 function attach(name, callbacks) {
   const method = methods[name];
   if (!method) throw new Error("Method not found: " + name);
-  const base = Module.findBaseAddress("GameAssembly.dll");
-  if (!base) throw new Error("Module not found: GameAssembly.dll");
-  return Interceptor.attach(base.add(ptr(method.va)), callbacks);
+  const mod = Process.findModuleByName("GameAssembly.dll");
+  if (!mod) throw new Error("Module not found: GameAssembly.dll");
+  return Interceptor.attach(mod.base.add(ptr(method.va)), callbacks);
 }
 ```
 

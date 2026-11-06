@@ -538,40 +538,11 @@ namespace Il2CppDumper.Core
                 var scriptJson = scriptGenerator?.ScriptJson;
                 if (scriptJson == null)
                 {
-                    var scriptPath = Path.Combine(outputDir, "script.json");
-                    if (File.Exists(scriptPath))
-                    {
-                        try
-                        {
-                            var rawJson = File.ReadAllText(scriptPath);
-                            scriptJson = JsonSerializer.Deserialize<ScriptJson>(rawJson, new JsonSerializerOptions { IncludeFields = true });
-                        }
-                        catch (Exception ex)
-                        {
-                            CoreLogger.WriteLine($"WARNING: Failed to read script.json for native attach emitters: {ex.Message}");
-                        }
-                    }
+                    CoreLogger.WriteLine("WARNING: Native attach emitters skipped: script.json was not generated in the current execution.");
                 }
-
-                if (scriptJson != null)
+                else
                 {
-                    JsonDumpModel? dumpModel = decompiler.DumpModel;
-                    if (dumpModel == null)
-                    {
-                        var dumpJsonPath = Path.Combine(outputDir, "dump.json");
-                        if (File.Exists(dumpJsonPath))
-                        {
-                            try
-                            {
-                                var rawDump = File.ReadAllText(dumpJsonPath);
-                                dumpModel = JsonSerializer.Deserialize<JsonDumpModel>(rawDump);
-                            }
-                            catch
-                            {
-                                // Degraded path: structured dump absent
-                            }
-                        }
-                    }
+                    var dumpModel = decompiler?.DumpModel;
 
                     if (config.EmitFridaScript)
                     {
