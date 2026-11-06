@@ -1,3 +1,4 @@
+#nullable enable
 namespace Il2CppDumper
 {
     public class Config
@@ -19,5 +20,7 @@ namespace Il2CppDumper
         public double ForceVersion { get; set; } = 24.3;
         public bool ForceDump { get; set; } = false;
         public bool NoRedirectedPointer { get; set; } = false;
+        public string? StringDecryptor { get; set; } = "none";
+        public string? StringDecryptorKey { get; set; } = null;
     }
 }

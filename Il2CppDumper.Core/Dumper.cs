@@ -229,6 +229,12 @@ namespace Il2CppDumper.Core
             CoreLogger.WriteLine("Initializing metadata...");
             var metadataBytes = File.ReadAllBytes(metadataPath);
             metadata = new Metadata(new MemoryStream(metadataBytes));
+            var decryptor = request?.StringLiteralDecryptor;
+            if (decryptor == null && !string.IsNullOrWhiteSpace(config.StringDecryptor) && !config.StringDecryptor.Equals("none", StringComparison.OrdinalIgnoreCase))
+            {
+                decryptor = StringLiteralDecryptorRegistry.Resolve(config.StringDecryptor, config.StringDecryptorKey);
+            }
+            metadata.StringDecryptor = decryptor;
             CoreLogger.WriteLine($"Metadata Version: {metadata.Version}");
             if (outputDir != null && dumpMetadata != null)
             {
@@ -438,12 +444,20 @@ namespace Il2CppDumper.Core
             out RunManifestWarnings manifestWarnings,
             out List<string> writtenFiles)
         {
+            if (!outputDir.EndsWith(Path.DirectorySeparatorChar.ToString()) && !outputDir.EndsWith(Path.AltDirectorySeparatorChar.ToString()))
+            {
+                outputDir += Path.DirectorySeparatorChar;
+            }
             var success = true;
             var errors = new List<string>();
             counts = new RunManifestCounts();
             manifestWarnings = new RunManifestWarnings();
             writtenFiles = new List<string>();
 
+            if (metadata.StringDecryptor == null && !string.IsNullOrWhiteSpace(config.StringDecryptor) && !config.StringDecryptor.Equals("none", StringComparison.OrdinalIgnoreCase))
+            {
+                metadata.StringDecryptor = StringLiteralDecryptorRegistry.Resolve(config.StringDecryptor, config.StringDecryptorKey);
+            }
             CoreLogger.WriteLine("Dumping...");
             var executor = new Il2CppExecutor(metadata, il2Cpp);
             var decompiler = new Il2CppDecompiler(executor);
@@ -587,7 +601,9 @@ namespace Il2CppDumper.Core
                 ForceIl2CppVersion = source.ForceIl2CppVersion,
                 ForceVersion = source.ForceVersion,
                 ForceDump = source.ForceDump,
-                NoRedirectedPointer = source.NoRedirectedPointer
+                NoRedirectedPointer = source.NoRedirectedPointer,
+                StringDecryptor = source.StringDecryptor,
+                StringDecryptorKey = source.StringDecryptorKey
             };
         }
     }

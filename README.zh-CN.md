@@ -321,6 +321,15 @@ Il2CppDumper.Diff --drift <left> <right> <output>
 * `NoRedirectedPointer`
   * 将dump文件中的指针视为未重定向的, 从某些设备dump出的文件需要设置该项为`true`
 
+* `StringDecryptor`, `StringDecryptorKey`
+  * 从元数据解析字符串字面量后应用的可选解密转换插件（默认值为 `"none"` / `null`，保持字节级完全一致）。内置支持 `"none"` 以及 `"xor"`（通过 `StringDecryptorKey` 或简写 `"xor:<key>"`，key 为十六进制字节如 `"2b"` 或 `"0x2b"`）。亦可通过公共接口 `IStringLiteralDecryptor` 与 `StringLiteralDecryptorRegistry` 注册自定义插件。
+  * **JSON 输出结构（附加字段）**：
+    * 未启用解密器：`{"index": 128, "value": "raw text", "dataIndex": 100, "length": 8}`
+    * 启用解密器：`{"index": 128, "value": "decrypted text", "dataIndex": 100, "length": 8, "raw": "AAjCEk=", "decryptor": "xor:2b"}`
+  * 转换失败（异常或密钥不匹配）时将记录包含 literal 索引的警告日志，并安全输出 raw 原始值，不丢弃条目且不中断运行。
+  * **自定义 Hook 安全提示（Trust note）：** 自定义 `IStringLiteralDecryptor` 实现是在 dumper 进程上下文中执行代码；在分析不可信的 metadata 时，请仅注册受信任的解密插件。
+  * **Português:** Transformação opcional aplicada após a resolução de literais de string dos metadados (padrão `"none"` / `null`, com comportamento idêntico em bytes). Suporta modo embutido `"xor"` (via `StringDecryptorKey` ou `"xor:<chave>"` em hexadecimal) e ganchos customizados via `IStringLiteralDecryptor`. Registra os campos aditivos `raw` (Base64) e `decryptor` enquanto ativo. Falhas registram aviso com o índice e emitem o valor bruto sem abortar a execução. Nota de segurança: ganchos customizados executam código no processo do dumper; use apenas decifradores confiáveis.
+
 ## 常见问题
 
 #### `ERROR: Metadata file supplied is not valid metadata file.`

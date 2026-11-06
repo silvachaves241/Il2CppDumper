@@ -18,6 +18,7 @@ namespace Il2CppDumper.Core
         public ulong? CodeRegistration { get; set; }                 // optional manual registration fallback
         public ulong? MetadataRegistration { get; set; }             // optional manual registration fallback
         public Func<(ulong CodeRegistration, ulong MetadataRegistration)?>? ManualRegistrationPrompt { get; set; }
+        public IStringLiteralDecryptor? StringLiteralDecryptor { get; set; } // optional in-process string literal decryptor
 
         public DumpRequest()
         {

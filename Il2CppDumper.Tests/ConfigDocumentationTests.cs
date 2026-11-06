@@ -652,5 +652,55 @@ namespace Il2CppDumper.Tests
             Assert.Contains("**Português:**", content);
             Assert.Contains("manifesto operacional de execução", content);
         }
+
+        [Fact]
+        public void Config_ShippedConfigJson_AlignsWithCodeDefaultsForStringDecryptor()
+        {
+            var repoRoot = FindRepoRoot();
+            var configJsonPath = Path.Combine(repoRoot, "Il2CppDumper", "config.json");
+            Assert.True(File.Exists(configJsonPath), $"Expected config.json at {configJsonPath}");
+
+            var json = File.ReadAllText(configJsonPath);
+            var shippedConfig = JsonSerializer.Deserialize<Config>(json);
+            var codeDefaultConfig = new Config();
+
+            Assert.NotNull(shippedConfig);
+            Assert.Equal(codeDefaultConfig.StringDecryptor, shippedConfig.StringDecryptor);
+            Assert.Equal(codeDefaultConfig.StringDecryptorKey, shippedConfig.StringDecryptorKey);
+        }
+
+        [Fact]
+        public void Readme_English_DocumentsStringDecryptor_WithBothShapesAndTrustNote()
+        {
+            var repoRoot = FindRepoRoot();
+            var readmePath = Path.Combine(repoRoot, "README.md");
+            var content = File.ReadAllText(readmePath);
+
+            Assert.Contains("`StringDecryptor`, `StringDecryptorKey`", content);
+            Assert.Contains("\"none\"", content);
+            Assert.Contains("\"xor\"", content);
+            Assert.Contains("xor:2b", content);
+            Assert.Contains("AAjCEk=", content);
+            Assert.Contains("Trust note for custom hooks:", content);
+            Assert.Contains("Transform failure (exception or key mismatch)", content);
+            Assert.Contains("**Português:**", content);
+        }
+
+        [Fact]
+        public void Readme_Chinese_DocumentsStringDecryptor_WithBothShapesAndTrustNote()
+        {
+            var repoRoot = FindRepoRoot();
+            var readmePath = Path.Combine(repoRoot, "README.zh-CN.md");
+            var content = File.ReadAllText(readmePath);
+
+            Assert.Contains("`StringDecryptor`, `StringDecryptorKey`", content);
+            Assert.Contains("\"none\"", content);
+            Assert.Contains("\"xor\"", content);
+            Assert.Contains("xor:2b", content);
+            Assert.Contains("AAjCEk=", content);
+            Assert.Contains("自定义 Hook 安全提示（Trust note）：", content);
+            Assert.Contains("转换失败（异常或密钥不匹配）", content);
+            Assert.Contains("**Português:**", content);
+        }
     }
 }

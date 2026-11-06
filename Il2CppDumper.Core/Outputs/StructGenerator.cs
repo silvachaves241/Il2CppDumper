@@ -234,7 +234,7 @@ namespace Il2CppDumper
             }
             //处理函数范围
             List<ulong> orderedPointers;
-            if (il2Cpp.Version >= 24.2)
+            if (il2Cpp.Version >= 24.2 && il2Cpp.codeGenModuleMethodPointers != null)
             {
                 orderedPointers = new List<ulong>();
                 foreach (var pair in il2Cpp.codeGenModuleMethodPointers)
@@ -244,10 +244,12 @@ namespace Il2CppDumper
             }
             else
             {
-                orderedPointers = il2Cpp.methodPointers.ToList();
+                orderedPointers = il2Cpp.methodPointers?.ToList() ?? new List<ulong>();
             }
-            orderedPointers.AddRange(il2Cpp.genericMethodPointers);
-            orderedPointers.AddRange(il2Cpp.invokerPointers);
+            if (il2Cpp.genericMethodPointers != null)
+                orderedPointers.AddRange(il2Cpp.genericMethodPointers);
+            if (il2Cpp.invokerPointers != null)
+                orderedPointers.AddRange(il2Cpp.invokerPointers);
             if (il2Cpp.Version < 29)
             {
                 orderedPointers.AddRange(executor.customAttributeGenerators);
@@ -271,9 +273,11 @@ namespace Il2CppDumper
             if (il2Cpp.Version >= 27)
             {
                 var sectionHelper = executor.GetSectionHelper();
-                foreach (var sec in sectionHelper.Data)
+                if (sectionHelper?.Data != null)
                 {
-                    il2Cpp.Position = sec.offset;
+                    foreach (var sec in sectionHelper.Data)
+                    {
+                        il2Cpp.Position = sec.offset;
                     var end = Math.Min(sec.offsetEnd, il2Cpp.Length) - il2Cpp.PointerSize;
                     while (il2Cpp.Position < end)
                     {
@@ -343,6 +347,7 @@ namespace Il2CppDumper
                         }
                     }
                 }
+                }
             }
             else if (il2Cpp.Version > 16 && il2Cpp.Version < 27)
             {
@@ -372,11 +377,25 @@ namespace Il2CppDumper
                 }
             }
             //输出单独的StringLiteral
-            var stringLiterals = json.ScriptString.Select(x => new
+            object stringLiterals;
+            if (metadata.StringDecryptor != null)
             {
-                value = x.Value,
-                address = $"0x{x.Address:X}"
-            }).ToArray();
+                stringLiterals = json.ScriptString.Select(x => new
+                {
+                    value = x.Value,
+                    raw = x.Raw,
+                    decryptor = x.Decryptor,
+                    address = $"0x{x.Address:X}"
+                }).ToArray();
+            }
+            else
+            {
+                stringLiterals = json.ScriptString.Select(x => new
+                {
+                    value = x.Value,
+                    address = $"0x{x.Address:X}"
+                }).ToArray();
+            }
             var jsonOptions = new JsonSerializerOptions() { WriteIndented = true, IncludeFields = true };
             File.WriteAllText(outputDir + "stringliteral.json", JsonSerializer.Serialize(stringLiterals, jsonOptions), new UTF8Encoding(false));
             WrittenFiles.Add(Path.Combine(outputDir, "stringliteral.json"));
@@ -520,7 +539,16 @@ namespace Il2CppDumper
             var scriptString = new ScriptString();
             json.ScriptString.Add(scriptString);
             scriptString.Address = il2Cpp.GetRVA(address);
-            scriptString.Value = metadata.GetStringLiteralFromIndex(index);
+            if (metadata.TryGetStringLiteral(index, out var val, out _, out _, out var raw, out var decryptor))
+            {
+                scriptString.Value = val;
+                scriptString.Raw = raw;
+                scriptString.Decryptor = decryptor;
+            }
+            else
+            {
+                scriptString.Value = string.Empty;
+            }
         }
 
         private void AddMetadataUsageMethodRef(ScriptJson json, uint index, ulong address)
