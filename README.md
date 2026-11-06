@@ -191,7 +191,7 @@ Pre-analysis protection diagnostics report (`GenerateProtectionReport`, default 
 - `HighEntropySection`: Triggered when binary section entropy reaches or exceeds `7.20` on a Shannon scale of 0.00 to 8.00 bits per byte (indicates encrypted, packed, or compressed code/data).
 - `PackerSectionSignature`: Section name matches generic packer signatures (`UPX0`, `UPX1`, `UPX2`, `.aspack`, `.adata`, `.mpress1`, `.mpress2`, `.themida`, `.vmp0`, `.vmp1`, `.pack`, `PELOCK`).
 - `RedirectionHeuristic`: Identifies relocation stripping, raw/virtual size discrepancies, or dynamic initialization tags (`DT_INIT`, `.init_proc`, `LC_ENCRYPTION_INFO`) indicating pointer redirection.
-- `MetadataSanity`: Validates `global-metadata.dat` magic (`0xFAB11BAF`) and supported version range (16–31), reporting `ok: true` or `ok: false`.
+- `MetadataSanity`: Validates `global-metadata.dat` magic (`0xFAB11BAF`) and supported version range (16–200), reporting `ok: true` or `ok: false`.
 
 Remediation strings suggest valid configuration switches (`NoRedirectedPointer=true`, `ForceDump=true`, `ForceIl2CppVersion=true`, `ForceVersion=<version>`). When `GenerateProtectionReport` is `false`, no report file is written.
 
@@ -199,7 +199,7 @@ Remediation strings suggest valid configuration switches (`NoRedirectedPointer=t
 - `HighEntropySection`: Acionado quando a entropia da seção atinge ou supera `7.20` na escala de Shannon (0.00 a 8.00 bits por byte), indicando código/dados compactados, criptografados ou empacotados.
 - `PackerSectionSignature`: Nome de seção compatível com assinaturas genéricas de packers (`UPX0`, `UPX1`, `UPX2`, `.aspack`, `.adata`, `.mpress1`, `.mpress2`, `.themida`, `.vmp0`, `.vmp1`, `.pack`, `PELOCK`).
 - `RedirectionHeuristic`: Identifica remoção de realocações, discrepâncias entre tamanho virtual e dados brutos, ou tags dinâmicas (`DT_INIT`, `.init_proc`, `LC_ENCRYPTION_INFO`) indicando redirecionamento de ponteiros.
-- `MetadataSanity`: Valida o cabeçalho do `global-metadata.dat` quanto ao magic (`0xFAB11BAF`) e faixa de versões suportadas (16 a 31), emitindo `ok: true` ou `ok: false`.
+- `MetadataSanity`: Valida o cabeçalho do `global-metadata.dat` quanto ao magic (`0xFAB11BAF`) e faixa de versões suportadas (16 a 200), emitindo `ok: true` ou `ok: false`.
 
 Orientações de remediação recomendam opções de configuração existentes (`NoRedirectedPointer=true`, `ForceDump=true`, `ForceIl2CppVersion=true`, `ForceVersion=<version>`). Se `GenerateProtectionReport` for `false`, nenhum arquivo é gerado.
 

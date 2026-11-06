@@ -189,7 +189,7 @@ else
 - `HighEntropySection`：当二进制节的香农熵（Shannon entropy，0.00 至 8.00 bits/byte 尺度）达到或超过 `7.20` 时触发，指示加密、加壳或压缩的代码/数据。
 - `PackerSectionSignature`：节名称匹配通用加壳器特征列表（`UPX0`、`UPX1`、`UPX2`、`.aspack`、`.adata`、`.mpress1`、`.mpress2`、`.themida`、`.vmp0`、`.vmp1`、`.pack`、`PELOCK`）。
 - `RedirectionHeuristic`：检测重定位表剥离、虚拟尺寸与原始尺寸严重不匹配或动态初始化标记（`DT_INIT`、`.init_proc`、`LC_ENCRYPTION_INFO`），指示潜在的指针重定向。
-- `MetadataSanity`：对 `global-metadata.dat` 的 magic（`0xFAB11BAF`）与版本范围（16 至 31）进行预检，输出 `ok: true` 或 `ok: false`。
+- `MetadataSanity`：对 `global-metadata.dat` 的 magic（`0xFAB11BAF`）与版本范围（16 至 200）进行预检，输出 `ok: true` 或 `ok: false`。
 
 修复建议字符串仅引用现有的有效配置项（`NoRedirectedPointer=true`、`ForceDump=true`、`ForceIl2CppVersion=true`、`ForceVersion=<version>`）。当 `GenerateProtectionReport` 设置为 `false` 时，不会写入该文件。
 
@@ -197,7 +197,7 @@ else
 - `HighEntropySection`: Acionado quando a entropia da seção atinge ou supera `7.20` na escala de Shannon (0.00 a 8.00 bits por byte), indicando código/dados compactados, criptografados ou empacotados.
 - `PackerSectionSignature`: Nome de seção compatível com assinaturas genéricas de packers (`UPX0`, `UPX1`, `UPX2`, `.aspack`, `.adata`, `.mpress1`, `.mpress2`, `.themida`, `.vmp0`, `.vmp1`, `.pack`, `PELOCK`).
 - `RedirectionHeuristic`: Identifica remoção de realocações, discrepâncias entre tamanho virtual e dados brutos, ou tags dinâmicas (`DT_INIT`, `.init_proc`, `LC_ENCRYPTION_INFO`) indicando redirecionamento de ponteiros.
-- `MetadataSanity`: Valida o cabeçalho do `global-metadata.dat` quanto ao magic (`0xFAB11BAF`) e faixa de versões suportadas (16 a 31), emitindo `ok: true` ou `ok: false`.
+- `MetadataSanity`: Valida o cabeçalho do `global-metadata.dat` quanto ao magic (`0xFAB11BAF`) e faixa de versões suportadas (16 a 200), emitindo `ok: true` ou `ok: false`.
 
 Orientações de remediação recomendam opções de configuração existentes (`NoRedirectedPointer=true`, `ForceDump=true`, `ForceIl2CppVersion=true`, `ForceVersion=<version>`). Se `GenerateProtectionReport` for `false`, nenhum arquivo é gerado.
 

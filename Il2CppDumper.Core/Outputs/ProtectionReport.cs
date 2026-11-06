@@ -57,31 +57,55 @@ namespace Il2CppDumper
             ".pack", "PELOCK"
         };
 
-        public static double CalculateEntropy(byte[] data, int offset, int length)
+        public static double CalculateEntropy(Stream stream, long offset, long length, int bufferSize = 65536)
         {
-            if (data == null || length <= 0 || offset < 0 || offset + length > data.Length)
+            if (stream == null || length <= 0 || offset < 0 || offset + length > stream.Length)
                 return 0.0;
 
-            var frequencies = new int[256];
-            for (int i = offset; i < offset + length; i++)
+            stream.Position = offset;
+            var frequencies = new long[256];
+            var buffer = new byte[Math.Min(bufferSize, (int)Math.Min(length, 65536))];
+            long remaining = length;
+
+            while (remaining > 0)
             {
-                frequencies[data[i]]++;
+                int toRead = (int)Math.Min(remaining, buffer.Length);
+                int read = stream.Read(buffer, 0, toRead);
+                if (read <= 0) break;
+
+                for (int i = 0; i < read; i++)
+                {
+                    frequencies[buffer[i]]++;
+                }
+                remaining -= read;
             }
 
+            long totalCount = length - remaining;
+            if (totalCount <= 0) return 0.0;
+
             double entropy = 0.0;
-            double invLength = 1.0 / length;
+            double invTotal = 1.0 / totalCount;
 
             for (int i = 0; i < 256; i++)
             {
-                int count = frequencies[i];
+                long count = frequencies[i];
                 if (count > 0)
                 {
-                    double p = count * invLength;
+                    double p = count * invTotal;
                     entropy -= p * Math.Log2(p);
                 }
             }
 
             return Math.Round(entropy, 2, MidpointRounding.AwayFromZero);
+        }
+
+        public static double CalculateEntropy(byte[] data, int offset, int length)
+        {
+            if (data == null || length <= 0 || offset < 0 || offset + length > data.Length)
+                return 0.0;
+
+            using var ms = new MemoryStream(data, offset, length, writable: false);
+            return CalculateEntropy(ms, 0, length);
         }
 
         public static ProtectionReport Analyze(string executablePath, string metadataPath, Config config)
@@ -222,12 +246,10 @@ namespace Il2CppDumper
                     });
                 }
 
-                // Check entropy
+                // Check entropy streaming entire section
                 if (sizeOfRawData > 0 && pointerToRawData + sizeOfRawData <= fs.Length)
                 {
-                    fs.Position = pointerToRawData;
-                    var sectionBytes = reader.ReadBytes((int)sizeOfRawData);
-                    var entropy = CalculateEntropy(sectionBytes, 0, sectionBytes.Length);
+                    var entropy = CalculateEntropy(fs, pointerToRawData, sizeOfRawData);
                     if (entropy >= HighEntropyThreshold)
                     {
                         findings.Add(new ProtectionFinding
@@ -386,9 +408,7 @@ namespace Il2CppDumper
 
                 if (shSize > 0 && shOffset + shSize <= fs.Length && shType != 8) // SHT_NOBITS = 8
                 {
-                    fs.Position = shOffset;
-                    var sectionBytes = reader.ReadBytes((int)Math.Min(shSize, 1024 * 1024 * 16));
-                    var entropy = CalculateEntropy(sectionBytes, 0, sectionBytes.Length);
+                    var entropy = CalculateEntropy(fs, shOffset, shSize);
                     if (entropy >= HighEntropyThreshold)
                     {
                         findings.Add(new ProtectionFinding
@@ -421,7 +441,6 @@ namespace Il2CppDumper
             fs.Position = 0;
             var magic = reader.ReadUInt32();
             bool is64Bit = (magic == 0xFEEDFACF || magic == 0xCFFAEDFE);
-            bool isLittleEndian = (magic == 0xFEEDFACE || magic == 0xFEEDFACF);
 
             fs.Position = 16;
             var nCmds = reader.ReadUInt32();
@@ -435,31 +454,29 @@ namespace Il2CppDumper
                 var cmdSize = reader.ReadUInt32();
                 if (cmdSize == 0) break;
 
-                if (cmd == 0x1 || cmd == 0x19) // LC_SEGMENT or LC_SEGMENT_64
+                if (cmd == 0x1 || cmd == 0x19) // LC_SEGMENT (32-bit) or LC_SEGMENT_64
                 {
-                    var segNameBytes = reader.ReadBytes(16);
-                    var segName = Encoding.UTF8.GetString(segNameBytes).TrimEnd('\0').Trim();
-
-                    if (cmd == 0x1) // 32-bit
+                    if (cmd == 0x1) // 32-bit segment (header size = 56 bytes, section stride = 68 bytes)
                     {
-                        reader.ReadUInt32(); // vmaddr
-                        reader.ReadUInt32(); // vmsize
-                        reader.ReadUInt32(); // fileoff
-                        reader.ReadUInt32(); // filesize
-                        reader.ReadUInt32(); // maxprot
-                        reader.ReadUInt32(); // initprot
+                        fs.Position = pos + 48; // nsects is at offset 48 from cmd start
                         var nsects = reader.ReadUInt32();
-                        reader.ReadUInt32(); // flags
+
+                        const long segmentHeaderSize = 56L;
+                        const long sectionStride = 68L;
 
                         for (int j = 0; j < nsects; j++)
                         {
+                            long sectionRecordStart = pos + segmentHeaderSize + (j * sectionStride);
+                            if (sectionRecordStart + sectionStride > pos + cmdSize || sectionRecordStart + sectionStride > fs.Length)
+                                break;
+
+                            fs.Position = sectionRecordStart;
                             var sectNameBytes = reader.ReadBytes(16);
                             var rawSectName = Encoding.UTF8.GetString(sectNameBytes).TrimEnd('\0').Trim();
-                            reader.ReadBytes(16); // skip segname
+                            fs.Position = sectionRecordStart + 32; // skip sectname(16) + segname(16)
                             var addr = reader.ReadUInt32();
                             var size = reader.ReadUInt32();
                             var offset = reader.ReadUInt32();
-                            fs.Position += 12 + 8; // skip align, reloff, nreloc, flags, reserved1, reserved2
 
                             var name = disambiguator.Disambiguate(rawSectName);
                             if (GenericPackerSignatures.Contains(rawSectName))
@@ -475,11 +492,7 @@ namespace Il2CppDumper
 
                             if (size > 0 && offset + size <= fs.Length)
                             {
-                                var cur = fs.Position;
-                                fs.Position = offset;
-                                var bytes = reader.ReadBytes((int)size);
-                                fs.Position = cur;
-                                var entropy = CalculateEntropy(bytes, 0, bytes.Length);
+                                var entropy = CalculateEntropy(fs, offset, size);
                                 if (entropy >= HighEntropyThreshold)
                                 {
                                     findings.Add(new ProtectionFinding
@@ -493,26 +506,27 @@ namespace Il2CppDumper
                             }
                         }
                     }
-                    else // 64-bit
+                    else // 64-bit segment (header size = 72 bytes, section stride = 80 bytes)
                     {
-                        reader.ReadUInt64(); // vmaddr
-                        reader.ReadUInt64(); // vmsize
-                        reader.ReadUInt64(); // fileoff
-                        reader.ReadUInt64(); // filesize
-                        reader.ReadUInt32(); // maxprot
-                        reader.ReadUInt32(); // initprot
+                        fs.Position = pos + 64; // nsects is at offset 64 from cmd start
                         var nsects = reader.ReadUInt32();
-                        reader.ReadUInt32(); // flags
+
+                        const long segmentHeaderSize = 72L;
+                        const long sectionStride = 80L;
 
                         for (int j = 0; j < nsects; j++)
                         {
+                            long sectionRecordStart = pos + segmentHeaderSize + (j * sectionStride);
+                            if (sectionRecordStart + sectionStride > pos + cmdSize || sectionRecordStart + sectionStride > fs.Length)
+                                break;
+
+                            fs.Position = sectionRecordStart;
                             var sectNameBytes = reader.ReadBytes(16);
                             var rawSectName = Encoding.UTF8.GetString(sectNameBytes).TrimEnd('\0').Trim();
-                            reader.ReadBytes(16); // skip segname
+                            fs.Position = sectionRecordStart + 32; // skip sectname(16) + segname(16)
                             var addr = reader.ReadUInt64();
                             var size = reader.ReadUInt64();
                             var offset = reader.ReadUInt32();
-                            fs.Position += 12 + 12; // skip align, reloff, nreloc, flags, reserved1, reserved2, reserved3
 
                             var name = disambiguator.Disambiguate(rawSectName);
                             if (GenericPackerSignatures.Contains(rawSectName))
@@ -528,11 +542,7 @@ namespace Il2CppDumper
 
                             if (size > 0 && offset + size <= (ulong)fs.Length)
                             {
-                                var cur = fs.Position;
-                                fs.Position = offset;
-                                var bytes = reader.ReadBytes((int)size);
-                                fs.Position = cur;
-                                var entropy = CalculateEntropy(bytes, 0, bytes.Length);
+                                var entropy = CalculateEntropy(fs, offset, (long)size);
                                 if (entropy >= HighEntropyThreshold)
                                 {
                                     findings.Add(new ProtectionFinding
@@ -598,8 +608,8 @@ namespace Il2CppDumper
                 var name = disambiguator.Disambiguate(rawName);
                 if (sectionSize > 0)
                 {
-                    var bytes = reader.ReadBytes((int)sectionSize);
-                    var entropy = CalculateEntropy(bytes, 0, bytes.Length);
+                    var entropy = CalculateEntropy(fs, fs.Position, sectionSize);
+                    fs.Position += sectionSize;
                     if (entropy >= HighEntropyThreshold)
                     {
                         findings.Add(new ProtectionFinding
@@ -616,13 +626,9 @@ namespace Il2CppDumper
 
         private static void AnalyzeGenericBinary(FileStream fs, SectionNameDisambiguator disambiguator, List<ProtectionFinding> findings, List<string> notes)
         {
-            var len = Math.Min(fs.Length, 1024 * 1024 * 16);
-            if (len <= 0) return;
+            if (fs.Length <= 0) return;
 
-            fs.Position = 0;
-            var buffer = new byte[len];
-            var read = fs.Read(buffer, 0, (int)len);
-            var entropy = CalculateEntropy(buffer, 0, read);
+            var entropy = CalculateEntropy(fs, 0, fs.Length);
             if (entropy >= HighEntropyThreshold)
             {
                 findings.Add(new ProtectionFinding
@@ -644,7 +650,7 @@ namespace Il2CppDumper
                     Finding = "MetadataSanity",
                     Ok = false,
                     Detail = "Metadata file not found.",
-                    Remediation = "Verify global-metadata.dat integrity; try ForceIl2CppVersion=true and ForceVersion=<version>, or ForceDump=true"
+                    Remediation = "Provide a valid global-metadata.dat path or verify file existence."
                 });
                 return;
             }
@@ -657,7 +663,7 @@ namespace Il2CppDumper
                     Finding = "MetadataSanity",
                     Ok = false,
                     Detail = "Metadata file is truncated or too small for header.",
-                    Remediation = "Verify global-metadata.dat integrity; try ForceIl2CppVersion=true and ForceVersion=<version>, or ForceDump=true"
+                    Remediation = "Restore or re-dump global-metadata.dat; file is truncated."
                 });
                 return;
             }
@@ -676,17 +682,17 @@ namespace Il2CppDumper
                         Finding = "MetadataSanity",
                         Ok = false,
                         Detail = $"Invalid metadata header magic: 0x{magic:X8} (expected 0xFAB11BAF).",
-                        Remediation = "Verify global-metadata.dat integrity; try ForceIl2CppVersion=true and ForceVersion=<version>, or ForceDump=true"
+                        Remediation = "Provide a decrypted or valid global-metadata.dat; magic header does not match."
                     });
                 }
-                else if (version < 16 || version > 31)
+                else if (version < 16 || version > 200)
                 {
                     findings.Add(new ProtectionFinding
                     {
                         Finding = "MetadataSanity",
                         Ok = false,
-                        Detail = $"Unsupported metadata version: {version} (expected 16-31).",
-                        Remediation = "Verify global-metadata.dat integrity; try ForceIl2CppVersion=true and ForceVersion=<version>, or ForceDump=true"
+                        Detail = $"Unsupported metadata version: {version} (expected 16-200).",
+                        Remediation = "Provide a compatible global-metadata.dat with supported format version (16-200)."
                     });
                 }
                 else
@@ -705,7 +711,7 @@ namespace Il2CppDumper
                     Finding = "MetadataSanity",
                     Ok = false,
                     Detail = $"Error reading metadata header: {ex.Message}",
-                    Remediation = "Verify global-metadata.dat integrity; try ForceIl2CppVersion=true and ForceVersion=<version>, or ForceDump=true"
+                    Remediation = "Verify file permissions and integrity for global-metadata.dat."
                 });
             }
         }

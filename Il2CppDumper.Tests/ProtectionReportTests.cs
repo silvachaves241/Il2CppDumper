@@ -152,6 +152,214 @@ namespace Il2CppDumper.Tests
             return ms.ToArray();
         }
 
+        private static byte[] CreateSyntheticMacho32((string name, byte[] data)[] sections)
+        {
+            using var ms = new MemoryStream();
+            using var w = new BinaryWriter(ms);
+
+            // Mach-O 32 header (28 bytes)
+            w.Write((uint)0xFEEDFACE); // magic
+            w.Write((uint)0x07);       // cputype (x86)
+            w.Write((uint)0x03);       // cpusubtype
+            w.Write((uint)0x02);       // filetype (MH_EXECUTE)
+            w.Write((uint)1);          // ncmds
+            uint cmdSize = (uint)(56 + (sections.Length * 68));
+            w.Write(cmdSize);          // sizeofcmds
+            w.Write((uint)0);          // flags
+
+            // LC_SEGMENT (56 bytes header + 68 bytes per section)
+            w.Write((uint)0x01);       // cmd = LC_SEGMENT
+            w.Write(cmdSize);          // cmdsize
+            var segName = new byte[16];
+            Encoding.ASCII.GetBytes("__TEXT").CopyTo(segName, 0);
+            w.Write(segName);          // segname (16 bytes)
+            w.Write((uint)0x1000);     // vmaddr
+            w.Write((uint)0x10000);    // vmsize
+            w.Write((uint)0);          // fileoff
+            w.Write((uint)0x10000);    // filesize
+            w.Write((uint)7);          // maxprot
+            w.Write((uint)5);          // initprot
+            w.Write((uint)sections.Length); // nsects
+            w.Write((uint)0);          // flags
+
+            uint curOffset = (uint)(28 + cmdSize);
+            var sectionData = new List<(uint offset, byte[] data)>();
+
+            foreach (var sec in sections)
+            {
+                var sectName = new byte[16];
+                var enc = Encoding.ASCII.GetBytes(sec.name);
+                Array.Copy(enc, sectName, Math.Min(enc.Length, 16));
+                w.Write(sectName);     // sectname (16 bytes)
+                w.Write(segName);      // segname (16 bytes)
+                w.Write((uint)0x1000); // addr
+                w.Write((uint)sec.data.Length); // size
+                w.Write(curOffset);    // offset
+                w.Write((uint)2);      // align
+                w.Write((uint)0);      // reloff
+                w.Write((uint)0);      // nreloc
+                w.Write((uint)0);      // flags
+                w.Write((uint)0);      // reserved1
+                w.Write((uint)0);      // reserved2
+
+                sectionData.Add((curOffset, sec.data));
+                curOffset += (uint)sec.data.Length;
+            }
+
+            foreach (var item in sectionData)
+            {
+                while (ms.Position < item.offset) w.Write((byte)0);
+                w.Write(item.data);
+            }
+
+            return ms.ToArray();
+        }
+
+        private static byte[] CreateSyntheticMacho64((string name, byte[] data)[] sections)
+        {
+            using var ms = new MemoryStream();
+            using var w = new BinaryWriter(ms);
+
+            // Mach-O 64 header (32 bytes)
+            w.Write((uint)0xFEEDFACF); // magic
+            w.Write((uint)0x01000007); // cputype (x86_64)
+            w.Write((uint)0x03);       // cpusubtype
+            w.Write((uint)0x02);       // filetype (MH_EXECUTE)
+            w.Write((uint)1);          // ncmds
+            uint cmdSize = (uint)(72 + (sections.Length * 80));
+            w.Write(cmdSize);          // sizeofcmds
+            w.Write((uint)0);          // flags
+            w.Write((uint)0);          // reserved
+
+            // LC_SEGMENT_64 (72 bytes header + 80 bytes per section)
+            w.Write((uint)0x19);       // cmd = LC_SEGMENT_64
+            w.Write(cmdSize);          // cmdsize
+            var segName = new byte[16];
+            Encoding.ASCII.GetBytes("__TEXT").CopyTo(segName, 0);
+            w.Write(segName);          // segname (16 bytes)
+            w.Write((ulong)0x1000);    // vmaddr
+            w.Write((ulong)0x10000);   // vmsize
+            w.Write((ulong)0);         // fileoff
+            w.Write((ulong)0x10000);   // filesize
+            w.Write((uint)7);          // maxprot
+            w.Write((uint)5);          // initprot
+            w.Write((uint)sections.Length); // nsects
+            w.Write((uint)0);          // flags
+
+            uint curOffset = (uint)(32 + cmdSize);
+            var sectionData = new List<(uint offset, byte[] data)>();
+
+            foreach (var sec in sections)
+            {
+                var sectName = new byte[16];
+                var enc = Encoding.ASCII.GetBytes(sec.name);
+                Array.Copy(enc, sectName, Math.Min(enc.Length, 16));
+                w.Write(sectName);     // sectname (16 bytes)
+                w.Write(segName);      // segname (16 bytes)
+                w.Write((ulong)0x1000);// addr
+                w.Write((ulong)sec.data.Length); // size
+                w.Write(curOffset);    // offset
+                w.Write((uint)3);      // align
+                w.Write((uint)0);      // reloff
+                w.Write((uint)0);      // nreloc
+                w.Write((uint)0);      // flags
+                w.Write((uint)0);      // reserved1
+                w.Write((uint)0);      // reserved2
+                w.Write((uint)0);      // reserved3
+
+                sectionData.Add((curOffset, sec.data));
+                curOffset += (uint)sec.data.Length;
+            }
+
+            foreach (var item in sectionData)
+            {
+                while (ms.Position < item.offset) w.Write((byte)0);
+                w.Write(item.data);
+            }
+
+            return ms.ToArray();
+        }
+
+        private static void WriteSyntheticElf64(string filePath, string sectionName, long sectionSize, Action<Stream> writePayload)
+        {
+            using var fs = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None);
+            using var w = new BinaryWriter(fs);
+
+            // ELF Header (64 bytes)
+            w.Write(new byte[] { 0x7F, 0x45, 0x4C, 0x46, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
+            w.Write((ushort)2);        // e_type (ET_EXEC)
+            w.Write((ushort)0x3E);     // e_machine (AMD x86-64)
+            w.Write((uint)1);          // e_version
+            w.Write((ulong)0x1000);    // e_entry
+            w.Write((ulong)0);         // e_phoff
+            ulong shoff = 64;
+            w.Write(shoff);            // e_shoff (at offset 64)
+            w.Write((uint)0);          // e_flags
+            w.Write((ushort)64);       // e_ehsize
+            w.Write((ushort)56);       // e_phentsize
+            w.Write((ushort)0);        // e_phnum
+            w.Write((ushort)64);       // e_shentsize
+            w.Write((ushort)3);        // e_shnum: 0=NULL, 1=.shstrtab, 2=sectionName
+            w.Write((ushort)1);        // e_shstrndx = 1
+
+            // Prepare shstrtab bytes
+            var shstrtabMs = new MemoryStream();
+            shstrtabMs.WriteByte(0); // index 0 = \0
+            uint shstrtabNameIdx = 1;
+            var shstrBytes = Encoding.ASCII.GetBytes(".shstrtab");
+            shstrtabMs.Write(shstrBytes, 0, shstrBytes.Length);
+            shstrtabMs.WriteByte(0);
+
+            uint customNameIdx = (uint)shstrtabMs.Position;
+            var custBytes = Encoding.ASCII.GetBytes(sectionName);
+            shstrtabMs.Write(custBytes, 0, custBytes.Length);
+            shstrtabMs.WriteByte(0);
+
+            var shstrtab = shstrtabMs.ToArray();
+
+            ulong shstrtabOffset = 64 + (3 * 64); // 256
+            ulong payloadOffset = shstrtabOffset + (ulong)shstrtab.Length;
+            if (payloadOffset % 16 != 0)
+            {
+                payloadOffset += 16 - (payloadOffset % 16);
+            }
+
+            // Section 0 (NULL)
+            for (int i = 0; i < 8; i++) w.Write((ulong)0);
+
+            // Section 1 (.shstrtab)
+            w.Write(shstrtabNameIdx); // sh_name
+            w.Write((uint)3);          // sh_type (SHT_STRTAB)
+            w.Write((ulong)0);         // sh_flags
+            w.Write((ulong)0);         // sh_addr
+            w.Write(shstrtabOffset);   // sh_offset
+            w.Write((ulong)shstrtab.Length); // sh_size
+            w.Write((uint)0);          // sh_link
+            w.Write((uint)0);          // sh_info
+            w.Write((ulong)1);         // sh_addralign
+            w.Write((ulong)0);         // sh_entsize
+
+            // Section 2 (custom section)
+            w.Write(customNameIdx);    // sh_name
+            w.Write((uint)1);          // sh_type (SHT_PROGBITS)
+            w.Write((ulong)6);         // sh_flags (SHF_ALLOC | SHF_EXECINSTR)
+            w.Write((ulong)0x1000);    // sh_addr
+            w.Write(payloadOffset);    // sh_offset
+            w.Write((ulong)sectionSize); // sh_size
+            w.Write((uint)0);          // sh_link
+            w.Write((uint)0);          // sh_info
+            w.Write((ulong)16);        // sh_addralign
+            w.Write((ulong)0);         // sh_entsize
+
+            // Write shstrtab
+            while ((ulong)fs.Position < shstrtabOffset) w.Write((byte)0);
+            w.Write(shstrtab);
+
+            // Write custom section payload
+            while ((ulong)fs.Position < payloadOffset) w.Write((byte)0);
+            writePayload(fs);
+        }
+
         private static byte[] WriteULeb128(int value)
         {
             var list = new List<byte>();
@@ -300,41 +508,212 @@ namespace Il2CppDumper.Tests
             }
         }
 
-        [Fact]
-        public void MetadataSanity_CorruptedMagicOrVersion_ReportsNegativeSanityWithRemediation()
+        [Theory]
+        [InlineData(16)]
+        [InlineData(29)]
+        [InlineData(35)]
+        [InlineData(38)]
+        [InlineData(106)]
+        [InlineData(200)]
+        public void D1_MetadataSanity_SupportedVersionRange16To200_ReportsOkTrue(int version)
         {
-            var tempDir = Path.Combine(Path.GetTempPath(), "meta_sanity_" + Guid.NewGuid().ToString("N"));
+            var tempDir = Path.Combine(Path.GetTempPath(), "d1_ok_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var metaPath = Path.Combine(tempDir, "global-metadata.dat");
+                File.WriteAllBytes(metaPath, CreateMinimalMetadata(version: version));
+
+                var exePath = Path.Combine(tempDir, "dummy.bin");
+                File.WriteAllBytes(exePath, new byte[] { 0, 0, 0, 0 });
+
+                var report = ProtectionDiagnostics.Analyze(exePath, metaPath, new Config());
+                var sanity = Assert.Single(report.Findings.Where(f => f.Finding == "MetadataSanity"));
+                Assert.True(sanity.Ok, $"Expected Ok=true for version {version}");
+                Assert.Null(sanity.Detail);
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+
+        [Theory]
+        [InlineData(15)]
+        [InlineData(201)]
+        public void D1_MetadataSanity_OutOfRangeVersion_ReportsNegativeSanityWithClearDetail(int version)
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "d1_fail_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var metaPath = Path.Combine(tempDir, "global-metadata.dat");
+                File.WriteAllBytes(metaPath, CreateMinimalMetadata(version: version));
+
+                var exePath = Path.Combine(tempDir, "dummy.bin");
+                File.WriteAllBytes(exePath, new byte[] { 0, 0, 0, 0 });
+
+                var report = ProtectionDiagnostics.Analyze(exePath, metaPath, new Config());
+                var sanity = Assert.Single(report.Findings.Where(f => f.Finding == "MetadataSanity"));
+                Assert.False(sanity.Ok);
+                Assert.Contains(version.ToString(), sanity.Detail);
+                Assert.Contains("expected 16-200", sanity.Detail);
+                Assert.Equal("Provide a compatible global-metadata.dat with supported format version (16-200).", sanity.Remediation);
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void D2_MachO_32BitAnd64Bit_SecondSection_FindingsDetected()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "d2_macho_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var metaPath = Path.Combine(tempDir, "global-metadata.dat");
+                File.WriteAllBytes(metaPath, CreateMinimalMetadata());
+
+                // Prepare second section bytes: uniform 256 bytes repeating -> entropy 8.00
+                var uniformBytes = new byte[256];
+                for (int i = 0; i < 256; i++) uniformBytes[i] = (byte)i;
+
+                var sections = new[]
+                {
+                    ("__text", new byte[512]), // benign section 1
+                    (".vmp0", uniformBytes)    // packed & high-entropy section 2
+                };
+
+                // 1. Mach-O 32-bit test
+                var macho32Bytes = CreateSyntheticMacho32(sections);
+                var macho32Path = Path.Combine(tempDir, "sample32.macho");
+                File.WriteAllBytes(macho32Path, macho32Bytes);
+
+                var report32 = ProtectionDiagnostics.Analyze(macho32Path, metaPath, new Config());
+                var packer32 = Assert.Single(report32.Findings.Where(f => f.Finding == "PackerSectionSignature"));
+                Assert.Equal(".vmp0", packer32.Target);
+                var entropy32 = Assert.Single(report32.Findings.Where(f => f.Finding == "HighEntropySection"));
+                Assert.Equal(".vmp0", entropy32.Target);
+                Assert.Equal(8.00, entropy32.Entropy);
+
+                // 2. Mach-O 64-bit test
+                var macho64Bytes = CreateSyntheticMacho64(sections);
+                var macho64Path = Path.Combine(tempDir, "sample64.macho");
+                File.WriteAllBytes(macho64Path, macho64Bytes);
+
+                var report64 = ProtectionDiagnostics.Analyze(macho64Path, metaPath, new Config());
+                var packer64 = Assert.Single(report64.Findings.Where(f => f.Finding == "PackerSectionSignature"));
+                Assert.Equal(".vmp0", packer64.Target);
+                var entropy64 = Assert.Single(report64.Findings.Where(f => f.Finding == "HighEntropySection"));
+                Assert.Equal(".vmp0", entropy64.Target);
+                Assert.Equal(8.00, entropy64.Entropy);
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void D3_Elf_SectionLargerThan16MiB_EntropyComputedAcrossEntireSectionWithoutTruncation()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "d3_elf_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var metaPath = Path.Combine(tempDir, "global-metadata.dat");
+                File.WriteAllBytes(metaPath, CreateMinimalMetadata());
+
+                var elfPath = Path.Combine(tempDir, "large_section.elf");
+                const long sectionSize = 20L * 1024 * 1024; // 20 MiB
+
+                // 20 MiB section: 16 MiB uniform bytes followed by 4 MiB zeroes -> exact entropy = 7.10
+                WriteSyntheticElf64(elfPath, ".text", sectionSize, stream =>
+                {
+                    var block = new byte[65536];
+                    for (int i = 0; i < block.Length; i++) block[i] = (byte)(i % 256);
+
+                    // 16 MiB of uniform bytes
+                    long written = 0;
+                    while (written < 16L * 1024 * 1024)
+                    {
+                        stream.Write(block, 0, block.Length);
+                        written += block.Length;
+                    }
+
+                    // 4 MiB of zeroes
+                    Array.Clear(block, 0, block.Length);
+                    while (written < sectionSize)
+                    {
+                        stream.Write(block, 0, block.Length);
+                        written += block.Length;
+                    }
+                });
+
+                var report = ProtectionDiagnostics.Analyze(elfPath, metaPath, new Config());
+                // Total entropy is 7.10 (< 7.20 threshold) -> must NOT trigger HighEntropySection
+                Assert.DoesNotContain(report.Findings, f => f.Finding == "HighEntropySection");
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void D4_MetadataSanity_NegativeSanity_RemediationNeverSuggestsPostMetadataFlags()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "d4_remediation_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempDir);
             try
             {
                 var dummyExe = Path.Combine(tempDir, "dummy.bin");
                 File.WriteAllBytes(dummyExe, new byte[] { 0, 0, 0, 0 });
 
-                // Bad magic
-                var badMagicMeta = Path.Combine(tempDir, "badmagic.dat");
-                File.WriteAllBytes(badMagicMeta, CreateMinimalMetadata(magic: 0x12345678));
+                // 1. Missing metadata file
+                var reportMissing = ProtectionDiagnostics.Analyze(dummyExe, Path.Combine(tempDir, "nonexistent.dat"), new Config());
+                var sanityMissing = Assert.Single(reportMissing.Findings.Where(f => f.Finding == "MetadataSanity"));
+                Assert.False(sanityMissing.Ok);
+                AssertInapplicableSwitchesOmitted(sanityMissing.Remediation);
 
-                var reportBadMagic = ProtectionDiagnostics.Analyze(dummyExe, badMagicMeta, new Config());
-                var magicFinding = Assert.Single(reportBadMagic.Findings.Where(f => f.Finding == "MetadataSanity"));
-                Assert.False(magicFinding.Ok);
-                Assert.Contains("0x12345678", magicFinding.Detail);
-                Assert.Contains("ForceIl2CppVersion=true", magicFinding.Remediation);
-                Assert.Contains("ForceVersion=<version>", magicFinding.Remediation);
-                Assert.Contains("ForceDump=true", magicFinding.Remediation);
+                // 2. Truncated metadata
+                var truncPath = Path.Combine(tempDir, "trunc.dat");
+                File.WriteAllBytes(truncPath, new byte[] { 0xAF, 0x1B, 0xB1 });
+                var reportTrunc = ProtectionDiagnostics.Analyze(dummyExe, truncPath, new Config());
+                var sanityTrunc = Assert.Single(reportTrunc.Findings.Where(f => f.Finding == "MetadataSanity"));
+                Assert.False(sanityTrunc.Ok);
+                AssertInapplicableSwitchesOmitted(sanityTrunc.Remediation);
 
-                // Unsupported version
-                var badVersionMeta = Path.Combine(tempDir, "badver.dat");
-                File.WriteAllBytes(badVersionMeta, CreateMinimalMetadata(version: 99));
+                // 3. Bad magic
+                var badMagicPath = Path.Combine(tempDir, "badmagic.dat");
+                File.WriteAllBytes(badMagicPath, CreateMinimalMetadata(magic: 0x12345678));
+                var reportMagic = ProtectionDiagnostics.Analyze(dummyExe, badMagicPath, new Config());
+                var sanityMagic = Assert.Single(reportMagic.Findings.Where(f => f.Finding == "MetadataSanity"));
+                Assert.False(sanityMagic.Ok);
+                AssertInapplicableSwitchesOmitted(sanityMagic.Remediation);
 
-                var reportBadVer = ProtectionDiagnostics.Analyze(dummyExe, badVersionMeta, new Config());
-                var verFinding = Assert.Single(reportBadVer.Findings.Where(f => f.Finding == "MetadataSanity"));
-                Assert.False(verFinding.Ok);
-                Assert.Contains("99", verFinding.Detail);
-                Assert.Contains("ForceIl2CppVersion=true", verFinding.Remediation);
+                // 4. Unsupported version
+                var badVerPath = Path.Combine(tempDir, "badver.dat");
+                File.WriteAllBytes(badVerPath, CreateMinimalMetadata(version: 201));
+                var reportVer = ProtectionDiagnostics.Analyze(dummyExe, badVerPath, new Config());
+                var sanityVer = Assert.Single(reportVer.Findings.Where(f => f.Finding == "MetadataSanity"));
+                Assert.False(sanityVer.Ok);
+                AssertInapplicableSwitchesOmitted(sanityVer.Remediation);
             }
             finally
             {
                 try { Directory.Delete(tempDir, true); } catch { }
+            }
+
+            static void AssertInapplicableSwitchesOmitted(string? remediation)
+            {
+                Assert.NotNull(remediation);
+                Assert.DoesNotContain("ForceIl2CppVersion", remediation);
+                Assert.DoesNotContain("ForceVersion", remediation);
+                Assert.DoesNotContain("ForceDump", remediation);
+                Assert.DoesNotContain("NoRedirectedPointer", remediation);
             }
         }
 
@@ -352,7 +731,7 @@ namespace Il2CppDumper.Tests
             try
             {
                 var metaPath = Path.Combine(tempDir, "global-metadata.dat");
-                File.WriteAllBytes(metaPath, CreateMinimalMetadata(version: 99));
+                File.WriteAllBytes(metaPath, CreateMinimalMetadata());
 
                 var rnd = new Random(123);
                 var rndBytes = new byte[1024];
@@ -374,7 +753,6 @@ namespace Il2CppDumper.Tests
                         continue;
 
                     var matches = keyPattern.Matches(finding.Remediation);
-                    Assert.NotEmpty(matches);
                     foreach (Match m in matches)
                     {
                         var key = m.Groups[1].Value;
