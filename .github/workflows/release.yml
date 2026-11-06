@@ -319,7 +319,7 @@ jobs:
             PRERELEASE="${{ inputs.prerelease }}"
           else
             TAG="${{ github.ref_name }}"
-            DRAFT="false"
+            DRAFT="true"
             PRERELEASE="false"
           fi
           if [ -z "$TAG" ]; then TAG="v0.1.0"; fi
