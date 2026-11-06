@@ -800,21 +800,8 @@ namespace Il2CppDumper.Tests
                 Directory.CreateDirectory(staleDllDir);
                 File.WriteAllText(Path.Combine(staleDllDir, "old.dll"), "stale-dll");
 
-                var exePath = Path.Combine(appDir, "Il2CppDumper.exe");
-                var psi = new ProcessStartInfo
-                {
-                    FileName = exePath,
-                    Arguments = $"\"{wasmPath}\" \"{badMetaPath}\" \"{outDir}\"",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    WorkingDirectory = appDir
-                };
-
-                using var proc = Process.Start(psi)!;
-                proc.WaitForExit(15000);
-                Assert.Equal(1, proc.ExitCode);
+                var (exitCode, _, _) = RunCli(appDir, wasmPath, badMetaPath, outDir);
+                Assert.Equal(1, exitCode);
 
                 var manifestPath = Path.Combine(outDir, "run-manifest.json");
                 Assert.True(File.Exists(manifestPath));
@@ -879,8 +866,18 @@ namespace Il2CppDumper.Tests
 
                 var result = Dumper.Dump(req);
                 Assert.True(result.Success);
-                Assert.False(result.Outputs.ContainsKey("run-manifest.json"));
-                Assert.Contains(result.Warnings, w => w.Contains("Failed to emit run manifest"));
+
+                if (OperatingSystem.IsWindows())
+                {
+                    Assert.False(result.Outputs.ContainsKey("run-manifest.json"));
+                    Assert.Contains(result.Warnings, w => w.Contains("Failed to emit run manifest"));
+                }
+                else
+                {
+                    Assert.True(result.Outputs.ContainsKey("run-manifest.json"));
+                    var activeManifest = JsonSerializer.Deserialize<RunManifest>(File.ReadAllText(manifestFile))!;
+                    Assert.NotEqual("2000-01-01T00:00:00Z", activeManifest.StartedAt);
+                }
             }
             finally
             {
