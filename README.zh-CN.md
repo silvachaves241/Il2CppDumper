@@ -151,9 +151,9 @@ else
 
 #### run-manifest.json
 
-运行状态清单文件（`GenerateRunManifest`，默认值为 `true`），在每次运行结束时（成功或失败）生成，记录 `tool`（`name`、`version`）、`startedAt`（ISO-8601 UTC）、`durationMs`、`success`、`effectiveConfig`（当前生效的完整配置快照）、`counts`（`types`、`methods`、`fields`、`properties`、`attributes`、`attributesFailed`、`stringLiterals`）、`warnings`（`total`、包含 `attributeDecode` 与 `stringLiteral` 的 `byCategory`）以及确定性的流式 `outputs`（`path`、`sha256`、`bytes`）。在失败运行时，清单将以 `success: false` 和部分数据写入，并保持退出代码语义不变。
+运行状态清单文件（`GenerateRunManifest`，默认值为 `true`），在每次运行结束时（成功或失败）生成，记录 `tool`（`name`、`version`）、`startedAt`（ISO-8601 UTC）、`durationMs`、`success`、`effectiveConfig`（当前生效的完整配置快照）、`counts`（`types`、`methods`、`fields`、`properties`、`attributes`、`attributesFailed`、`stringLiterals`）、`warnings`（`total`、包含 `attributeDecode`、`stringLiteral` 与 `stringDecryptor` 的 `byCategory`）以及确定性的流式 `outputs`（`path`、`sha256`、`bytes`）。在失败运行时，清单将以 `success: false` 和部分数据写入，并保持退出代码语义不变。
 
-**Português:** Arquivo de manifesto operacional de execução (`run-manifest.json`, chave `GenerateRunManifest`, padrão `true`), gravado ao final de cada execução (sucesso ou falha). Registra `tool` (`name`, `version`), `startedAt` (ISO-8601 UTC), `durationMs`, `success`, `effectiveConfig` (snapshot das configurações efetivas aplicadas), `counts` (`types`, `methods`, `fields`, `properties`, `attributes`, `attributesFailed`, `stringLiterals`), `warnings` (`total`, `byCategory` com `attributeDecode` e `stringLiteral`) e a lista determinística de `outputs` (`path`, `sha256`, `bytes`). Em execuções com falha, o manifesto é gravado com `success: false` e dados parciais, preservando a semântica de código de saída.
+**Português:** Arquivo de manifesto operacional de execução (`run-manifest.json`, chave `GenerateRunManifest`, padrão `true`), gravado ao final de cada execução (sucesso ou falha). Registra `tool` (`name`, `version`), `startedAt` (ISO-8601 UTC), `durationMs`, `success`, `effectiveConfig` (snapshot das configurações efetivas aplicadas), `counts` (`types`, `methods`, `fields`, `properties`, `attributes`, `attributesFailed`, `stringLiterals`), `warnings` (`total`, `byCategory` com `attributeDecode`, `stringLiteral` e `stringDecryptor`) e a lista determinística de `outputs` (`path`, `sha256`, `bytes`). Em execuções com falha, o manifesto é gravado com `success: false` e dados parciais, preservando a semântica de código de saída.
 
 ### 差异对比 (Diffing / Il2CppDumper.Diff)
 
@@ -320,6 +320,15 @@ Il2CppDumper.Diff --drift <left> <right> <output>
 
 * `NoRedirectedPointer`
   * 将dump文件中的指针视为未重定向的, 从某些设备dump出的文件需要设置该项为`true`
+
+* `StringDecryptor`, `StringDecryptorKey`
+  * 从元数据解析字符串字面量后应用的可选解密转换插件（默认值为 `"none"` / `null`，保持字节级完全一致）。内置支持 `"none"` 以及 `"xor"`（通过 `StringDecryptorKey` 或简写 `"xor:<key>"`，key 为十六进制字节如 `"2b"` 或 `"0x2b"`）。亦可通过公共接口 `IStringLiteralDecryptor` 与 `StringLiteralDecryptorRegistry` 注册自定义插件。
+  * **JSON 输出结构（附加字段）**：
+    * 未启用解密器：`{"index": 128, "value": "raw text", "dataIndex": 100, "length": 8}`
+    * 启用解密器：`{"index": 128, "value": "decrypted text", "dataIndex": 100, "length": 8, "raw": "AAjCEk=", "decryptor": "xor:2b"}`
+  * 转换失败（异常或密钥不匹配）时将记录包含 literal 索引的警告日志，并安全输出 raw 原始值，不丢弃条目且不中断运行。
+  * **自定义 Hook 安全提示（Trust note）：** 自定义 `IStringLiteralDecryptor` 实现是在 dumper 进程上下文中执行代码；在分析不可信的 metadata 时，请仅注册受信任的解密插件。
+  * **Português:** Transformação opcional aplicada após a resolução de literais de string dos metadados (padrão `"none"` / `null`, com comportamento idêntico em bytes). Suporta modo embutido `"xor"` (via `StringDecryptorKey` ou `"xor:<chave>"` em hexadecimal) e ganchos customizados via `IStringLiteralDecryptor`. Registra os campos aditivos `raw` (Base64) e `decryptor` enquanto ativo. Falhas registram aviso com o índice e emitem o valor bruto sem abortar a execução. Nota de segurança: ganchos customizados executam código no processo do dumper; use apenas decifradores confiáveis.
 
 ## 常见问题
 

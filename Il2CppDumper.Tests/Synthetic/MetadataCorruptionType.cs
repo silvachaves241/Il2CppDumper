@@ -1,7 +1,7 @@
 namespace Il2CppDumper.Tests.Synthetic
 {
     /// <summary>
-    /// Corruption variants covering parser fault injection and boundary cases specified in Issue #44.
+    /// Corruption and transformation variants covering parser fault injection, boundary cases, and string obfuscation (#38, #44).
     /// </summary>
     public enum MetadataCorruptionType
     {
@@ -12,6 +12,7 @@ namespace Il2CppDumper.Tests.Synthetic
         LiteralExtentPastSectionEnd = 4,
         ZeroedMetadataRecords = 5,
         ZeroedRegistrationRecords = ZeroedMetadataRecords,
-        TruncatedHeader = 6
+        TruncatedHeader = 6,
+        ObfuscatedStringLiteral = 7
     }
 }

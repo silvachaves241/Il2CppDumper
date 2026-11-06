@@ -33,6 +33,7 @@ Every metadata family is exercised against corruption variants to ensure robust,
 | `LiteralExtentPastSectionEnd` | Literal `dataIndex` or inferred length exceeds section bounds (scenario #23) | Rejects safely without throwing: `TryGetStringLiteral` returns `false` |
 | `ZeroedMetadataRecords` | Image definitions and type definitions counts/sizes set to zero | Safely parsed with empty arrays (`imageDefs.Length == 0`, `typeDefs.Length == 0`) |
 | `ZeroedRegistrationRecords` (Registration Fixture) | Exercised via `SyntheticEnvironment.CreateZeroedRegistrationFixture` through real `Il2Cpp.Init(codeReg, metadataReg)` over zeroed memory | Safely initializes empty registration structures without throwing or null dereference |
+| `ObfuscatedStringLiteral` | String literal section payload XOR-masked (0x2B) to simulate obfuscated targets (#38) | Decoded safely via StringDecryptor ("xor:2b"), emitting raw base64 and decrypted plaintext |
 
 ---
 

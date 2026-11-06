@@ -153,9 +153,9 @@ Machine-readable dump output (`GenerateJsonDump`) capturing the same structured 
 
 #### run-manifest.json
 
-Operational summary file (`GenerateRunManifest`, default `true`) written at the end of every run (success or failure), recording `tool` (`name`, `version`), `startedAt` (ISO-8601 UTC), `durationMs`, `success`, `effectiveConfig` (snapshot of the configuration in effect), `counts` (`types`, `methods`, `fields`, `properties`, `attributes`, `attributesFailed`, `stringLiterals`), `warnings` (`total`, `byCategory` containing `attributeDecode` and `stringLiteral`), and deterministic streaming `outputs` (`path`, `sha256`, `bytes`). On failed runs, the manifest is written with `success: false` and partial data while preserving exit code semantics.
+Operational summary file (`GenerateRunManifest`, default `true`) written at the end of every run (success or failure), recording `tool` (`name`, `version`), `startedAt` (ISO-8601 UTC), `durationMs`, `success`, `effectiveConfig` (snapshot of the configuration in effect), `counts` (`types`, `methods`, `fields`, `properties`, `attributes`, `attributesFailed`, `stringLiterals`), `warnings` (`total`, `byCategory` containing `attributeDecode`, `stringLiteral`, and `stringDecryptor`), and deterministic streaming `outputs` (`path`, `sha256`, `bytes`). On failed runs, the manifest is written with `success: false` and partial data while preserving exit code semantics.
 
-**Português:** Arquivo de manifesto operacional de execução (`run-manifest.json`, chave `GenerateRunManifest`, padrão `true`), gravado ao final de cada execução (sucesso ou falha). Registra `tool` (`name`, `version`), `startedAt` (ISO-8601 UTC), `durationMs`, `success`, `effectiveConfig` (snapshot das configurações efetivas aplicadas), `counts` (`types`, `methods`, `fields`, `properties`, `attributes`, `attributesFailed`, `stringLiterals`), `warnings` (`total`, `byCategory` com `attributeDecode` e `stringLiteral`) e a lista determinística de `outputs` (`path`, `sha256`, `bytes`). Em execuções com falha, o manifesto é gravado com `success: false` e dados parciais, preservando a semântica de código de saída.
+**Português:** Arquivo de manifesto operacional de execução (`run-manifest.json`, chave `GenerateRunManifest`, padrão `true`), gravado ao final de cada execução (sucesso ou falha). Registra `tool` (`name`, `version`), `startedAt` (ISO-8601 UTC), `durationMs`, `success`, `effectiveConfig` (snapshot das configurações efetivas aplicadas), `counts` (`types`, `methods`, `fields`, `properties`, `attributes`, `attributesFailed`, `stringLiterals`), `warnings` (`total`, `byCategory` com `attributeDecode`, `stringLiteral` e `stringDecryptor`) e a lista determinística de `outputs` (`path`, `sha256`, `bytes`). Em execuções com falha, o manifesto é gravado com `success: false` e dados parciais, preservando a semântica de código de saída.
 
 ### Diffing (Il2CppDumper.Diff)
 
@@ -326,6 +326,15 @@ Available options:
 
 * `NoRedirectedPointer`
   * Treat pointers in dumped files as unredirected, This option needs to be `true` for files dumped from some devices
+
+* `StringDecryptor`, `StringDecryptorKey`
+  * Optional pluggable transform applied after a string literal resolves from metadata (default `"none"` / `null` — byte-identical to base behavior). Supported built-in modes include `"none"` and `"xor"` (with `StringDecryptorKey` or compact `"xor:<key>"` notation where key is a hex byte/string e.g. `"2b"` or `"0x2b"`). Custom transforms can be registered via `IStringLiteralDecryptor` or `StringLiteralDecryptorRegistry`.
+  * **Additive JSON shapes**:
+    * Inactive decryptor: `{"index": 128, "value": "raw text", "dataIndex": 100, "length": 8}`
+    * Active decryptor: `{"index": 128, "value": "decrypted text", "dataIndex": 100, "length": 8, "raw": "AAjCEk=", "decryptor": "xor:2b"}`
+  * Transform failure (exception or key mismatch) logs a warning with the literal index and emits the raw value without dropping entries.
+  * **Trust note for custom hooks:** Custom `IStringLiteralDecryptor` implementations execute arbitrary in-process code in the context of the dumper runner; only register trusted decryptors when processing untrusted metadata.
+  * **Português:** Transformação opcional aplicada após a resolução de literais de string dos metadados (padrão `"none"` / `null`, com comportamento idêntico em bytes). Suporta modo embutido `"xor"` (via `StringDecryptorKey` ou `"xor:<chave>"` em hexadecimal) e ganchos customizados via `IStringLiteralDecryptor`. Registra os campos aditivos `raw` (Base64) e `decryptor` enquanto ativo. Falhas registram aviso com o índice e emitem o valor bruto sem abortar a execução. Nota de segurança: ganchos customizados executam código no processo do dumper; use apenas decifradores confiáveis.
 
 ## Common errors
 

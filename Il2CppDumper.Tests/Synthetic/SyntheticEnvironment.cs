@@ -21,6 +21,9 @@ namespace Il2CppDumper.Tests.Synthetic
                 };
                 methodPointers = new ulong[] { 0x1000 };
                 customAttributeGenerators = Array.Empty<ulong>();
+                codeGenModuleMethodPointers = new System.Collections.Generic.Dictionary<string, ulong[]>(StringComparer.OrdinalIgnoreCase);
+                genericMethodPointers = Array.Empty<ulong>();
+                invokerPointers = Array.Empty<ulong>();
             }
         }
 

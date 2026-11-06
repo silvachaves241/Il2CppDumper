@@ -23,6 +23,9 @@ namespace Il2CppDumper
         public Il2CppCustomAttributeDataRange[] attributeDataRanges;
         private readonly Dictionary<Il2CppImageDefinition, Dictionary<uint, int>> attributeTypeRangesDic;
         public Il2CppStringLiteral[] stringLiterals;
+        public IStringLiteralDecryptor StringDecryptor { get; set; }
+        private readonly HashSet<uint> stringDecryptorFailedIndices = new();
+        public int StringDecryptorFailedCount => stringDecryptorFailedIndices.Count;
         private readonly Il2CppMetadataUsageList[] metadataUsageLists;
         private readonly Il2CppMetadataUsagePair[] metadataUsagePairs;
         public int[] attributeTypes;
@@ -876,9 +879,22 @@ namespace Il2CppDumper
 
         public bool TryGetStringLiteral(uint index, out string value, out int dataIndex, out int length)
         {
+            return TryGetStringLiteral(index, out value, out dataIndex, out length, out _, out _);
+        }
+
+        public bool TryGetStringLiteral(
+            uint index,
+            out string value,
+            out int dataIndex,
+            out int length,
+            out string rawBase64,
+            out string decryptorId)
+        {
             value = string.Empty;
             dataIndex = -1;
             length = 0;
+            rawBase64 = null;
+            decryptorId = null;
 
             if (stringLiterals == null || index >= stringLiterals.Length)
             {
@@ -947,7 +963,43 @@ namespace Il2CppDumper
             try
             {
                 Position = (ulong)dataOffset + (ulong)stringLiteral.dataIndex;
-                value = Encoding.UTF8.GetString(ReadBytes(length));
+                var rawBytes = ReadBytes(length);
+                var rawText = Encoding.UTF8.GetString(rawBytes);
+
+                if (StringDecryptor != null)
+                {
+                    rawBase64 = Convert.ToBase64String(rawBytes);
+                    string safeId = "<unknown>";
+                    try
+                    {
+                        try
+                        {
+                            safeId = StringDecryptor.Id ?? "<unknown>";
+                        }
+                        catch (Exception idEx)
+                        {
+                            throw new InvalidOperationException($"Decryptor Id getter failed: {idEx.Message}", idEx);
+                        }
+
+                        var decrypted = StringDecryptor.Decrypt(index, rawBytes);
+                        value = decrypted;
+                        decryptorId = safeId;
+                    }
+                    catch (Exception ex)
+                    {
+                        if (stringDecryptorFailedIndices.Add(index))
+                        {
+                            CoreLogger.LogWarning($"WARNING: String literal decryptor '{safeId}' failed at index {index}: {ex.Message}");
+                        }
+                        value = rawText;
+                        decryptorId = null;
+                    }
+                }
+                else
+                {
+                    value = rawText;
+                }
+
                 return true;
             }
             catch (EndOfStreamException)
@@ -982,7 +1034,7 @@ namespace Il2CppDumper
                     dataIndex = stringLiteral?.dataIndex ?? 0
                 };
 
-                bool hasLit = TryGetStringLiteral(i, out var val, out var dIdx, out var len);
+                bool hasLit = TryGetStringLiteral(i, out var val, out var dIdx, out var len, out var raw, out var decryptor);
                 if (!hasLit)
                 {
                     failedCount++;
@@ -992,6 +1044,8 @@ namespace Il2CppDumper
                     record.value = val;
                     record.dataIndex = dIdx;
                     record.length = len;
+                    record.raw = raw;
+                    record.decryptor = decryptor;
                 }
 
                 result.Add(record);

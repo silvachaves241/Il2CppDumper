@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace Il2CppDumper
 {
@@ -23,6 +24,10 @@ namespace Il2CppDumper
     {
         public ulong Address;
         public string Value;
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string Raw;
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string Decryptor;
     }
 
     public class ScriptMetadata

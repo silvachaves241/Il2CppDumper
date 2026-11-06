@@ -72,13 +72,21 @@ namespace Il2CppDumper.Tests.Synthetic
             byte[] imagesBytes;
             byte[] assembliesBytes;
 
-            // Corruption handling for string literal extent
+            // Corruption handling for string literal extent and obfuscation
             var literalDataIndex = 0;
             var literalLength = literalDataBytes.Length;
             if (corruption == MetadataCorruptionType.LiteralExtentPastSectionEnd)
             {
                 literalDataIndex = literalDataBytes.Length + 50;
                 literalLength = 1000;
+            }
+            else if (corruption == MetadataCorruptionType.ObfuscatedStringLiteral)
+            {
+                const byte xorKey = 0x2B;
+                for (int i = 0; i < literalDataBytes.Length; i++)
+                {
+                    literalDataBytes[i] = (byte)(literalDataBytes[i] ^ xorKey);
+                }
             }
 
             if (version < 38)
