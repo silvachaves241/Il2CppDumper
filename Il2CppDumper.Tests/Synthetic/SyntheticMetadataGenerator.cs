@@ -754,6 +754,16 @@ namespace Il2CppDumper.Tests.Synthetic
             // Truncation corruption
             if (corruption == MetadataCorruptionType.TruncatedSection)
             {
+                // Truncate within the final non-empty section (assemblies) while keeping the full header
+                // and all previous sections intact, ensuring the parser fails during section payload reading.
+                var truncatedLength = result.Length - Math.Max(1, assembliesSize / 2);
+                var truncated = new byte[truncatedLength];
+                Buffer.BlockCopy(result, 0, truncated, 0, truncatedLength);
+                return truncated;
+            }
+
+            if (corruption == MetadataCorruptionType.TruncatedHeader)
+            {
                 var truncatedLength = Math.Min(result.Length / 2, 80);
                 var truncated = new byte[truncatedLength];
                 Buffer.BlockCopy(result, 0, truncated, 0, truncatedLength);
@@ -761,6 +771,330 @@ namespace Il2CppDumper.Tests.Synthetic
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Re-serializes the parsed Metadata object model back to bytes exercising the exact
+        /// structural layout unions and index sizes corresponding to the metadata family.
+        /// </summary>
+        public static byte[] ReSerialize(Metadata metadata, MetadataVersionFamily family)
+        {
+            var version = (int)family;
+            using var ms = new MemoryStream();
+            using var writer = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true);
+
+            // Read preserved raw binary tables from the parsed metadata stream
+            var strOffset = version >= 38 ? (uint)metadata.header.strings.offset : metadata.header.stringOffset;
+            var strSize = version >= 38 ? metadata.header.strings.sectionSize : metadata.header.stringSize;
+            metadata.Position = strOffset;
+            var stringBytes = metadata.ReadBytes(strSize);
+
+            var litOffset = version >= 38 ? (uint)metadata.header.stringLiteralData.offset : metadata.header.stringLiteralDataOffset;
+            var litSize = version >= 38 ? metadata.header.stringLiteralData.sectionSize : metadata.header.stringLiteralDataSize;
+            metadata.Position = litOffset;
+            var stringLiteralDataBytes = metadata.ReadBytes(litSize);
+
+            var defOffset = version >= 38 ? (uint)metadata.header.fieldAndParameterDefaultValueData.offset : metadata.header.fieldAndParameterDefaultValueDataOffset;
+            var defSize = version >= 38 ? metadata.header.fieldAndParameterDefaultValueData.sectionSize : metadata.header.fieldAndParameterDefaultValueDataSize;
+            metadata.Position = defOffset;
+            var defaultValueData = metadata.ReadBytes(defSize);
+
+            byte[] stringLiteralsBytes;
+            byte[] fieldDefaultValuesBytes;
+            byte[] parametersBytes;
+            byte[] fieldsBytes;
+            byte[] methodsBytes;
+            byte[] typeDefsBytes;
+            byte[] imagesBytes;
+            byte[] assembliesBytes;
+
+            if (version < 38)
+            {
+                using (var sMs = new MemoryStream())
+                using (var sWriter = new BinaryWriter(sMs, Encoding.UTF8))
+                {
+                    foreach (var lit in metadata.stringLiterals)
+                    {
+                        WriteClass(sWriter, lit, version);
+                    }
+                    stringLiteralsBytes = sMs.ToArray();
+                }
+
+                using (var fdvMs = new MemoryStream())
+                using (var fdvWriter = new BinaryWriter(fdvMs, Encoding.UTF8))
+                {
+                    for (int i = 0; i < metadata.fieldDefs.Length; i++)
+                    {
+                        if (metadata.GetFieldDefaultValueFromIndex(i, out var fdv))
+                        {
+                            WriteClass(fdvWriter, fdv, version);
+                        }
+                    }
+                    fieldDefaultValuesBytes = fdvMs.ToArray();
+                }
+
+                using (var pMs = new MemoryStream())
+                using (var pWriter = new BinaryWriter(pMs, Encoding.UTF8))
+                {
+                    foreach (var p in metadata.parameterDefs)
+                    {
+                        WriteClass(pWriter, p, version);
+                    }
+                    parametersBytes = pMs.ToArray();
+                }
+
+                using (var fMs = new MemoryStream())
+                using (var fWriter = new BinaryWriter(fMs, Encoding.UTF8))
+                {
+                    foreach (var f in metadata.fieldDefs)
+                    {
+                        WriteClass(fWriter, f, version);
+                    }
+                    fieldsBytes = fMs.ToArray();
+                }
+
+                using (var mMs = new MemoryStream())
+                using (var mWriter = new BinaryWriter(mMs, Encoding.UTF8))
+                {
+                    foreach (var m in metadata.methodDefs)
+                    {
+                        WriteClass(mWriter, m, version);
+                    }
+                    methodsBytes = mMs.ToArray();
+                }
+
+                using (var tMs = new MemoryStream())
+                using (var tWriter = new BinaryWriter(tMs, Encoding.UTF8))
+                {
+                    foreach (var t in metadata.typeDefs)
+                    {
+                        WriteClass(tWriter, t, version);
+                    }
+                    typeDefsBytes = tMs.ToArray();
+                }
+
+                using (var iMs = new MemoryStream())
+                using (var iWriter = new BinaryWriter(iMs, Encoding.UTF8))
+                {
+                    foreach (var img in metadata.imageDefs)
+                    {
+                        WriteClass(iWriter, img, version);
+                    }
+                    imagesBytes = iMs.ToArray();
+                }
+
+                using (var aMs = new MemoryStream())
+                using (var aWriter = new BinaryWriter(aMs, Encoding.UTF8))
+                {
+                    foreach (var asm in metadata.assemblyDefs)
+                    {
+                        WriteClass(aWriter, asm, version);
+                    }
+                    assembliesBytes = aMs.ToArray();
+                }
+
+                WriteClass(writer, metadata.header, version);
+            }
+            else
+            {
+                var typeDefIdxSize = 1;
+                var genericContainerIdxSize = 1;
+                var paramIdxSize = version >= 39 ? 1 : 4;
+                var typeIdxSize = 4;
+                var fieldIdxSize = 4;
+                var methodIdxSize = 4;
+                var defaultValueDataIdxSize = 4;
+
+                using (var sMs = new MemoryStream())
+                using (var sWriter = new BinaryWriter(sMs, Encoding.UTF8))
+                {
+                    foreach (var lit in metadata.stringLiterals)
+                    {
+                        sWriter.Write(lit.dataIndex);
+                    }
+                    stringLiteralsBytes = sMs.ToArray();
+                }
+
+                using (var fdvMs = new MemoryStream())
+                using (var fdvWriter = new BinaryWriter(fdvMs, Encoding.UTF8))
+                {
+                    for (int i = 0; i < metadata.fieldDefs.Length; i++)
+                    {
+                        if (metadata.GetFieldDefaultValueFromIndex(i, out var fdv))
+                        {
+                            WriteMetadataIndex(fdvWriter, fdv.fieldIndex, fieldIdxSize);
+                            WriteMetadataIndex(fdvWriter, fdv.typeIndex, typeIdxSize);
+                            WriteMetadataIndex(fdvWriter, fdv.dataIndex, defaultValueDataIdxSize);
+                        }
+                    }
+                    fieldDefaultValuesBytes = fdvMs.ToArray();
+                }
+
+                using (var pMs = new MemoryStream())
+                using (var pWriter = new BinaryWriter(pMs, Encoding.UTF8))
+                {
+                    foreach (var p in metadata.parameterDefs)
+                    {
+                        pWriter.Write(p.nameIndex);
+                        pWriter.Write(p.token);
+                        WriteMetadataIndex(pWriter, p.typeIndex, typeIdxSize);
+                    }
+                    parametersBytes = pMs.ToArray();
+                }
+
+                using (var fMs = new MemoryStream())
+                using (var fWriter = new BinaryWriter(fMs, Encoding.UTF8))
+                {
+                    foreach (var f in metadata.fieldDefs)
+                    {
+                        fWriter.Write(f.nameIndex);
+                        WriteMetadataIndex(fWriter, f.typeIndex, typeIdxSize);
+                        fWriter.Write(f.token);
+                    }
+                    fieldsBytes = fMs.ToArray();
+                }
+
+                using (var mMs = new MemoryStream())
+                using (var mWriter = new BinaryWriter(mMs, Encoding.UTF8))
+                {
+                    foreach (var m in metadata.methodDefs)
+                    {
+                        mWriter.Write(m.nameIndex);
+                        WriteMetadataIndex(mWriter, m.declaringType, typeDefIdxSize);
+                        WriteMetadataIndex(mWriter, m.returnType, typeIdxSize);
+                        mWriter.Write(m.returnParameterToken);
+                        WriteMetadataIndex(mWriter, m.parameterStart, paramIdxSize);
+                        WriteMetadataIndex(mWriter, m.genericContainerIndex, genericContainerIdxSize);
+                        mWriter.Write(m.token);
+                        mWriter.Write(m.flags);
+                        mWriter.Write(m.iflags);
+                        mWriter.Write(m.slot);
+                        mWriter.Write(m.parameterCount);
+                    }
+                    methodsBytes = mMs.ToArray();
+                }
+
+                using (var tMs = new MemoryStream())
+                using (var tWriter = new BinaryWriter(tMs, Encoding.UTF8))
+                {
+                    foreach (var t in metadata.typeDefs)
+                    {
+                        tWriter.Write(t.nameIndex);
+                        tWriter.Write(t.namespaceIndex);
+                        WriteMetadataIndex(tWriter, t.byvalTypeIndex, typeIdxSize);
+                        WriteMetadataIndex(tWriter, t.declaringTypeIndex, typeIdxSize);
+                        WriteMetadataIndex(tWriter, t.parentIndex, typeIdxSize);
+                        WriteMetadataIndex(tWriter, t.genericContainerIndex, genericContainerIdxSize);
+                        tWriter.Write(t.flags);
+                        WriteMetadataIndex(tWriter, t.fieldStart, fieldIdxSize);
+                        WriteMetadataIndex(tWriter, t.methodStart, methodIdxSize);
+                        WriteMetadataIndex(tWriter, t.eventStart, 4);
+                        WriteMetadataIndex(tWriter, t.propertyStart, 4);
+                        WriteMetadataIndex(tWriter, t.nestedTypesStart, 4);
+                        WriteMetadataIndex(tWriter, t.interfacesStart, 4);
+                        tWriter.Write(t.vtableStart);
+                        WriteMetadataIndex(tWriter, t.interfaceOffsetsStart, 4);
+                        tWriter.Write(t.method_count);
+                        tWriter.Write(t.property_count);
+                        tWriter.Write(t.field_count);
+                        tWriter.Write(t.event_count);
+                        tWriter.Write(t.nested_type_count);
+                        tWriter.Write(t.vtable_count);
+                        tWriter.Write(t.interfaces_count);
+                        tWriter.Write(t.interface_offsets_count);
+                        tWriter.Write(t.bitfield);
+                        tWriter.Write(t.token);
+                    }
+                    typeDefsBytes = tMs.ToArray();
+                }
+
+                using (var iMs = new MemoryStream())
+                using (var iWriter = new BinaryWriter(iMs, Encoding.UTF8))
+                {
+                    foreach (var i in metadata.imageDefs)
+                    {
+                        iWriter.Write(i.nameIndex);
+                        iWriter.Write(i.assemblyIndex);
+                        WriteMetadataIndex(iWriter, i.typeStart, typeDefIdxSize);
+                        iWriter.Write(i.typeCount);
+                        WriteMetadataIndex(iWriter, i.exportedTypeStart, typeDefIdxSize);
+                        iWriter.Write(i.exportedTypeCount);
+                        WriteMetadataIndex(iWriter, i.entryPointIndex, methodIdxSize);
+                        iWriter.Write(i.token);
+                        iWriter.Write(i.customAttributeStart);
+                        iWriter.Write(i.customAttributeCount);
+                    }
+                    imagesBytes = iMs.ToArray();
+                }
+
+                using (var aMs = new MemoryStream())
+                using (var aWriter = new BinaryWriter(aMs, Encoding.UTF8))
+                {
+                    foreach (var asm in metadata.assemblyDefs)
+                    {
+                        WriteClass(aWriter, asm, version);
+                    }
+                    assembliesBytes = aMs.ToArray();
+                }
+
+                writer.Write(metadata.header.sanity);
+                writer.Write(metadata.header.version);
+                var sections = new[]
+                {
+                    metadata.header.stringLiterals,
+                    metadata.header.stringLiteralData,
+                    metadata.header.strings,
+                    metadata.header.events,
+                    metadata.header.properties,
+                    metadata.header.methods,
+                    metadata.header.parameterDefaultValues,
+                    metadata.header.fieldDefaultValues,
+                    metadata.header.fieldAndParameterDefaultValueData,
+                    metadata.header.fieldMarshaledSizes,
+                    metadata.header.parameters,
+                    metadata.header.fields,
+                    metadata.header.genericParameters,
+                    metadata.header.genericParameterConstraints,
+                    metadata.header.genericContainers,
+                    metadata.header.nestedTypes,
+                    metadata.header.interfaces,
+                    metadata.header.vtableMethods,
+                    metadata.header.interfaceOffsets,
+                    metadata.header.typeDefinitions,
+                    metadata.header.images,
+                    metadata.header.assemblies,
+                    metadata.header.fieldRefs,
+                    metadata.header.referencedAssemblies,
+                    metadata.header.attributeData,
+                    metadata.header.attributeDataRanges,
+                    metadata.header.unresolvedIndirectCallParameterTypes,
+                    metadata.header.unresolvedIndirectCallParameterRanges,
+                    metadata.header.windowsRuntimeTypeNames,
+                    metadata.header.windowsRuntimeStrings,
+                    metadata.header.exportedTypeDefinitions
+                };
+                foreach (var s in sections)
+                {
+                    writer.Write(s.offset);
+                    writer.Write(s.sectionSize);
+                    writer.Write(s.count);
+                }
+            }
+
+            writer.Write(stringLiteralsBytes);
+            writer.Write(stringLiteralDataBytes);
+            writer.Write(stringBytes);
+            writer.Write(fieldDefaultValuesBytes);
+            writer.Write(defaultValueData);
+            writer.Write(parametersBytes);
+            writer.Write(fieldsBytes);
+            writer.Write(methodsBytes);
+            writer.Write(typeDefsBytes);
+            writer.Write(imagesBytes);
+            writer.Write(assembliesBytes);
+
+            writer.Flush();
+            return ms.ToArray();
         }
 
         private static int CalculateHeaderSize(int version)

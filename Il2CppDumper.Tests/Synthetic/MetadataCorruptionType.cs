@@ -10,6 +10,8 @@ namespace Il2CppDumper.Tests.Synthetic
         WrongMagic = 2,
         OutOfRangeVersion = 3,
         LiteralExtentPastSectionEnd = 4,
-        ZeroedRegistrationRecords = 5
+        ZeroedMetadataRecords = 5,
+        ZeroedRegistrationRecords = ZeroedMetadataRecords,
+        TruncatedHeader = 6
     }
 }

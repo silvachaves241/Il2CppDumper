@@ -149,10 +149,17 @@ namespace Il2CppDumper.Tests
                 var updateGoldens = Environment.GetEnvironmentVariable("UPDATE_GOLDENS") == "1" ||
                                     Environment.GetEnvironmentVariable("REGENERATE_GOLDEN_FILES") == "1";
 
-                if (updateGoldens || !File.Exists(goldenDumpCsPath) || !File.Exists(goldenDumpJsonPath))
+                if (updateGoldens)
                 {
                     File.Copy(actualDumpCsPath, goldenDumpCsPath, true);
                     File.Copy(actualDumpJsonPath, goldenDumpJsonPath, true);
+                }
+                else
+                {
+                    Assert.True(File.Exists(goldenDumpCsPath),
+                        $"Golden file missing: '{goldenDumpCsPath}'. Golden files must not be silently recreated without opt-in. Set UPDATE_GOLDENS=1 to generate or regenerate golden outputs.");
+                    Assert.True(File.Exists(goldenDumpJsonPath),
+                        $"Golden file missing: '{goldenDumpJsonPath}'. Golden files must not be silently recreated without opt-in. Set UPDATE_GOLDENS=1 to generate or regenerate golden outputs.");
                 }
 
                 var expectedCs = File.ReadAllText(goldenDumpCsPath).Replace("\r\n", "\n");
@@ -168,6 +175,61 @@ namespace Il2CppDumper.Tests
                 if (Directory.Exists(tempDir))
                 {
                     Directory.Delete(tempDir, true);
+                }
+            }
+        }
+
+        [Fact]
+        public void MissingGolden_WithoutUpdateOptIn_FailsAndDoesNotRecreateFile()
+        {
+            var tempBase = Path.Combine(Path.GetTempPath(), "missing_golden_test_" + Guid.NewGuid().ToString("N"));
+            var mockGoldensDir = Path.Combine(tempBase, "MockGoldens");
+            var mockTempDir = Path.Combine(tempBase, "MockTemp");
+            Directory.CreateDirectory(mockGoldensDir);
+            Directory.CreateDirectory(mockTempDir);
+
+            try
+            {
+                var existingJsonContent = "{\n  \"baseline\": true\n}";
+                var mockGoldenJsonPath = Path.Combine(mockGoldensDir, "dump.json");
+                File.WriteAllText(mockGoldenJsonPath, existingJsonContent);
+
+                var mockGoldenCsPath = Path.Combine(mockGoldensDir, "dump.cs");
+                Assert.False(File.Exists(mockGoldenCsPath)); // Intentionally missing
+
+                var actualCsContent = "// actual cs content";
+                var actualJsonContent = "{\n  \"actual\": true\n}";
+                File.WriteAllText(Path.Combine(mockTempDir, "dump.cs"), actualCsContent);
+                File.WriteAllText(Path.Combine(mockTempDir, "dump.json"), actualJsonContent);
+
+                // Simulate normal test execution without UPDATE_GOLDENS=1
+                var updateGoldens = false;
+
+                var ex = Assert.Throws<Xunit.Sdk.TrueException>(() =>
+                {
+                    if (updateGoldens)
+                    {
+                        File.Copy(Path.Combine(mockTempDir, "dump.cs"), mockGoldenCsPath, true);
+                        File.Copy(Path.Combine(mockTempDir, "dump.json"), mockGoldenJsonPath, true);
+                    }
+                    else
+                    {
+                        Assert.True(File.Exists(mockGoldenCsPath),
+                            $"Golden file missing: '{mockGoldenCsPath}'. Golden files must not be silently recreated without opt-in. Set UPDATE_GOLDENS=1 to generate or regenerate golden outputs.");
+                        Assert.True(File.Exists(mockGoldenJsonPath),
+                            $"Golden file missing: '{mockGoldenJsonPath}'. Golden files must not be silently recreated without opt-in. Set UPDATE_GOLDENS=1 to generate or regenerate golden outputs.");
+                    }
+                });
+
+                // Verify the missing golden was NOT created and existing sibling was untouched
+                Assert.False(File.Exists(mockGoldenCsPath), "Missing golden must not be created without UPDATE_GOLDENS=1.");
+                Assert.Equal(existingJsonContent, File.ReadAllText(mockGoldenJsonPath));
+            }
+            finally
+            {
+                if (Directory.Exists(tempBase))
+                {
+                    Directory.Delete(tempBase, true);
                 }
             }
         }
@@ -217,7 +279,26 @@ namespace Il2CppDumper.Tests
         [InlineData(MetadataVersionFamily.V39)]
         public void Corruption_TruncatedSection_ThrowsException(MetadataVersionFamily family)
         {
+            // TruncatedSection retains 100% of the header and truncates inside the final non-empty
+            // section payload (assemblies), exercising failure during section reading.
             var bytes = SyntheticMetadataGenerator.Generate(family, seed: 42, MetadataCorruptionType.TruncatedSection);
+            Assert.ThrowsAny<Exception>(() => new Metadata(new MemoryStream(bytes)));
+        }
+
+        [Theory]
+        [InlineData(MetadataVersionFamily.V16)]
+        [InlineData(MetadataVersionFamily.V21)]
+        [InlineData(MetadataVersionFamily.V24)]
+        [InlineData(MetadataVersionFamily.V27)]
+        [InlineData(MetadataVersionFamily.V29)]
+        [InlineData(MetadataVersionFamily.V31)]
+        [InlineData(MetadataVersionFamily.V35)]
+        [InlineData(MetadataVersionFamily.V38)]
+        [InlineData(MetadataVersionFamily.V39)]
+        public void Corruption_TruncatedHeader_ThrowsException(MetadataVersionFamily family)
+        {
+            // TruncatedHeader truncates within the header itself.
+            var bytes = SyntheticMetadataGenerator.Generate(family, seed: 42, MetadataCorruptionType.TruncatedHeader);
             Assert.ThrowsAny<Exception>(() => new Metadata(new MemoryStream(bytes)));
         }
 
@@ -250,13 +331,39 @@ namespace Il2CppDumper.Tests
         [InlineData(MetadataVersionFamily.V35)]
         [InlineData(MetadataVersionFamily.V38)]
         [InlineData(MetadataVersionFamily.V39)]
-        public void Corruption_ZeroedRegistrationRecords_ParsedSafely(MetadataVersionFamily family)
+        public void Corruption_ZeroedMetadataRecords_ParsedSafely(MetadataVersionFamily family)
         {
-            var bytes = SyntheticMetadataGenerator.Generate(family, seed: 42, MetadataCorruptionType.ZeroedRegistrationRecords);
+            var bytes = SyntheticMetadataGenerator.Generate(family, seed: 42, MetadataCorruptionType.ZeroedMetadataRecords);
             using var metadata = new Metadata(new MemoryStream(bytes));
             Assert.NotNull(metadata);
             Assert.Empty(metadata.imageDefs);
             Assert.Empty(metadata.typeDefs);
+        }
+
+        [Theory]
+        [InlineData(MetadataVersionFamily.V16)]
+        [InlineData(MetadataVersionFamily.V21)]
+        [InlineData(MetadataVersionFamily.V24)]
+        [InlineData(MetadataVersionFamily.V27)]
+        [InlineData(MetadataVersionFamily.V29)]
+        [InlineData(MetadataVersionFamily.V31)]
+        [InlineData(MetadataVersionFamily.V35)]
+        [InlineData(MetadataVersionFamily.V38)]
+        [InlineData(MetadataVersionFamily.V39)]
+        public void ZeroedRegistrationRecords_ExecutedThroughRealInit_SafelyInitializesEmptyArrays(MetadataVersionFamily family)
+        {
+            // Exercises the real Il2Cpp.Init(codeRegistration, metadataRegistration) path using in-memory
+            // zeroed registration records buffer, ensuring all pointers and counts handle zeroed structures.
+            var il2Cpp = SyntheticEnvironment.CreateZeroedRegistrationFixture((double)family);
+            Assert.NotNull(il2Cpp);
+            Assert.NotNull(il2Cpp.types);
+            Assert.Empty(il2Cpp.types);
+            Assert.NotNull(il2Cpp.genericMethodPointers);
+            Assert.Empty(il2Cpp.genericMethodPointers);
+            Assert.NotNull(il2Cpp.invokerPointers);
+            Assert.Empty(il2Cpp.invokerPointers);
+            Assert.NotNull(il2Cpp.genericInsts);
+            Assert.Empty(il2Cpp.genericInsts);
         }
 
         [Fact]
@@ -285,8 +392,8 @@ namespace Il2CppDumper.Tests
         [InlineData(MetadataVersionFamily.V39)]
         public void ParserRoundTrip_LayoutUnions_Preserved(MetadataVersionFamily family)
         {
-            var bytes = SyntheticMetadataGenerator.Generate(family, seed: 42);
-            using var metadata = new Metadata(new MemoryStream(bytes));
+            var originalBytes = SyntheticMetadataGenerator.Generate(family, seed: 42);
+            using var metadata = new Metadata(new MemoryStream(originalBytes));
 
             // Verify structure layout fields are intact after parsing
             Assert.Equal((int)family, (int)metadata.Version);
@@ -297,9 +404,16 @@ namespace Il2CppDumper.Tests
             Assert.Single(metadata.assemblyDefs);
             Assert.Single(metadata.stringLiterals);
 
-            // Re-generate and verify identical byte layout
-            var regenerated = SyntheticMetadataGenerator.Generate(family, seed: 42);
-            Assert.Equal(bytes, regenerated);
+            // Re-serialize the parsed Metadata object model and assert exact byte equality
+            var reserializedBytes = SyntheticMetadataGenerator.ReSerialize(metadata, family);
+            Assert.Equal(originalBytes, reserializedBytes);
+
+            // Verify mutation sensitivity: altering a parsed field changes the reserialized output
+            var originalFlags = metadata.typeDefs[0].flags;
+            metadata.typeDefs[0].flags ^= 0x10;
+            var mutatedBytes = SyntheticMetadataGenerator.ReSerialize(metadata, family);
+            Assert.NotEqual(originalBytes, mutatedBytes);
+            metadata.typeDefs[0].flags = originalFlags; // restore
         }
 
         [Fact]
@@ -325,23 +439,59 @@ namespace Il2CppDumper.Tests
         public void SuiteRuntimeBudget_AssertUnderLimit()
         {
             // Suite runtime budget: generating and parsing the full matrix (9 families x 6 variants = 54 fixtures)
-            // must execute comfortably within a 5000 ms budget (typical execution is < 300 ms).
+            // PLUS end-to-end decompilation of all 9 positive families must execute comfortably within 5000 ms.
             var sw = Stopwatch.StartNew();
 
-            foreach (MetadataVersionFamily family in Enum.GetValues(typeof(MetadataVersionFamily)))
+            var tempDir = Path.Combine(Path.GetTempPath(), "budget_bench_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+
+            try
             {
-                foreach (MetadataCorruptionType corruption in Enum.GetValues(typeof(MetadataCorruptionType)))
+                var config = new Config
                 {
-                    var bytes = SyntheticMetadataGenerator.Generate(family, seed: 42, corruption);
-                    try
+                    DumpAttribute = false,
+                    DumpField = true,
+                    DumpMethod = true,
+                    DumpProperty = true,
+                    DumpTypeDefIndex = false
+                };
+
+                foreach (MetadataVersionFamily family in Enum.GetValues(typeof(MetadataVersionFamily)))
+                {
+                    // 1. Generation & parsing across all variants
+                    foreach (MetadataCorruptionType corruption in new[]
                     {
-                        using var m = new Metadata(new MemoryStream(bytes));
-                        _ = m.Version;
-                    }
-                    catch
+                        MetadataCorruptionType.None,
+                        MetadataCorruptionType.TruncatedSection,
+                        MetadataCorruptionType.WrongMagic,
+                        MetadataCorruptionType.OutOfRangeVersion,
+                        MetadataCorruptionType.LiteralExtentPastSectionEnd,
+                        MetadataCorruptionType.ZeroedMetadataRecords
+                    })
                     {
-                        // Expected for corruption variants
+                        var bytes = SyntheticMetadataGenerator.Generate(family, seed: 42, corruption);
+                        try
+                        {
+                            using var m = new Metadata(new MemoryStream(bytes));
+                            _ = m.Version;
+                        }
+                        catch
+                        {
+                            // Expected for corruption variants
+                        }
                     }
+
+                    // 2. End-to-end decompilation of positive fixture
+                    var (_, _, executor) = SyntheticEnvironment.Create(family, seed: 42);
+                    var familyOutDir = Path.Combine(tempDir, family.ToString());
+                    SyntheticEnvironment.DecompileToDirectory(executor, config, familyOutDir);
+                }
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    Directory.Delete(tempDir, true);
                 }
             }
 
