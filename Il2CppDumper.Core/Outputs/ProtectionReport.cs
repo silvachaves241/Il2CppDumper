@@ -606,10 +606,11 @@ namespace Il2CppDumper
                 };
 
                 var name = disambiguator.Disambiguate(rawName);
+                var sectionStart = fs.Position;
+                var nextSectionPos = sectionStart + sectionSize;
                 if (sectionSize > 0)
                 {
-                    var entropy = CalculateEntropy(fs, fs.Position, sectionSize);
-                    fs.Position += sectionSize;
+                    var entropy = CalculateEntropy(fs, sectionStart, sectionSize);
                     if (entropy >= HighEntropyThreshold)
                     {
                         findings.Add(new ProtectionFinding
@@ -621,6 +622,7 @@ namespace Il2CppDumper
                         });
                     }
                 }
+                fs.Position = nextSectionPos;
             }
         }
 

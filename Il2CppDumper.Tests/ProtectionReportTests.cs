@@ -152,6 +152,21 @@ namespace Il2CppDumper.Tests
             return ms.ToArray();
         }
 
+        private static byte[] CreateMultiSectionSyntheticWasm((byte sectionId, byte[] payload)[] sections)
+        {
+            using var ms = new MemoryStream();
+            using var w = new BinaryWriter(ms);
+            // Magic and version (\0asm\1\0\0\0)
+            w.Write(new byte[] { 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 });
+            foreach (var (sectionId, payload) in sections)
+            {
+                w.Write(sectionId);
+                w.Write(WriteULeb128(payload.Length));
+                w.Write(payload);
+            }
+            return ms.ToArray();
+        }
+
         private static byte[] CreateSyntheticMacho32((string name, byte[] data)[] sections)
         {
             using var ms = new MemoryStream();
@@ -760,6 +775,54 @@ namespace Il2CppDumper.Tests
                             $"Remediation string '{finding.Remediation}' references nonexistent config key '{key}'");
                     }
                 }
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void D3_R1_Wasm_MultipleSections_EntropyComputedForSubsequentSectionsWithoutCursorDrift()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "wasm_diag_test_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var metaPath = Path.Combine(tempDir, "global-metadata.dat");
+                File.WriteAllBytes(metaPath, CreateMinimalMetadata());
+
+                // Section 1: Type section (id 1) with low entropy (256 zeroes -> entropy 0.00)
+                var lowPayload = new byte[256];
+
+                // Section 2: Data section (id 11) with maximum entropy (256 distinct bytes -> entropy 8.00)
+                var uniformHighPayload = new byte[256];
+                for (int i = 0; i < 256; i++) uniformHighPayload[i] = (byte)i;
+
+                // Section 3: Custom section (id 0) with another distinct high entropy payload
+                var uniformHighPayload2 = new byte[256];
+                for (int i = 0; i < 256; i++) uniformHighPayload2[i] = (byte)(255 - i);
+
+                var wasmBytes = CreateMultiSectionSyntheticWasm(new[]
+                {
+                    ((byte)1, lowPayload),
+                    ((byte)11, uniformHighPayload),
+                    ((byte)0, uniformHighPayload2)
+                });
+
+                var wasmPath = Path.Combine(tempDir, "multi_section.wasm");
+                File.WriteAllBytes(wasmPath, wasmBytes);
+
+                var report = ProtectionDiagnostics.Analyze(wasmPath, metaPath, new Config());
+
+                // Diagnostics notes must not report read errors or stream bounds issues
+                Assert.DoesNotContain(report.Notes, n => n.Contains("warning") || n.Contains("error") || n.Contains("inaccessible"));
+
+                // HighEntropySection should be reported for both subsequent high entropy sections (data and custom)
+                var highFindings = report.Findings.Where(f => f.Finding == "HighEntropySection").ToList();
+                Assert.Equal(2, highFindings.Count);
+                Assert.Contains(highFindings, f => f.Target == "data" && f.Entropy == 8.00);
+                Assert.Contains(highFindings, f => f.Target == "custom" && f.Entropy == 8.00);
             }
             finally
             {
