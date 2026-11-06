@@ -605,5 +605,167 @@ namespace Il2CppDumper.Tests
                 }
             }
         }
+
+        [Fact]
+        public void B1_OverlappingOutputDirectories_AncestorDescendant_RejectedUpFront_ExitsTwo()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "batch-b1-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var fixturesDir = Path.Combine(tempDir, "fixtures");
+                var (wasm1, metaPath, _) = CreateSyntheticFixtures(fixturesDir, "sample1.wasm");
+                var wasm2 = Path.Combine(fixturesDir, "sample2.wasm");
+                File.Copy(wasm1, wasm2, true);
+
+                var parentOut = Path.Combine(tempDir, "out");
+                var childOut = Path.Combine(parentOut, "DummyDll");
+
+                var entries = new List<BatchEntry>
+                {
+                    new() { Executable = wasm1, Metadata = metaPath, Output = childOut },
+                    new() { Executable = wasm2, Metadata = metaPath, Output = parentOut }
+                };
+
+                var baseConfig = new Config { RequireAnyKey = false };
+                var originalStderr = Console.Error;
+                using var stderrSw = new StringWriter();
+                Console.SetError(stderrSw);
+                try
+                {
+                    var result = BatchProcessor.ExecuteEntries(entries, baseConfig, tempDir, "batch.json");
+                    Assert.Equal(2, result.ExitCode);
+                    var stderr = stderrSw.ToString();
+                    Assert.Contains("overlap", stderr, StringComparison.OrdinalIgnoreCase);
+                }
+                finally
+                {
+                    Console.SetError(originalStderr);
+                }
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void B2_MalformedBatchFile_NullElement_ExitsTwoWithIndexInStderr()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "batch-b2-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var batchJsonPath = Path.Combine(tempDir, "batch-null.json");
+                File.WriteAllText(batchJsonPath, "[null]");
+
+                var originalStderr = Console.Error;
+                using var stderrSw = new StringWriter();
+                Console.SetError(stderrSw);
+                try
+                {
+                    var runResult = BatchProcessor.RunBatch(batchJsonPath, new Config { RequireAnyKey = false });
+                    Assert.Equal(2, runResult.ExitCode);
+                    var stderr = stderrSw.ToString();
+                    Assert.Contains("index 0", stderr, StringComparison.OrdinalIgnoreCase);
+                    Assert.Contains("batch-null.json", stderr, StringComparison.OrdinalIgnoreCase);
+                }
+                finally
+                {
+                    Console.SetError(originalStderr);
+                }
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void B3_InvalidConfigOverrideType_RejectedUpFront_ExitsTwoWithoutRunningDumps()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "batch-b3-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var fixturesDir = Path.Combine(tempDir, "fixtures");
+                var (wasm1, metaPath, _) = CreateSyntheticFixtures(fixturesDir, "sample1.wasm");
+                var outDir = Path.Combine(tempDir, "out");
+
+                using var doc = JsonDocument.Parse("{\"DumpMethod\": \"not-a-bool\"}");
+                var entries = new List<BatchEntry>
+                {
+                    new() { Executable = wasm1, Metadata = metaPath, Output = outDir, Config = doc.RootElement.Clone() }
+                };
+
+                var baseConfig = new Config { RequireAnyKey = false };
+                var originalStderr = Console.Error;
+                using var stderrSw = new StringWriter();
+                Console.SetError(stderrSw);
+                try
+                {
+                    var result = BatchProcessor.ExecuteEntries(entries, baseConfig, tempDir, "batch.json");
+                    Assert.Equal(2, result.ExitCode);
+                    var stderr = stderrSw.ToString();
+                    Assert.Contains("entry 0", stderr, StringComparison.OrdinalIgnoreCase);
+                    Assert.False(Directory.Exists(outDir), "Dump must not have run because validation failed up front");
+                }
+                finally
+                {
+                    Console.SetError(originalStderr);
+                }
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void B4_ReusedOutputDirectoryWithStaleJson_BatchResultOmitsUnproducedResidues()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "batch-b4-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var fixturesDir = Path.Combine(tempDir, "fixtures");
+                var (wasm1, metaPath, _) = CreateSyntheticFixtures(fixturesDir, "sample1.wasm");
+                var outDir = Path.Combine(tempDir, "out");
+                Directory.CreateDirectory(outDir);
+
+                var staleDumpJson = Path.Combine(outDir, "dump.json");
+                File.WriteAllText(staleDumpJson, "{\"stale\": true}");
+
+                using var doc = JsonDocument.Parse("{\"GenerateJsonDump\": false, \"GenerateDummyDll\": false}");
+                var entries = new List<BatchEntry>
+                {
+                    new() { Executable = wasm1, Metadata = metaPath, Output = outDir, Config = doc.RootElement.Clone() }
+                };
+
+                var baseConfig = new Config { RequireAnyKey = false };
+                var result = BatchProcessor.ExecuteEntries(entries, baseConfig, tempDir, "batch.json");
+                Assert.Equal(0, result.ExitCode);
+
+                var entryResult = Assert.Single(result.Results);
+                Assert.True(entryResult.Success);
+                Assert.DoesNotContain(entryResult.Outputs, o => o.EndsWith("dump.json", StringComparison.OrdinalIgnoreCase));
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
     }
 }

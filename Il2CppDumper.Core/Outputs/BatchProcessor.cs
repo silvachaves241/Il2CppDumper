@@ -67,17 +67,19 @@ namespace Il2CppDumper.Core
             TextWriter? errorLog = null,
             string? resultOutputPath = null)
         {
+            log ??= Console.Out;
+            errorLog ??= Console.Error;
             if (string.IsNullOrWhiteSpace(batchFilePath))
             {
                 var msg = "ERROR: Missing batch file path.";
-                errorLog?.WriteLine(msg);
+                errorLog.WriteLine(msg);
                 return new BatchRunResult { ExitCode = 2, ErrorMessage = msg, OffendingPath = string.Empty };
             }
 
             if (!File.Exists(batchFilePath))
             {
                 var msg = $"ERROR: Batch file not found: {batchFilePath}";
-                errorLog?.WriteLine(msg);
+                errorLog.WriteLine(msg);
                 return new BatchRunResult { ExitCode = 2, ErrorMessage = msg, OffendingPath = batchFilePath };
             }
 
@@ -89,8 +91,20 @@ namespace Il2CppDumper.Core
                 if (doc.RootElement.ValueKind != JsonValueKind.Array)
                 {
                     var msg = $"ERROR: Malformed batch file '{batchFilePath}': Root must be a JSON array.";
-                    errorLog?.WriteLine(msg);
+                    errorLog.WriteLine(msg);
                     return new BatchRunResult { ExitCode = 2, ErrorMessage = msg, OffendingPath = batchFilePath };
+                }
+
+                int elementIndex = 0;
+                foreach (var elem in doc.RootElement.EnumerateArray())
+                {
+                    if (elem.ValueKind == JsonValueKind.Null || elem.ValueKind != JsonValueKind.Object)
+                    {
+                        var msg = $"ERROR: Malformed batch file '{batchFilePath}': Entry {elementIndex} (index {elementIndex}) is null or not a JSON object.";
+                        errorLog.WriteLine(msg);
+                        return new BatchRunResult { ExitCode = 2, ErrorMessage = msg, OffendingPath = batchFilePath };
+                    }
+                    elementIndex++;
                 }
 
                 entries = JsonSerializer.Deserialize<List<BatchEntry>>(jsonBytes, JsonOptions);
@@ -122,15 +136,31 @@ namespace Il2CppDumper.Core
             TextWriter? errorLog = null,
             string? resultOutputPath = null)
         {
+            log ??= Console.Out;
+            errorLog ??= Console.Error;
             var results = new List<BatchResultEntry>();
 
-            // Up-front validation: check required fields and duplicate output directories
-            var comparison = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
-            var seenOutputs = new Dictionary<string, int>(comparison);
+            if (entries == null)
+            {
+                var msg = $"ERROR: Malformed batch file '{batchFilePath}': Entries collection is null.";
+                errorLog.WriteLine(msg);
+                return new BatchRunResult { ExitCode = 2, ErrorMessage = msg, OffendingPath = batchFilePath };
+            }
+
+            // Up-front validation: check null entries, required fields, invalid config overrides, and overlapping output directories
+            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            var normalizedDirs = new List<(string Normalized, int Index, string Original)>();
+            var preparedConfigs = new Config[entries.Count];
 
             for (int i = 0; i < entries.Count; i++)
             {
                 var entry = entries[i];
+                if (entry == null)
+                {
+                    var msg = $"ERROR: Malformed batch file '{batchFilePath}': Entry {i} is null.";
+                    errorLog?.WriteLine(msg);
+                    return new BatchRunResult { ExitCode = 2, ErrorMessage = msg, OffendingPath = batchFilePath };
+                }
                 if (string.IsNullOrWhiteSpace(entry.Executable))
                 {
                     var msg = $"ERROR: Malformed batch file '{batchFilePath}': Entry {i} is missing 'executable'.";
@@ -150,22 +180,52 @@ namespace Il2CppDumper.Core
                     return new BatchRunResult { ExitCode = 2, ErrorMessage = msg, OffendingPath = batchFilePath };
                 }
 
-                var resolvedOut = ResolveOutputDir(entry.Output, batchDir);
-                var normalizedOut = Path.GetFullPath(resolvedOut).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                if (seenOutputs.TryGetValue(normalizedOut, out var previousIndex))
+                // Check for overlapping output directories (exact equality or ancestor/descendant relationship)
+                var norm = NormalizeDirectoryPath(entry.Output, batchDir);
+                foreach (var prev in normalizedDirs)
                 {
-                    var msg = $"ERROR: Duplicate output directory '{entry.Output}' detected across batch entries {previousIndex} and {i}.";
-                    errorLog?.WriteLine(msg);
-                    return new BatchRunResult { ExitCode = 2, ErrorMessage = msg, OffendingPath = entry.Output };
+                    if (AreOverlappingDirectories(prev.Normalized, norm, comparison))
+                    {
+                        var kind = string.Equals(prev.Normalized, norm, comparison) ? "Duplicate" : "Overlapping";
+                        var msg = $"ERROR: {kind} output directory detected between batch entry {prev.Index} ('{prev.Original}') and entry {i} ('{entry.Output}').";
+                        errorLog.WriteLine(msg);
+                        return new BatchRunResult { ExitCode = 2, ErrorMessage = msg, OffendingPath = entry.Output };
+                    }
                 }
-                seenOutputs.Add(normalizedOut, i);
+                normalizedDirs.Add((norm, i, entry.Output));
+
+                // Validate and prepare configuration overrides up-front
+                if (entry.Config.HasValue && entry.Config.Value.ValueKind != JsonValueKind.Null)
+                {
+                    if (entry.Config.Value.ValueKind != JsonValueKind.Object)
+                    {
+                        var msg = $"ERROR: Malformed batch file '{batchFilePath}': Entry {i} 'config' must be a JSON object.";
+                        errorLog.WriteLine(msg);
+                        return new BatchRunResult { ExitCode = 2, ErrorMessage = msg, OffendingPath = batchFilePath };
+                    }
+
+                    try
+                    {
+                        preparedConfigs[i] = MergeConfigStrict(baseConfig, entry.Config.Value, i);
+                    }
+                    catch (Exception ex)
+                    {
+                        var msg = $"ERROR: Malformed batch file '{batchFilePath}': Entry {i} has invalid configuration override: {ex.Message}";
+                        errorLog.WriteLine(msg);
+                        return new BatchRunResult { ExitCode = 2, ErrorMessage = msg, OffendingPath = batchFilePath };
+                    }
+                }
+                else
+                {
+                    preparedConfigs[i] = Dumper.CloneConfig(baseConfig);
+                }
             }
 
             // Execute entries sequentially
             for (int i = 0; i < entries.Count; i++)
             {
                 var entry = entries[i];
-                var effectiveConfig = MergeConfig(baseConfig, entry.Config);
+                var effectiveConfig = preparedConfigs[i];
 
                 var resolvedExecutable = ResolveInputPath(entry.Executable, batchDir);
                 var resolvedMetadata = ResolveInputPath(entry.Metadata, batchDir);
@@ -191,7 +251,7 @@ namespace Il2CppDumper.Core
                 {
                     resultEntry.Success = true;
                     resultEntry.Error = null;
-                    resultEntry.Outputs = CollectOutputs(resolvedOutputDir, entry.Output);
+                    resultEntry.Outputs = FormatProducedOutputs(dumpResult.ProducedFiles, resolvedOutputDir, entry.Output);
                 }
                 else
                 {
@@ -264,24 +324,47 @@ namespace Il2CppDumper.Core
             return Path.GetFullPath(path);
         }
 
-        private static List<string> CollectOutputs(string fullOutputDir, string originalEntryOutput)
+        private static string NormalizeDirectoryPath(string path, string batchDir)
+        {
+            var resolved = ResolveOutputDir(path, batchDir);
+            var full = Path.GetFullPath(resolved);
+            if (!full.EndsWith(Path.DirectorySeparatorChar.ToString()) && !full.EndsWith(Path.AltDirectorySeparatorChar.ToString()))
+            {
+                full += Path.DirectorySeparatorChar;
+            }
+            return full;
+        }
+
+        private static bool AreOverlappingDirectories(string dirA, string dirB, StringComparison comparison)
+        {
+            // Both dirA and dirB end with DirectorySeparatorChar
+            return string.Equals(dirA, dirB, comparison)
+                || dirB.StartsWith(dirA, comparison)
+                || dirA.StartsWith(dirB, comparison);
+        }
+
+        private static List<string> FormatProducedOutputs(
+            IEnumerable<string>? producedFiles,
+            string fullOutputDir,
+            string originalEntryOutput)
         {
             var list = new List<string>();
-            if (!Directory.Exists(fullOutputDir))
-            {
-                return list;
-            }
-
             var normalizedEntry = originalEntryOutput.Replace('\\', '/').TrimEnd('/');
 
-            var files = Directory.EnumerateFiles(fullOutputDir, "*", SearchOption.AllDirectories);
-            foreach (var file in files)
+            if (producedFiles != null)
             {
-                var rel = Path.GetRelativePath(fullOutputDir, file).Replace('\\', '/');
-                var entryPath = string.IsNullOrEmpty(normalizedEntry)
-                    ? rel
-                    : $"{normalizedEntry}/{rel}";
-                list.Add(entryPath);
+                foreach (var file in producedFiles)
+                {
+                    if (!File.Exists(file))
+                        continue;
+
+                    var fullFile = Path.GetFullPath(file);
+                    var rel = Path.GetRelativePath(fullOutputDir, fullFile).Replace('\\', '/');
+                    var entryPath = string.IsNullOrEmpty(normalizedEntry)
+                        ? rel
+                        : $"{normalizedEntry}/{rel}";
+                    list.Add(entryPath);
+                }
             }
 
             list.Sort(StringComparer.Ordinal);
@@ -319,27 +402,35 @@ namespace Il2CppDumper.Core
 
         public static Config MergeConfig(Config baseConfig, JsonElement? overrides)
         {
-            var clone = Dumper.CloneConfig(baseConfig);
             if (!overrides.HasValue || overrides.Value.ValueKind != JsonValueKind.Object)
             {
-                return clone;
+                return Dumper.CloneConfig(baseConfig);
+            }
+            return MergeConfigStrict(baseConfig, overrides.Value, -1);
+        }
+
+        public static Config MergeConfigStrict(Config baseConfig, JsonElement overrides, int entryIndex)
+        {
+            var clone = Dumper.CloneConfig(baseConfig);
+            if (overrides.ValueKind != JsonValueKind.Object)
+            {
+                throw new JsonException($"Entry {entryIndex} 'config' must be a JSON object.");
             }
 
-            try
+            var baseNode = JsonSerializer.SerializeToNode(clone)!.AsObject();
+            foreach (var prop in overrides.EnumerateObject())
             {
-                var baseNode = JsonSerializer.SerializeToNode(clone)!.AsObject();
-                foreach (var prop in overrides.Value.EnumerateObject())
-                {
-                    var valNode = JsonNode.Parse(prop.Value.GetRawText());
-                    baseNode[prop.Name] = valNode;
-                }
+                var valNode = JsonNode.Parse(prop.Value.GetRawText());
+                baseNode[prop.Name] = valNode;
+            }
 
-                return JsonSerializer.Deserialize<Config>(baseNode.ToJsonString(), JsonOptions) ?? clone;
-            }
-            catch
+            var mergedJson = baseNode.ToJsonString();
+            var merged = JsonSerializer.Deserialize<Config>(mergedJson, JsonOptions);
+            if (merged == null)
             {
-                return clone;
+                throw new JsonException($"Entry {entryIndex} configuration deserialized to null.");
             }
+            return merged;
         }
     }
 }
