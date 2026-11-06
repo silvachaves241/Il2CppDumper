@@ -149,6 +149,12 @@ else
 
 **Português:** Saída de dump legível por máquina (`dump.json`, chave `GenerateJsonDump`), capturando as mesmas informações estruturadas de `dump.cs` em formato JSON (`types`, `fields`, `properties`, `methods`, `enums`, `nested`). Tipos, campos, propriedades e métodos preservam `attributes` declarados (incluindo `[Serializable]` em tipos anotados).
 
+#### run-manifest.json
+
+运行状态清单文件（`GenerateRunManifest`，默认值为 `true`），在每次运行结束时（成功或失败）生成，记录 `tool`（`name`、`version`）、`startedAt`（ISO-8601 UTC）、`durationMs`、`success`、`effectiveConfig`（当前生效的完整配置快照）、`counts`（`types`、`methods`、`fields`、`properties`、`attributes`、`attributesFailed`、`stringLiterals`）、`warnings`（`total`、包含 `attributeDecode` 与 `stringLiteral` 的 `byCategory`）以及确定性的流式 `outputs`（`path`、`sha256`、`bytes`）。在失败运行时，清单将以 `success: false` 和部分数据写入，并保持退出代码语义不变。
+
+**Português:** Arquivo de manifesto operacional de execução (`run-manifest.json`, chave `GenerateRunManifest`, padrão `true`), gravado ao final de cada execução (sucesso ou falha). Registra `tool` (`name`, `version`), `startedAt` (ISO-8601 UTC), `durationMs`, `success`, `effectiveConfig` (snapshot das configurações efetivas aplicadas), `counts` (`types`, `methods`, `fields`, `properties`, `attributes`, `attributesFailed`, `stringLiterals`), `warnings` (`total`, `byCategory` com `attributeDecode` e `stringLiteral`) e a lista determinística de `outputs` (`path`, `sha256`, `bytes`). Em execuções com falha, o manifesto é gravado com `success: false` e dados parciais, preservando a semântica de código de saída.
+
 ### 差异对比 (Diffing / Il2CppDumper.Diff)
 
 独立结构化比对工具，消费两次分析生成的结构化转储（`dump.json` 与 `script.json` 地址映射），输出机器可读的增量差异报告 `dump-diff.json`。
@@ -297,8 +303,8 @@ Il2CppDumper.Diff --drift <left> <right> <output>
 * `DumpMethod`，`DumpField`，`DumpProperty`，`DumpAttribute`，`DumpFieldOffset`, `DumpMethodOffset`, `DumpTypeDefIndex`
   * 是否在dump.cs输出相应的内容（`DumpProperty` 和 `DumpAttribute` 默认值为 `true`）
 
-* `GenerateDummyDll`，`GenerateStruct`，`GenerateJsonDump`
-  * 是否生成这些内容（`GenerateStruct` 控制 `StructGenerator` 输出的内容：`script.json`、`stringliteral.json`、`stringliteral-indexed.json` 和 `il2cpp.h`；`GenerateJsonDump` 控制 `dump.json` 输出，默认值为 `false`）
+* `GenerateDummyDll`，`GenerateStruct`，`GenerateJsonDump`，`GenerateRunManifest`
+  * 是否生成这些内容（`GenerateStruct` 控制 `StructGenerator` 输出的内容：`script.json`、`stringliteral.json`、`stringliteral-indexed.json` 和 `il2cpp.h`；`GenerateJsonDump` 控制 `dump.json` 输出，默认值为 `false`；`GenerateRunManifest` 控制运行状态清单 `run-manifest.json` 的输出，默认值为 `true`）
 
 * `DummyDllAddToken`
   * 是否在DummyDll中添加token

@@ -29,6 +29,10 @@ namespace Il2CppDumper
         private readonly Il2Cpp il2Cpp;
         private readonly Dictionary<Il2CppMethodDefinition, string> methodModifiers;
         public DecompilerLogger log { get; set; } = new();
+        public int TypesCount { get; private set; }
+        public int MethodsCount { get; private set; }
+        public int FieldsCount { get; private set; }
+        public int PropertiesCount { get; private set; }
         public long CustomAttributeWrittenCount { get; private set; }
         public long CustomAttributeFailedCount { get; private set; }
         public string ErrorMessage { get; private set; }
@@ -44,6 +48,10 @@ namespace Il2CppDumper
         public bool Decompile(Config config, string outputDir)
         {
             var success = true;
+            TypesCount = 0;
+            MethodsCount = 0;
+            FieldsCount = 0;
+            PropertiesCount = 0;
             CustomAttributeWrittenCount = 0;
             CustomAttributeFailedCount = 0;
             var writer = new StreamWriter(new FileStream(outputDir + "dump.cs", FileMode.Create), new UTF8Encoding(false));
@@ -63,6 +71,7 @@ namespace Il2CppDumper
                     for (int typeDefIndex = imageDef.typeStart; typeDefIndex < typeEnd; typeDefIndex++)
                     {
                         var typeDef = metadata.typeDefs[typeDefIndex];
+                        TypesCount++;
                         var extends = new List<string>();
                         if (typeDef.parentIndex >= 0)
                         {
@@ -140,6 +149,7 @@ namespace Il2CppDumper
                             for (var i = typeDef.fieldStart; i < fieldEnd; ++i)
                             {
                                 var fieldDef = metadata.fieldDefs[i];
+                                FieldsCount++;
                                 var fieldType = il2Cpp.types[fieldDef.typeIndex];
                                 var isStatic = false;
                                 var isConst = false;
@@ -228,6 +238,7 @@ namespace Il2CppDumper
                             for (var i = typeDef.propertyStart; i < propertyEnd; ++i)
                             {
                                 var propertyDef = metadata.propertyDefs[i];
+                                PropertiesCount++;
                                 if (config.DumpAttribute)
                                 {
                                     writer.Write(GetCustomAttribute(imageDef, propertyDef.customAttributeIndex, propertyDef.token, "\t", $"{metadata.GetStringFromIndex(typeDef.nameIndex)}.{metadata.GetStringFromIndex(propertyDef.nameIndex)}"));
@@ -272,6 +283,7 @@ namespace Il2CppDumper
                                 var i = metadata.GetMethodIndexFromTypeDefinition(typeDefIndex, methodIndexInType);
                                 writer.Write("\n");
                                 var methodDef = metadata.methodDefs[i];
+                                MethodsCount++;
                                 var isAbstract = (methodDef.flags & METHOD_ATTRIBUTE_ABSTRACT) != 0;
                                 if (config.DumpAttribute)
                                 {

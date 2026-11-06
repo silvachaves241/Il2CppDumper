@@ -147,6 +147,7 @@ namespace Il2CppDumper
                     try
                     {
                         DumpMetadataWriter.WriteInitial(outputDir, il2cppPath, candidateMetadataPath, config);
+                        RunManifestWriter.Write(outputDir, config, DateTime.UtcNow, 0, false, new RunManifestCounts(), new RunManifestWarnings());
                     }
                     catch (Exception e)
                     {

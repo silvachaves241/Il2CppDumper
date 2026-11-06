@@ -33,6 +33,9 @@ namespace Il2CppDumper
         private static readonly HashSet<string> specialKeywords = new(StringComparer.Ordinal)
         { "inline", "near", "far" };
 
+        public int StringLiteralsCount { get; private set; }
+        public int StringLiteralsFailedCount { get; private set; }
+
         public StructGenerator(Il2CppExecutor il2CppExecutor)
         {
             executor = il2CppExecutor;
@@ -376,7 +379,9 @@ namespace Il2CppDumper
             var jsonOptions = new JsonSerializerOptions() { WriteIndented = true, IncludeFields = true };
             File.WriteAllText(outputDir + "stringliteral.json", JsonSerializer.Serialize(stringLiterals, jsonOptions), new UTF8Encoding(false));
             //输出按索引排序的完整StringLiteral取证表
-            var indexedStringLiterals = metadata.DumpStringLiterals();
+            var indexedStringLiterals = metadata.DumpStringLiterals(out var failedLiterals);
+            StringLiteralsCount = indexedStringLiterals.Count;
+            StringLiteralsFailedCount = failedLiterals;
             File.WriteAllText(outputDir + "stringliteral-indexed.json", JsonSerializer.Serialize(indexedStringLiterals, jsonOptions), new UTF8Encoding(false));
             //写入文件
             File.WriteAllText(outputDir + "script.json", JsonSerializer.Serialize(json, jsonOptions));

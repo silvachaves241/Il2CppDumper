@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -962,8 +962,11 @@ namespace Il2CppDumper
             return TryGetStringLiteral(index, out var value, out _, out _) ? value : string.Empty;
         }
 
-        public List<StringLiteralRecord> DumpStringLiterals()
+        public List<StringLiteralRecord> DumpStringLiterals() => DumpStringLiterals(out _);
+
+        public List<StringLiteralRecord> DumpStringLiterals(out int failedCount)
         {
+            failedCount = 0;
             var result = new List<StringLiteralRecord>();
             if (stringLiterals == null)
             {
@@ -979,7 +982,12 @@ namespace Il2CppDumper
                     dataIndex = stringLiteral?.dataIndex ?? 0
                 };
 
-                if (TryGetStringLiteral(i, out var val, out var dIdx, out var len))
+                bool hasLit = TryGetStringLiteral(i, out var val, out var dIdx, out var len);
+                if (!hasLit)
+                {
+                    failedCount++;
+                }
+                else
                 {
                     record.value = val;
                     record.dataIndex = dIdx;

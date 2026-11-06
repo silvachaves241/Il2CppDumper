@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -29,6 +30,11 @@ namespace Il2CppDumper.Core
 
             using (CoreLogger.Scope(request.Log, warnings))
             {
+                var stopwatch = Stopwatch.StartNew();
+                var startedAtUtc = DateTime.UtcNow;
+                var counts = new RunManifestCounts();
+                var manifestWarnings = new RunManifestWarnings();
+
                 string outputDir;
                 if (string.IsNullOrWhiteSpace(request.OutputDirectory))
                 {
@@ -57,6 +63,21 @@ namespace Il2CppDumper.Core
 
                 var config = request.Config != null ? CloneConfig(request.Config) : new Config();
 
+                void WriteRunManifest(bool success)
+                {
+                    try
+                    {
+                        if (config.GenerateRunManifest)
+                        {
+                            RunManifestWriter.Write(outputDir, config, startedAtUtc, stopwatch.ElapsedMilliseconds, success, counts, manifestWarnings);
+                        }
+                    }
+                    catch
+                    {
+                        // ignored
+                    }
+                }
+
                 var il2cppPath = Path.GetFullPath(request.ExecutablePath);
                 var metadataPath = Path.GetFullPath(request.MetadataPath);
 
@@ -64,6 +85,8 @@ namespace Il2CppDumper.Core
                 {
                     var msg = $"ERROR: Executable file not found: {il2cppPath}";
                     CoreLogger.WriteLine(msg);
+                    WriteRunManifest(false);
+                    PopulateOutputs(outputDir, outputs);
                     return new DumpResult(false, msg, warnings, outputs);
                 }
 
@@ -71,6 +94,8 @@ namespace Il2CppDumper.Core
                 {
                     var msg = "ERROR: Metadata file not found or encrypted.";
                     CoreLogger.WriteLine(msg);
+                    WriteRunManifest(false);
+                    PopulateOutputs(outputDir, outputs);
                     return new DumpResult(false, msg, warnings, outputs);
                 }
 
@@ -85,7 +110,6 @@ namespace Il2CppDumper.Core
                             try
                             {
                                 DumpMetadataWriter.WriteInitial(outputDir, il2cppPath, metadataPath, config);
-                                PopulateOutputs(outputDir, outputs);
                             }
                             catch
                             {
@@ -94,6 +118,8 @@ namespace Il2CppDumper.Core
 
                             var msg = "ERROR: Metadata file not found or encrypted.";
                             CoreLogger.WriteLine(msg);
+                            WriteRunManifest(false);
+                            PopulateOutputs(outputDir, outputs);
                             return new DumpResult(false, msg, warnings, outputs);
                         }
                     }
@@ -102,6 +128,7 @@ namespace Il2CppDumper.Core
                 {
                     var msg = e.ToString();
                     CoreLogger.WriteLine(msg);
+                    WriteRunManifest(false);
                     PopulateOutputs(outputDir, outputs);
                     return new DumpResult(false, msg, warnings, outputs);
                 }
@@ -117,6 +144,7 @@ namespace Il2CppDumper.Core
                     CoreLogger.WriteLine(e);
                     var msg = $"ERROR: Failed to write dump metadata: {e.Message}";
                     CoreLogger.WriteLine(msg);
+                    WriteRunManifest(false);
                     PopulateOutputs(outputDir, outputs);
                     return new DumpResult(false, msg, warnings, outputs);
                 }
@@ -127,11 +155,13 @@ namespace Il2CppDumper.Core
                 {
                     if (!Init(il2cppPath, metadataPath, config, out metadata, out il2Cpp, outputDir, dumpMetadata, request))
                     {
+                        WriteRunManifest(false);
                         PopulateOutputs(outputDir, outputs);
                         return new DumpResult(false, "ERROR: An error occurred while processing.", warnings, outputs);
                     }
 
-                    var dumpSuccess = ExecuteDump(metadata, il2Cpp, config, outputDir, out var dumpError);
+                    var dumpSuccess = ExecuteDump(metadata, il2Cpp, config, outputDir, out var dumpError, out counts, out manifestWarnings);
+                    WriteRunManifest(dumpSuccess);
                     PopulateOutputs(outputDir, outputs);
 
                     return new DumpResult(
@@ -144,6 +174,7 @@ namespace Il2CppDumper.Core
                 catch (Exception e)
                 {
                     CoreLogger.WriteLine(e);
+                    WriteRunManifest(false);
                     PopulateOutputs(outputDir, outputs);
                     return new DumpResult(false, e.ToString(), warnings, outputs);
                 }
@@ -369,10 +400,20 @@ namespace Il2CppDumper.Core
             return true;
         }
 
-        internal static bool ExecuteDump(Metadata metadata, Il2Cpp il2Cpp, Config config, string outputDir, out string? errorMessage)
+        internal static bool ExecuteDump(
+            Metadata metadata,
+            Il2Cpp il2Cpp,
+            Config config,
+            string outputDir,
+            out string? errorMessage,
+            out RunManifestCounts counts,
+            out RunManifestWarnings manifestWarnings)
         {
             var success = true;
             var errors = new List<string>();
+            counts = new RunManifestCounts();
+            manifestWarnings = new RunManifestWarnings();
+
             CoreLogger.WriteLine("Dumping...");
             var executor = new Il2CppExecutor(metadata, il2Cpp);
             var decompiler = new Il2CppDecompiler(executor);
@@ -389,13 +430,25 @@ namespace Il2CppDumper.Core
                 }
             }
             CoreLogger.WriteLine("Done!");
+
+            counts.Types = decompiler.TypesCount;
+            counts.Methods = decompiler.MethodsCount;
+            counts.Fields = decompiler.FieldsCount;
+            counts.Properties = decompiler.PropertiesCount;
+            counts.Attributes = decompiler.CustomAttributeWrittenCount;
+            counts.AttributesFailed = decompiler.CustomAttributeFailedCount;
+            manifestWarnings.ByCategory.AttributeDecode = (int)decompiler.CustomAttributeFailedCount;
+
+            StructGenerator? scriptGenerator = null;
             if (config.GenerateStruct)
             {
                 CoreLogger.WriteLine("Generate struct...");
                 try
                 {
-                    var scriptGenerator = new StructGenerator(executor);
+                    scriptGenerator = new StructGenerator(executor);
                     scriptGenerator.WriteScript(outputDir);
+                    counts.StringLiterals = scriptGenerator.StringLiteralsCount;
+                    manifestWarnings.ByCategory.StringLiteral = scriptGenerator.StringLiteralsFailedCount;
                     CoreLogger.WriteLine("Done!");
                 }
                 catch (Exception e)
@@ -422,8 +475,15 @@ namespace Il2CppDumper.Core
                     success = false;
                 }
             }
+
+            manifestWarnings.Total = manifestWarnings.ByCategory.AttributeDecode + manifestWarnings.ByCategory.StringLiteral;
             errorMessage = errors.Count > 0 ? string.Join(Environment.NewLine, errors) : null;
             return success;
+        }
+
+        internal static bool ExecuteDump(Metadata metadata, Il2Cpp il2Cpp, Config config, string outputDir, out string? errorMessage)
+        {
+            return ExecuteDump(metadata, il2Cpp, config, outputDir, out errorMessage, out _, out _);
         }
 
         internal static bool ExecuteDump(Metadata metadata, Il2Cpp il2Cpp, Config config, string outputDir)
@@ -436,6 +496,7 @@ namespace Il2CppDumper.Core
             var candidates = new[]
             {
                 DumpMetadataWriter.FileName,
+                RunManifestWriter.FileName,
                 "dump.cs",
                 "dump.json",
                 "script.json",
@@ -469,6 +530,7 @@ namespace Il2CppDumper.Core
                 GenerateDummyDll = source.GenerateDummyDll,
                 GenerateStruct = source.GenerateStruct,
                 GenerateJsonDump = source.GenerateJsonDump,
+                GenerateRunManifest = source.GenerateRunManifest,
                 DummyDllAddToken = source.DummyDllAddToken,
                 RequireAnyKey = source.RequireAnyKey,
                 ForceIl2CppVersion = source.ForceIl2CppVersion,

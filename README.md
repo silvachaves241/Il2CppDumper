@@ -151,6 +151,12 @@ Machine-readable dump output (`GenerateJsonDump`) capturing the same structured 
 
 **Português:** Saída de dump legível por máquina (`dump.json`, chave `GenerateJsonDump`), capturando as mesmas informações estruturadas de `dump.cs` em formato JSON (`types`, `fields`, `properties`, `methods`, `enums`, `nested`). Tipos, campos, propriedades e métodos preservam `attributes` declarados (incluindo `[Serializable]` em tipos anotados).
 
+#### run-manifest.json
+
+Operational summary file (`GenerateRunManifest`, default `true`) written at the end of every run (success or failure), recording `tool` (`name`, `version`), `startedAt` (ISO-8601 UTC), `durationMs`, `success`, `effectiveConfig` (snapshot of the configuration in effect), `counts` (`types`, `methods`, `fields`, `properties`, `attributes`, `attributesFailed`, `stringLiterals`), `warnings` (`total`, `byCategory` containing `attributeDecode` and `stringLiteral`), and deterministic streaming `outputs` (`path`, `sha256`, `bytes`). On failed runs, the manifest is written with `success: false` and partial data while preserving exit code semantics.
+
+**Português:** Arquivo de manifesto operacional de execução (`run-manifest.json`, chave `GenerateRunManifest`, padrão `true`), gravado ao final de cada execução (sucesso ou falha). Registra `tool` (`name`, `version`), `startedAt` (ISO-8601 UTC), `durationMs`, `success`, `effectiveConfig` (snapshot das configurações efetivas aplicadas), `counts` (`types`, `methods`, `fields`, `properties`, `attributes`, `attributesFailed`, `stringLiterals`), `warnings` (`total`, `byCategory` com `attributeDecode` e `stringLiteral`) e a lista determinística de `outputs` (`path`, `sha256`, `bytes`). Em execuções com falha, o manifesto é gravado com `success: false` e dados parciais, preservando a semântica de código de saída.
+
 ### Diffing (Il2CppDumper.Diff)
 
 Standalone comparison tool consuming two structured dumps (`dump.json` and `script.json` address maps) and emitting a machine-readable delta `dump-diff.json`.
@@ -303,8 +309,8 @@ Available options:
 * `DumpMethod`, `DumpField`, `DumpProperty`, `DumpAttribute`, `DumpFieldOffset`, `DumpMethodOffset`, `DumpTypeDefIndex`
   * Whether to output these information to dump.cs (`DumpProperty` and `DumpAttribute` default to `true`)
 
-* `GenerateDummyDll`, `GenerateStruct`, `GenerateJsonDump`
-  * Whether to generate these things (`GenerateStruct` controls `StructGenerator` output: `script.json`, `stringliteral.json`, `stringliteral-indexed.json`, and `il2cpp.h`; `GenerateJsonDump` controls `dump.json` output, defaults to `false`)
+* `GenerateDummyDll`, `GenerateStruct`, `GenerateJsonDump`, `GenerateRunManifest`
+  * Whether to generate these things (`GenerateStruct` controls `StructGenerator` output: `script.json`, `stringliteral.json`, `stringliteral-indexed.json`, and `il2cpp.h`; `GenerateJsonDump` controls `dump.json` output, defaults to `false`; `GenerateRunManifest` controls `run-manifest.json` operational summary, defaults to `true`)
 
 * `DummyDllAddToken`
   * Whether to add token in DummyDll
