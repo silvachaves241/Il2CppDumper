@@ -421,7 +421,7 @@ jobs:
           git fetch --tags --force origin 2>/dev/null || true
 
           # 1. Anti-collision check on remote git tag if present
-          REMOTE_TAG_SHA=$(git ls-remote --tags origin "refs/tags/${TAG}^{commit}" | awk '{print $1}')
+          REMOTE_TAG_SHA=$(git ls-remote --tags origin "refs/tags/${TAG}^{}" | awk '{print $1}')
           if [ -z "$REMOTE_TAG_SHA" ]; then
             REMOTE_TAG_SHA=$(git ls-remote --tags origin "refs/tags/${TAG}" | awk '{print $1}')
           fi
