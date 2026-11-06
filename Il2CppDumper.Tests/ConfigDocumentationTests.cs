@@ -197,6 +197,7 @@ namespace Il2CppDumper.Tests
                 "GenerateStruct",
                 "GenerateJsonDump",
                 "GenerateRunManifest",
+                "GenerateProtectionReport",
                 "DummyDllAddToken",
                 "RequireAnyKey",
                 "ForceIl2CppVersion",
@@ -232,6 +233,7 @@ namespace Il2CppDumper.Tests
                 "GenerateStruct",
                 "GenerateJsonDump",
                 "GenerateRunManifest",
+                "GenerateProtectionReport",
                 "DummyDllAddToken",
                 "RequireAnyKey",
                 "ForceIl2CppVersion",
@@ -801,6 +803,87 @@ namespace Il2CppDumper.Tests
             Assert.Contains("`BatchMode`, `StopOnFirstError`", content);
             Assert.Contains("**Português:**", content);
             Assert.Contains("Processamento em lote orientado a arquivo", content);
+        }
+
+        [Fact]
+        public void Config_DefaultConstructor_HasGenerateProtectionReportTrueByDefault()
+        {
+            var config = new Config();
+            Assert.True(config.GenerateProtectionReport);
+        }
+
+        [Fact]
+        public void Config_DeserializingEmptyJson_ProducesTrueForGenerateProtectionReport()
+        {
+            var config = JsonSerializer.Deserialize<Config>("{}");
+            Assert.NotNull(config);
+            Assert.True(config.GenerateProtectionReport);
+        }
+
+        [Fact]
+        public void Config_DeserializingGenerateProtectionReportTrue_EnablesGenerationGate()
+        {
+            const string json = "{\"GenerateProtectionReport\": true}";
+            var config = JsonSerializer.Deserialize<Config>(json);
+            Assert.NotNull(config);
+            Assert.True(config.GenerateProtectionReport);
+        }
+
+        [Fact]
+        public void Config_DeserializingGenerateProtectionReportFalse_DisablesGenerationGate()
+        {
+            const string json = "{\"GenerateProtectionReport\": false}";
+            var config = JsonSerializer.Deserialize<Config>(json);
+            Assert.NotNull(config);
+            Assert.False(config.GenerateProtectionReport);
+        }
+
+        [Fact]
+        public void Config_ShippedConfigJson_AlignsWithCodeDefaultsForGenerateProtectionReport()
+        {
+            var repoRoot = FindRepoRoot();
+            var configJsonPath = Path.Combine(repoRoot, "Il2CppDumper", "config.json");
+            Assert.True(File.Exists(configJsonPath), $"Expected config.json at {configJsonPath}");
+
+            var json = File.ReadAllText(configJsonPath);
+            var shippedConfig = JsonSerializer.Deserialize<Config>(json);
+            var codeDefaultConfig = new Config();
+
+            Assert.NotNull(shippedConfig);
+            Assert.True(shippedConfig.GenerateProtectionReport);
+            Assert.Equal(codeDefaultConfig.GenerateProtectionReport, shippedConfig.GenerateProtectionReport);
+        }
+
+        [Fact]
+        public void Readme_English_DocumentsProtectionReportJson_WithPortugueseSection()
+        {
+            var repoRoot = FindRepoRoot();
+            var readmePath = Path.Combine(repoRoot, "README.md");
+            var content = File.ReadAllText(readmePath);
+
+            Assert.Contains("#### protection-report.json", content);
+            Assert.Contains("`GenerateProtectionReport`", content);
+            Assert.Contains("`HighEntropySection`", content);
+            Assert.Contains("`PackerSectionSignature`", content);
+            Assert.Contains("`RedirectionHeuristic`", content);
+            Assert.Contains("`MetadataSanity`", content);
+            Assert.Contains("**Português:**", content);
+        }
+
+        [Fact]
+        public void Readme_Chinese_DocumentsProtectionReportJson_WithPortugueseSection()
+        {
+            var repoRoot = FindRepoRoot();
+            var readmePath = Path.Combine(repoRoot, "README.zh-CN.md");
+            var content = File.ReadAllText(readmePath);
+
+            Assert.Contains("#### protection-report.json", content);
+            Assert.Contains("`GenerateProtectionReport`", content);
+            Assert.Contains("`HighEntropySection`", content);
+            Assert.Contains("`PackerSectionSignature`", content);
+            Assert.Contains("`RedirectionHeuristic`", content);
+            Assert.Contains("`MetadataSanity`", content);
+            Assert.Contains("**Português:**", content);
         }
     }
 }

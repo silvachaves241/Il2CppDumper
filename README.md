@@ -185,6 +185,24 @@ Operational summary file (`GenerateRunManifest`, default `true`) written at the 
 
 **Português:** Arquivo de manifesto operacional de execução (`run-manifest.json`, chave `GenerateRunManifest`, padrão `true`), gravado ao final de cada execução (sucesso ou falha). Registra `tool` (`name`, `version`), `startedAt` (ISO-8601 UTC), `durationMs`, `success`, `effectiveConfig` (snapshot das configurações efetivas aplicadas), `counts` (`types`, `methods`, `fields`, `properties`, `attributes`, `attributesFailed`, `stringLiterals`), `warnings` (`total`, `byCategory` com `attributeDecode`, `stringLiteral` e `stringDecryptor`) e a lista determinística de `outputs` (`path`, `sha256`, `bytes`). Em execuções com falha, o manifesto é gravado com `success: false` e dados parciais, preservando a semântica de código de saída.
 
+#### protection-report.json
+
+Pre-analysis protection diagnostics report (`GenerateProtectionReport`, default `true`) generated as a side-channel before dumping. The diagnostic pass explains why protected binaries or obfuscated targets fail without altering the dump execution flow or blocking the process. Findings vocabulary includes:
+- `HighEntropySection`: Triggered when binary section entropy reaches or exceeds `7.20` on a Shannon scale of 0.00 to 8.00 bits per byte (indicates encrypted, packed, or compressed code/data).
+- `PackerSectionSignature`: Section name matches generic packer signatures (`UPX0`, `UPX1`, `UPX2`, `.aspack`, `.adata`, `.mpress1`, `.mpress2`, `.themida`, `.vmp0`, `.vmp1`, `.pack`, `PELOCK`).
+- `RedirectionHeuristic`: Identifies relocation stripping, raw/virtual size discrepancies, or dynamic initialization tags (`DT_INIT`, `.init_proc`, `LC_ENCRYPTION_INFO`) indicating pointer redirection.
+- `MetadataSanity`: Validates `global-metadata.dat` magic (`0xFAB11BAF`) and supported version range (16–200), reporting `ok: true` or `ok: false`.
+
+Remediation strings suggest valid configuration switches (`NoRedirectedPointer=true`, `ForceDump=true`, `ForceIl2CppVersion=true`, `ForceVersion=<version>`). When `GenerateProtectionReport` is `false`, no report file is written.
+
+**Português:** Relatório de diagnóstico de proteção pré-análise (`protection-report.json`, chave `GenerateProtectionReport`, padrão `true`), gerado como canal auxiliar antes da tentativa de dump. O diagnóstico esclarece o motivo pelo qual alvos protegidos ou ofuscados falham, sem alterar o fluxo do dump nem bloquear o processo. Vocabulário de achados (`findings`):
+- `HighEntropySection`: Acionado quando a entropia da seção atinge ou supera `7.20` na escala de Shannon (0.00 a 8.00 bits por byte), indicando código/dados compactados, criptografados ou empacotados.
+- `PackerSectionSignature`: Nome de seção compatível com assinaturas genéricas de packers (`UPX0`, `UPX1`, `UPX2`, `.aspack`, `.adata`, `.mpress1`, `.mpress2`, `.themida`, `.vmp0`, `.vmp1`, `.pack`, `PELOCK`).
+- `RedirectionHeuristic`: Identifica remoção de realocações, discrepâncias entre tamanho virtual e dados brutos, ou tags dinâmicas (`DT_INIT`, `.init_proc`, `LC_ENCRYPTION_INFO`) indicando redirecionamento de ponteiros.
+- `MetadataSanity`: Valida o cabeçalho do `global-metadata.dat` quanto ao magic (`0xFAB11BAF`) e faixa de versões suportadas (16 a 200), emitindo `ok: true` ou `ok: false`.
+
+Orientações de remediação recomendam opções de configuração existentes (`NoRedirectedPointer=true`, `ForceDump=true`, `ForceIl2CppVersion=true`, `ForceVersion=<version>`). Se `GenerateProtectionReport` for `false`, nenhum arquivo é gerado.
+
 #### frida_stubs.js
 
 Per-method native attach stubs for Frida (`EmitFridaScript`, default `false`). Emits deterministic, static method stubs with addresses from `script.json` resolved at runtime against the module base, with typing signatures sourced from `dump.json` when present (degraded path omits `"sig"` without failing when structured dump is absent). The emitted code contains no `eval` or remote network requests.
@@ -375,8 +393,8 @@ Available options:
 * `DumpMethod`, `DumpField`, `DumpProperty`, `DumpAttribute`, `DumpFieldOffset`, `DumpMethodOffset`, `DumpTypeDefIndex`
   * Whether to output these information to dump.cs (`DumpProperty` and `DumpAttribute` default to `true`)
 
-* `GenerateDummyDll`, `GenerateStruct`, `GenerateJsonDump`, `GenerateRunManifest`
-  * Whether to generate these things (`GenerateStruct` controls `StructGenerator` output: `script.json`, `stringliteral.json`, `stringliteral-indexed.json`, and `il2cpp.h`; `GenerateJsonDump` controls `dump.json` output, defaults to `false`; `GenerateRunManifest` controls `run-manifest.json` operational summary, defaults to `true`)
+* `GenerateDummyDll`, `GenerateStruct`, `GenerateJsonDump`, `GenerateRunManifest`, `GenerateProtectionReport`
+  * Whether to generate these things (`GenerateStruct` controls `StructGenerator` output: `script.json`, `stringliteral.json`, `stringliteral-indexed.json`, and `il2cpp.h`; `GenerateJsonDump` controls `dump.json` output, defaults to `false`; `GenerateRunManifest` controls `run-manifest.json` operational summary, defaults to `true`; `GenerateProtectionReport` controls `protection-report.json` pre-analysis diagnostics, defaults to `true`)
 
 * `DummyDllAddToken`
   * Whether to add token in DummyDll

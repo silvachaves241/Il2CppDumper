@@ -65,12 +65,20 @@ namespace Il2CppDumper.Core
                 var config = request.Config != null ? CloneConfig(request.Config) : new Config();
                 var writtenFiles = new List<string>();
 
-                if (config.GenerateRunManifest && Directory.Exists(outputDir))
+                if (Directory.Exists(outputDir))
                 {
-                    var manifestPath = Path.Combine(outputDir, RunManifestWriter.FileName);
-                    if (File.Exists(manifestPath))
+                    if (config.GenerateRunManifest)
                     {
-                        try { File.Delete(manifestPath); } catch { }
+                        var manifestPath = Path.Combine(outputDir, RunManifestWriter.FileName);
+                        if (File.Exists(manifestPath))
+                        {
+                            try { File.Delete(manifestPath); } catch { }
+                        }
+                    }
+                    var reportPath = Path.Combine(outputDir, ProtectionReportWriter.FileName);
+                    if (File.Exists(reportPath))
+                    {
+                        try { File.Delete(reportPath); } catch { }
                     }
                 }
 
@@ -116,6 +124,23 @@ namespace Il2CppDumper.Core
                     WriteRunManifest(false);
                     PopulateOutputs(outputDir, outputs);
                     return new DumpResult(false, msg, warnings, outputs);
+                }
+
+                if (config.GenerateProtectionReport)
+                {
+                    try
+                    {
+                        var writtenReportPath = ProtectionReportWriter.Write(outputDir, il2cppPath, metadataPath, config);
+                        if (writtenReportPath != null && File.Exists(writtenReportPath))
+                        {
+                            outputs[ProtectionReportWriter.FileName] = writtenReportPath;
+                            writtenFiles.Add(writtenReportPath);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        CoreLogger.WriteLine($"WARNING: Failed to generate protection report: {ex.Message}");
+                    }
                 }
 
                 if (!File.Exists(metadataPath))
@@ -617,6 +642,7 @@ namespace Il2CppDumper.Core
             var candidates = new[]
             {
                 DumpMetadataWriter.FileName,
+                ProtectionReportWriter.FileName,
                 "dump.cs",
                 "dump.json",
                 "script.json",
@@ -653,6 +679,7 @@ namespace Il2CppDumper.Core
                 GenerateStruct = source.GenerateStruct,
                 GenerateJsonDump = source.GenerateJsonDump,
                 GenerateRunManifest = source.GenerateRunManifest,
+                GenerateProtectionReport = source.GenerateProtectionReport,
                 DummyDllAddToken = source.DummyDllAddToken,
                 RequireAnyKey = source.RequireAnyKey,
                 ForceIl2CppVersion = source.ForceIl2CppVersion,

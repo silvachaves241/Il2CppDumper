@@ -10,6 +10,7 @@
   "GenerateStruct": true,
   "GenerateJsonDump": false,
   "GenerateRunManifest": true,
+  "GenerateProtectionReport": true,
   "DummyDllAddToken": true,
   "RequireAnyKey": true,
   "ForceIl2CppVersion": false,
