@@ -977,5 +977,136 @@ namespace Il2CppDumper.Tests
                 }
             }
         }
+        [Fact]
+        public void Issue65_RunManifest_EmbedsInlineInputHashes_MatchingDumpMetadataProvenance()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "manifest_test_issue65_provenance_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var fixturesDir = Path.Combine(tempDir, "fixtures");
+                var outDir = Path.Combine(tempDir, "out");
+                Directory.CreateDirectory(fixturesDir);
+                Directory.CreateDirectory(outDir);
+
+                var (wasmPath, metaPath) = CreateSyntheticFixtures(fixturesDir);
+
+                var config = new Config
+                {
+                    GenerateRunManifest = true,
+                    GenerateJsonDump = true,
+                    GenerateStruct = false,
+                    GenerateDummyDll = false
+                };
+
+                var request = new DumpRequest
+                {
+                    ExecutablePath = wasmPath,
+                    MetadataPath = metaPath,
+                    OutputDirectory = outDir,
+                    Config = config
+                };
+
+                var result = Dumper.Dump(request);
+                Assert.True(result.Success, result.Error);
+
+                var manifestPath = Path.Combine(outDir, "run-manifest.json");
+                var metadataSidecarPath = Path.Combine(outDir, DumpMetadataWriter.FileName);
+                Assert.True(File.Exists(manifestPath));
+                Assert.True(File.Exists(metadataSidecarPath));
+
+                var manifest = JsonSerializer.Deserialize<RunManifest>(File.ReadAllText(manifestPath))!;
+                var sidecar = JsonSerializer.Deserialize<DumpMetadata>(File.ReadAllText(metadataSidecarPath))!;
+
+                // Acceptance: Build provenance verifiable from one file (#65)
+                Assert.NotNull(manifest.Inputs);
+                Assert.NotNull(manifest.Inputs.Il2Cpp);
+                Assert.NotNull(manifest.Inputs.Metadata);
+
+                Assert.Equal(sidecar.Inputs.Il2Cpp.Sha256, manifest.Inputs.Il2Cpp.Sha256);
+                Assert.Equal(sidecar.Inputs.Il2Cpp.Length, manifest.Inputs.Il2Cpp.Length);
+                Assert.Equal(sidecar.Inputs.Metadata.Sha256, manifest.Inputs.Metadata.Sha256);
+                Assert.Equal(sidecar.Inputs.Metadata.Length, manifest.Inputs.Metadata.Length);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void Issue65_RunManifest_EmitsStructuredWarningItems_AndDerivesByCategory()
+        {
+            var warnings = new RunManifestWarnings();
+            warnings.Items.Add(new RunManifestWarningItem
+            {
+                Category = "constantDecode",
+                TypeDefIndex = 42,
+                TypeName = "TestType",
+                Member = "TestField",
+                RawBytes = "E1 2A",
+                Detail = "Invalid compressed integer format 0xE1"
+            });
+            warnings.Items.Add(new RunManifestWarningItem
+            {
+                Category = "stringLiteral",
+                Member = "stringLiteral[10]",
+                Detail = "String literal failed to decode"
+            });
+            warnings.Items.Add(new RunManifestWarningItem
+            {
+                Category = "attributeDecode",
+                TypeDefIndex = 12,
+                TypeName = "AnotherType",
+                Member = "MethodA",
+                Detail = "Attribute constructor failed"
+            });
+
+            warnings.SyncFromItems();
+
+            Assert.Equal(3, warnings.Total);
+            Assert.Equal(1, warnings.ByCategory.ConstantDecode);
+            Assert.Equal(1, warnings.ByCategory.StringLiteral);
+            Assert.Equal(1, warnings.ByCategory.AttributeDecode);
+            Assert.Equal(0, warnings.ByCategory.StringDecryptor);
+            Assert.Equal(0, warnings.ByCategory.OutputHash);
+
+            var tempDir = Path.Combine(Path.GetTempPath(), "manifest_test_issue65_items_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var manifest = RunManifestWriter.Write(
+                    tempDir,
+                    new Config { GenerateRunManifest = true },
+                    DateTime.UtcNow,
+                    50,
+                    true,
+                    new RunManifestCounts(),
+                    warnings
+                );
+
+                var manifestPath = Path.Combine(tempDir, "run-manifest.json");
+                var reloaded = JsonSerializer.Deserialize<RunManifest>(File.ReadAllText(manifestPath))!;
+
+                Assert.Equal(3, reloaded.Warnings.Total);
+                Assert.Equal(3, reloaded.Warnings.Items.Count);
+                Assert.Equal("constantDecode", reloaded.Warnings.Items[0].Category);
+                Assert.Equal(42, reloaded.Warnings.Items[0].TypeDefIndex);
+                Assert.Equal("TestType", reloaded.Warnings.Items[0].TypeName);
+                Assert.Equal("TestField", reloaded.Warnings.Items[0].Member);
+                Assert.Equal("E1 2A", reloaded.Warnings.Items[0].RawBytes);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+    }
 }
-}
+

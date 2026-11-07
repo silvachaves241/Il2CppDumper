@@ -64,6 +64,7 @@ namespace Il2CppDumper.Core
 
                 var config = request.Config != null ? CloneConfig(request.Config) : new Config();
                 var writtenFiles = new List<string>();
+                DumpMetadata? dumpMetadata = null;
 
                 if (Directory.Exists(outputDir))
                 {
@@ -82,6 +83,27 @@ namespace Il2CppDumper.Core
                     }
                 }
 
+                DumpMetadataInputs? TryGetInputs(string binPath, string metaPath)
+                {
+                    try
+                    {
+                        if (File.Exists(binPath) || File.Exists(metaPath))
+                        {
+                            var inInfo = new DumpMetadataInputs();
+                            if (File.Exists(binPath))
+                                inInfo.Il2Cpp = DumpMetadataWriter.CreateInputFileInfo(binPath);
+                            if (File.Exists(metaPath))
+                            {
+                                var (metaInfo, _) = DumpMetadataWriter.CreateMetadataInputFileInfo(metaPath);
+                                inInfo.Metadata = metaInfo;
+                            }
+                            return inInfo;
+                        }
+                    }
+                    catch { }
+                    return null;
+                }
+
                 void WriteRunManifest(bool success)
                 {
                     if (!config.GenerateRunManifest)
@@ -89,6 +111,7 @@ namespace Il2CppDumper.Core
 
                     try
                     {
+                        var inputs = dumpMetadata?.Inputs ?? TryGetInputs(request.ExecutablePath, request.MetadataPath);
                         var manifest = RunManifestWriter.Write(
                             outputDir,
                             config,
@@ -97,7 +120,8 @@ namespace Il2CppDumper.Core
                             success,
                             counts,
                             manifestWarnings,
-                            writtenFiles
+                            writtenFiles,
+                            inputs
                         );
                         if (manifest != null)
                         {
@@ -187,7 +211,6 @@ namespace Il2CppDumper.Core
                     return new DumpResult(false, msg, warnings, outputs);
                 }
 
-                DumpMetadata? dumpMetadata = null;
                 try
                 {
                     dumpMetadata = DumpMetadataWriter.WriteInitial(outputDir, il2cppPath, metadataPath, config);
@@ -513,6 +536,10 @@ namespace Il2CppDumper.Core
             counts.Attributes = decompiler.CustomAttributeWrittenCount;
             counts.AttributesFailed = decompiler.CustomAttributeFailedCount;
             manifestWarnings.ByCategory.AttributeDecode = (int)decompiler.CustomAttributeFailedCount;
+            foreach (var item in decompiler.AttributeDecodeFailures)
+            {
+                manifestWarnings.Items.Add(item);
+            }
 
 
             StructGenerator? scriptGenerator = null;
@@ -538,9 +565,17 @@ namespace Il2CppDumper.Core
                     {
                         counts.StringLiterals = scriptGenerator.StringLiteralsCount;
                         manifestWarnings.ByCategory.StringLiteral = scriptGenerator.StringLiteralsFailedCount;
+                        foreach (var item in scriptGenerator.StringLiteralFailures)
+                        {
+                            manifestWarnings.Items.Add(item);
+                        }
                         writtenFiles.AddRange(scriptGenerator.WrittenFiles);
                     }
                     manifestWarnings.ByCategory.StringDecryptor = metadata.StringDecryptorFailedCount;
+                    foreach (var item in metadata.StringDecryptorFailures)
+                    {
+                        manifestWarnings.Items.Add(item);
+                    }
                 }
             }
             if (config.GenerateDummyDll)
@@ -614,11 +649,18 @@ namespace Il2CppDumper.Core
             // (decompiler, json dump, struct/DummyDll generation), so consolidate the count
             // and the aggregate warning only after the last consumer has run.
             manifestWarnings.ByCategory.ConstantDecode = executor.ConstantDecodeFailedCount;
+            foreach (var failure in executor.ConstantDecodeFailures)
+            {
+                if (!manifestWarnings.Items.Contains(failure))
+                {
+                    manifestWarnings.Items.Add(failure);
+                }
+            }
             if (executor.ConstantDecodeFailedCount > 0)
             {
                 CoreLogger.LogWarning($"WARNING: Constant default value decoding completed with {executor.ConstantDecodeFailedCount} failure(s) taking the metadata-offset fallback path. First failure: {executor.ConstantDecodeFirstFailureDetails}");
             }
-            manifestWarnings.Total = manifestWarnings.ByCategory.AttributeDecode + manifestWarnings.ByCategory.StringLiteral + manifestWarnings.ByCategory.StringDecryptor + manifestWarnings.ByCategory.ConstantDecode;
+            manifestWarnings.SyncFromItems();
             errorMessage = errors.Count > 0 ? string.Join(Environment.NewLine, errors) : null;
             return success;
         }

@@ -36,6 +36,7 @@ namespace Il2CppDumper
         public int StringLiteralsCount { get; private set; }
         public int StringLiteralsFailedCount { get; private set; }
         public int StringDecryptorFailedCount => metadata.StringDecryptorFailedCount;
+        public List<RunManifestWarningItem> StringLiteralFailures { get; } = new();
         public List<string> WrittenFiles { get; } = new();
         public ScriptJson ScriptJson { get; private set; }
 
@@ -403,8 +404,9 @@ namespace Il2CppDumper
             File.WriteAllText(outputDir + "stringliteral.json", JsonSerializer.Serialize(stringLiterals, jsonOptions), new UTF8Encoding(false));
             WrittenFiles.Add(Path.Combine(outputDir, "stringliteral.json"));
             //输出按索引排序的完整StringLiteral取证表
-            var indexedStringLiterals = metadata.DumpStringLiterals(out var failedLiterals);
+            var indexedStringLiterals = metadata.DumpStringLiterals(out var failedLiterals, out var failures);
             StringLiteralsFailedCount = failedLiterals;
+            StringLiteralFailures.AddRange(failures);
             File.WriteAllText(outputDir + "stringliteral-indexed.json", JsonSerializer.Serialize(indexedStringLiterals, jsonOptions), new UTF8Encoding(false));
             StringLiteralsCount = indexedStringLiterals.Count;
             WrittenFiles.Add(Path.Combine(outputDir, "stringliteral-indexed.json"));

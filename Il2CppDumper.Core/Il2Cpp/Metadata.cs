@@ -26,6 +26,7 @@ namespace Il2CppDumper
         public IStringLiteralDecryptor StringDecryptor { get; set; }
         private readonly HashSet<uint> stringDecryptorFailedIndices = new();
         public int StringDecryptorFailedCount => stringDecryptorFailedIndices.Count;
+        public List<RunManifestWarningItem> StringDecryptorFailures { get; } = new();
         private readonly Il2CppMetadataUsageList[] metadataUsageLists;
         private readonly Il2CppMetadataUsagePair[] metadataUsagePairs;
         public int[] attributeTypes;
@@ -990,6 +991,12 @@ namespace Il2CppDumper
                         if (stringDecryptorFailedIndices.Add(index))
                         {
                             CoreLogger.LogWarning($"WARNING: String literal decryptor '{safeId}' failed at index {index}: {ex.Message}");
+                            StringDecryptorFailures.Add(new RunManifestWarningItem
+                            {
+                                Category = "stringDecryptor",
+                                Member = $"stringLiteral[{index}]",
+                                Detail = $"String literal decryptor '{safeId}' failed at index {index}: {ex.Message}"
+                            });
                         }
                         value = rawText;
                         decryptorId = null;
@@ -1016,9 +1023,12 @@ namespace Il2CppDumper
 
         public List<StringLiteralRecord> DumpStringLiterals() => DumpStringLiterals(out _);
 
-        public List<StringLiteralRecord> DumpStringLiterals(out int failedCount)
+        public List<StringLiteralRecord> DumpStringLiterals(out int failedCount) => DumpStringLiterals(out failedCount, out _);
+
+        public List<StringLiteralRecord> DumpStringLiterals(out int failedCount, out List<RunManifestWarningItem> failures)
         {
             failedCount = 0;
+            failures = new List<RunManifestWarningItem>();
             var result = new List<StringLiteralRecord>();
             if (stringLiterals == null)
             {
@@ -1038,6 +1048,14 @@ namespace Il2CppDumper
                 if (!hasLit)
                 {
                     failedCount++;
+                    failures.Add(new RunManifestWarningItem
+                    {
+                        Category = "stringLiteral",
+                        Member = $"stringLiteral[{i}]",
+                        Detail = stringLiteral != null
+                            ? $"Failed to decode string literal index {i} at dataIndex {stringLiteral.dataIndex}"
+                            : $"Failed to decode string literal index {i}: null entry"
+                    });
                 }
                 else
                 {

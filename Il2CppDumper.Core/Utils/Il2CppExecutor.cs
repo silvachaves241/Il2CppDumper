@@ -12,13 +12,16 @@ namespace Il2CppDumper
     {
         public Metadata metadata;
         public Il2Cpp il2Cpp;
-        private readonly HashSet<int> constantDecodeFailedIndices = new();
+        private readonly Dictionary<int, RunManifestWarningItem> constantDecodeFailuresByDataIndex = new();
 
         /// <summary>Number of distinct default-value entries that failed to decode into a constant.</summary>
-        public int ConstantDecodeFailedCount => constantDecodeFailedIndices.Count;
+        public int ConstantDecodeFailedCount => constantDecodeFailuresByDataIndex.Count;
 
         /// <summary>Diagnostic details (byte, position, entry identity) of the first constant decode failure, if any.</summary>
         public string? ConstantDecodeFirstFailureDetails { get; private set; }
+
+        /// <summary>Structured list of constant decode failures for run-manifest reporting.</summary>
+        public List<RunManifestWarningItem> ConstantDecodeFailures => constantDecodeFailuresByDataIndex.Values.ToList();
 
         private static readonly Dictionary<int, string> TypeString = new()
         {
@@ -348,7 +351,10 @@ namespace Il2CppDumper
             return il2Cpp.GetSectionHelper(metadata.methodDefs.Count(x => x.methodIndex >= 0), metadata.typeDefs.Length, metadata.imageDefs.Length);
         }
 
-        public bool TryGetDefaultValue(int typeIndex, int dataIndex, out object value)
+        public bool TryGetDefaultValue(int typeIndex, int dataIndex, out object value) =>
+            TryGetDefaultValue(typeIndex, dataIndex, out value, null, null, null);
+
+        public bool TryGetDefaultValue(int typeIndex, int dataIndex, out object value, int? typeDefIndex, string? typeName, string? member)
         {
             var pointer = metadata.GetDefaultValueFromIndex(dataIndex);
             var defaultValueType = il2Cpp.types[typeIndex];
@@ -363,10 +369,50 @@ namespace Il2CppDumper
             }
             catch (InvalidCompressedIntegerException e)
             {
-                if (constantDecodeFailedIndices.Add(dataIndex))
+                if (!constantDecodeFailuresByDataIndex.TryGetValue(dataIndex, out var failureItem))
                 {
                     ConstantDecodeFirstFailureDetails ??=
                         $"type 0x{(int)defaultValueType.type:X}, dataIndex {dataIndex}, pointer 0x{pointer:X}: {e.Message}";
+
+                    string? rawBytesHex = null;
+                    try
+                    {
+                        var savePos = metadata.Position;
+                        metadata.Position = pointer;
+                        var len = (int)Math.Min(16L, Math.Max(0L, (long)metadata.Length - pointer));
+                        if (len > 0)
+                        {
+                            var bytes = metadata.ReadBytes(len);
+                            rawBytesHex = BitConverter.ToString(bytes).Replace("-", " ");
+                        }
+                        metadata.Position = savePos;
+                    }
+                    catch
+                    {
+                        // best effort
+                    }
+
+                    var detail = rawBytesHex != null
+                        ? $"Invalid compressed integer format (pointer 0x{pointer:X}, dataIndex {dataIndex}): {e.Message}; raw bytes: {rawBytesHex}"
+                        : $"Invalid compressed integer format (pointer 0x{pointer:X}, dataIndex {dataIndex}): {e.Message}";
+
+                    failureItem = new RunManifestWarningItem
+                    {
+                        Category = "constantDecode",
+                        TypeDefIndex = typeDefIndex,
+                        TypeName = typeName,
+                        Member = member,
+                        RawBytes = rawBytesHex,
+                        Detail = detail,
+                        Count = 1
+                    };
+                    constantDecodeFailuresByDataIndex[dataIndex] = failureItem;
+                }
+                else if (typeDefIndex != null || !string.IsNullOrEmpty(typeName) || !string.IsNullOrEmpty(member))
+                {
+                    if (failureItem.TypeDefIndex == null && typeDefIndex != null) failureItem.TypeDefIndex = typeDefIndex;
+                    if (string.IsNullOrEmpty(failureItem.TypeName) && !string.IsNullOrEmpty(typeName)) failureItem.TypeName = typeName;
+                    if (string.IsNullOrEmpty(failureItem.Member) && !string.IsNullOrEmpty(member)) failureItem.Member = member;
                 }
             }
             value = pointer;

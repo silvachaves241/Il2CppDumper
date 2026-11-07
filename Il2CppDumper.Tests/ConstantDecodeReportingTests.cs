@@ -106,6 +106,18 @@ namespace Il2CppDumper.Tests
             Assert.Equal(1, manifestWarnings.ByCategory.ConstantDecode);
             Assert.Equal(1, manifestWarnings.Total);
 
+            // Structured per-item triage context (#65)
+            Assert.NotNull(manifestWarnings.Items);
+            var item = Assert.Single(manifestWarnings.Items);
+            Assert.Equal("constantDecode", item.Category);
+            Assert.Equal("SyntheticEnum", item.TypeName);
+            Assert.Equal("OptionA", item.Member);
+            Assert.NotNull(item.TypeDefIndex);
+            Assert.NotNull(item.RawBytes);
+            Assert.StartsWith("E1", item.RawBytes);
+            Assert.NotNull(item.Detail);
+            Assert.Contains("0xE1", item.Detail);
+
             // The consumed constant fell back to the metadata-offset attribute path.
             var field = ReadDumpedField(dummyDllPath);
             var offsetAttribute = field.CustomAttributes
@@ -128,6 +140,66 @@ namespace Il2CppDumper.Tests
             Assert.Matches(@"with 1 failure\(s\)", warnings[0]);
             Assert.Equal(1, manifestWarnings.ByCategory.ConstantDecode);
             Assert.Equal(1, manifestWarnings.Total);
+
+            // Deduplication preserves exactly one structured item (#65)
+            Assert.NotNull(manifestWarnings.Items);
+            var item = Assert.Single(manifestWarnings.Items);
+            Assert.Equal("constantDecode", item.Category);
+            Assert.Equal("SyntheticEnum", item.TypeName);
+            Assert.Equal("OptionA", item.Member);
+            Assert.NotNull(item.RawBytes);
+            Assert.StartsWith("E1", item.RawBytes);
+        }
+        [Fact]
+        public void ConstantDecode_ExactDataIndexLookup_DoesNotCrossContaminateMatchingPrefixes()
+        {
+            // T1 regression: dataIndex 1 and 10 share string prefixes. Enriching dataIndex 1
+            // must locate the exact entry by key and not cross-contaminate entry 10.
+            var (metadata, il2Cpp, executor) = SyntheticEnvironment.Create(MetadataVersionFamily.V39);
+            var offset = metadata.GetDefaultValueFromIndex(0);
+
+            // Populate dataIndex 1, 10, and 100 with invalid compressed integer prefix (0xE1)
+            metadata.Position = (ulong)(offset + 1);
+            metadata.Write((byte)0xE1);
+            metadata.Position = (ulong)(offset + 10);
+            metadata.Write((byte)0xE1);
+            metadata.Position = (ulong)(offset + 100);
+            metadata.Write((byte)0xE1);
+
+            var typeIndex = Array.FindIndex(il2Cpp.types, t => t.type == Il2CppTypeEnum.IL2CPP_TYPE_I4);
+            if (typeIndex < 0) typeIndex = 0;
+
+            // 1. Register 10 and 1 and 100 without context
+            Assert.False(executor.TryGetDefaultValue(typeIndex, 10, out _));
+            Assert.False(executor.TryGetDefaultValue(typeIndex, 1, out _));
+            Assert.False(executor.TryGetDefaultValue(typeIndex, 100, out _));
+
+            Assert.Equal(3, executor.ConstantDecodeFailedCount);
+
+            // 2. Enrich dataIndex 1 with specific owner context
+            Assert.False(executor.TryGetDefaultValue(typeIndex, 1, out _, typeDefIndex: 123, typeName: "OwnerOfOne", member: "FieldOne"));
+
+            // Count remains 3
+            Assert.Equal(3, executor.ConstantDecodeFailedCount);
+
+            var item1 = executor.ConstantDecodeFailures.Single(i => i.Detail!.Contains("dataIndex 1):"));
+            var item10 = executor.ConstantDecodeFailures.Single(i => i.Detail!.Contains("dataIndex 10):"));
+            var item100 = executor.ConstantDecodeFailures.Single(i => i.Detail!.Contains("dataIndex 100):"));
+
+            // Exact match: only dataIndex 1 is enriched
+            Assert.Equal(123, item1.TypeDefIndex);
+            Assert.Equal("OwnerOfOne", item1.TypeName);
+            Assert.Equal("FieldOne", item1.Member);
+
+            // 10 and 100 remain without context (not contaminated)
+            Assert.Null(item10.TypeDefIndex);
+            Assert.Null(item10.TypeName);
+            Assert.Null(item10.Member);
+
+            Assert.Null(item100.TypeDefIndex);
+            Assert.Null(item100.TypeName);
+            Assert.Null(item100.Member);
         }
     }
 }
+
