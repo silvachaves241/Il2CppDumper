@@ -13,6 +13,11 @@ namespace Il2CppDumper.Tests.Synthetic
         ZeroedMetadataRecords = 5,
         ZeroedRegistrationRecords = ZeroedMetadataRecords,
         TruncatedHeader = 6,
-        ObfuscatedStringLiteral = 7
+        ObfuscatedStringLiteral = 7,
+        /// <summary>
+        /// Prepends an illegal variable-length integer prefix (0xE1) to the constant blob,
+        /// forcing TryGetDefaultValue consumers onto the metadata-offset fallback (#63).
+        /// </summary>
+        ConstantBlobInvalidPrefix = 8
     }
 }

@@ -40,9 +40,10 @@ namespace Il2CppDumper.Tests.Synthetic
     {
         public static (Metadata metadata, SyntheticIl2Cpp il2Cpp, Il2CppExecutor executor) Create(
             MetadataVersionFamily family,
-            int seed = 42)
+            int seed = 42,
+            MetadataCorruptionType corruption = MetadataCorruptionType.None)
         {
-            var bytes = SyntheticMetadataGenerator.Generate(family, seed);
+            var bytes = SyntheticMetadataGenerator.Generate(family, seed, corruption);
             var metadata = new Metadata(new MemoryStream(bytes));
             var il2Cpp = new SyntheticIl2Cpp((double)family);
             var executor = new Il2CppExecutor(metadata, il2Cpp);
