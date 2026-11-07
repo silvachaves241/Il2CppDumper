@@ -212,7 +212,11 @@ else
 
 #### protection-report.json
 
-预分析防护诊断报告（`GenerateProtectionReport`，默认值为 `true`），在转储分析前作为辅助侧信道生成。该诊断 pass 解释受保护或被混淆目标失败的根本原因，绝不会阻塞转储流程或更改转储行为。包含的诊断词汇（`findings`）：
+预分析防护诊断报告（`GenerateProtectionReport`，默认值为 `true`），在转储分析前作为辅助侧信道生成。该诊断 pass 解释受保护或被混淆目标失败的根本原因，绝不会阻塞转储流程或更改转储行为。
+
+针对 PE（Portable Executable）输入，报告会生成分节完整性基线（`sections`），记录各节的 `name`、`virtualSize`、`rawSize`、增量流式 `sha256` 与香农熵 `entropy`，以及包含 `coffTimestamp`（ISO-8601 UTC）和可选头校验和 `imageChecksum`。非 PE 格式目标则省略这些专属字段。
+
+包含的诊断词汇（`findings`）：
 - `HighEntropySection`：当二进制节的香农熵（Shannon entropy，0.00 至 8.00 bits/byte 尺度）达到或超过 `7.20` 时触发，指示加密、加壳或压缩的代码/数据。
 - `PackerSectionSignature`：节名称匹配通用加壳器特征列表（`UPX0`、`UPX1`、`UPX2`、`.aspack`、`.adata`、`.mpress1`、`.mpress2`、`.themida`、`.vmp0`、`.vmp1`、`.pack`、`PELOCK`）。
 - `RedirectionHeuristic`：检测重定位表剥离、虚拟尺寸与原始尺寸严重不匹配或动态初始化标记（`DT_INIT`、`.init_proc`、`LC_ENCRYPTION_INFO`），指示潜在的指针重定向。
@@ -220,7 +224,11 @@ else
 
 修复建议字符串仅引用现有的有效配置项（`NoRedirectedPointer=true`、`ForceDump=true`、`ForceIl2CppVersion=true`、`ForceVersion=<version>`）。当 `GenerateProtectionReport` 设置为 `false` 时，不会写入该文件。
 
-**Português:** Relatório de diagnóstico de proteção pré-análise (`protection-report.json`, chave `GenerateProtectionReport`, padrão `true`), gerado como canal auxiliar antes da tentativa de dump. O diagnóstico esclarece o motivo pelo qual alvos protegidos ou ofuscados falham, sem alterar o fluxo do dump nem bloquear o processo. Vocabulário de achados (`findings`):
+**Português:** Relatório de diagnóstico de proteção pré-análise (`protection-report.json`, chave `GenerateProtectionReport`, padrão `true`), gerado como canal auxiliar antes da tentativa de dump. O diagnóstico esclarece o motivo pelo qual alvos protegidos ou ofuscados falham, sem alterar o fluxo do dump nem bloquear o processo.
+
+Para alvos Portable Executable (PE), o relatório inclui uma linha de base de integridade por seção (`sections`) contendo `name`, `virtualSize`, `rawSize`, `sha256` incremental e `entropy` de Shannon para cada seção, além de metadados de cabeçalho `coffTimestamp` (ISO-8601 UTC) e `imageChecksum` (checksum do cabeçalho opcional). Alvos que não utilizam formato PE omitem esses campos específicos.
+
+Vocabulário de achados (`findings`):
 - `HighEntropySection`: Acionado quando a entropia da seção atinge ou supera `7.20` na escala de Shannon (0.00 a 8.00 bits por byte), indicando código/dados compactados, criptografados ou empacotados.
 - `PackerSectionSignature`: Nome de seção compatível com assinaturas genéricas de packers (`UPX0`, `UPX1`, `UPX2`, `.aspack`, `.adata`, `.mpress1`, `.mpress2`, `.themida`, `.vmp0`, `.vmp1`, `.pack`, `PELOCK`).
 - `RedirectionHeuristic`: Identifica remoção de realocações, discrepâncias entre tamanho virtual e dados brutos, ou tags dinâmicas (`DT_INIT`, `.init_proc`, `LC_ENCRYPTION_INFO`) indicando redirecionamento de ponteiros.
