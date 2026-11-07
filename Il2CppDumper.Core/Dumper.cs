@@ -81,6 +81,19 @@ namespace Il2CppDumper.Core
                     {
                         try { File.Delete(reportPath); } catch { }
                     }
+                    if (config.GenerateOneofMap)
+                    {
+                        var oneofPath = Path.Combine(outputDir, OneofMemberExtractor.FileName);
+                        if (File.Exists(oneofPath))
+                        {
+                            try { File.Delete(oneofPath); } catch { }
+                        }
+                        var ambPath = Path.Combine(outputDir, OneofMemberExtractor.AmbiguityFileName);
+                        if (File.Exists(ambPath))
+                        {
+                            try { File.Delete(ambPath); } catch { }
+                        }
+                    }
                 }
 
                 DumpMetadataInputs? TryGetInputs(string binPath, string metaPath)
@@ -645,6 +658,25 @@ namespace Il2CppDumper.Core
                 }
             }
 
+            if (config.GenerateOneofMap)
+            {
+                CoreLogger.WriteLine("Generate oneof members map...");
+                try
+                {
+                    var oneofExtractor = new OneofMemberExtractor(executor);
+                    oneofExtractor.Write(outputDir, config);
+                    writtenFiles.AddRange(oneofExtractor.WrittenFiles);
+                    CoreLogger.WriteLine("Done!");
+                }
+                catch (Exception e)
+                {
+                    CoreLogger.WriteLine(e);
+                    CoreLogger.WriteLine("ERROR: Some errors in generating oneof map");
+                    errors.Add("ERROR: Some errors in generating oneof map");
+                    success = false;
+                }
+            }
+
             // Constant decode failures can surface from any consumer of TryGetDefaultValue
             // (decompiler, json dump, struct/DummyDll generation), so consolidate the count
             // and the aggregate warning only after the last consumer has run.
@@ -701,6 +733,8 @@ namespace Il2CppDumper.Core
                 "il2cpp.h",
                 "frida_stubs.js",
                 "bookmarks.json",
+                OneofMemberExtractor.FileName,
+                OneofMemberExtractor.AmbiguityFileName,
                 "DummyDll"
             };
 
@@ -730,6 +764,7 @@ namespace Il2CppDumper.Core
                 GenerateJsonDump = source.GenerateJsonDump,
                 GenerateRunManifest = source.GenerateRunManifest,
                 GenerateProtectionReport = source.GenerateProtectionReport,
+                GenerateOneofMap = source.GenerateOneofMap,
                 DummyDllAddToken = source.DummyDllAddToken,
                 RequireAnyKey = source.RequireAnyKey,
                 ForceIl2CppVersion = source.ForceIl2CppVersion,

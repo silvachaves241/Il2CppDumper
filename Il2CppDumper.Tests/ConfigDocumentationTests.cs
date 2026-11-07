@@ -198,6 +198,7 @@ namespace Il2CppDumper.Tests
                 "GenerateJsonDump",
                 "GenerateRunManifest",
                 "GenerateProtectionReport",
+                "GenerateOneofMap",
                 "DummyDllAddToken",
                 "RequireAnyKey",
                 "ForceIl2CppVersion",
@@ -234,6 +235,7 @@ namespace Il2CppDumper.Tests
                 "GenerateJsonDump",
                 "GenerateRunManifest",
                 "GenerateProtectionReport",
+                "GenerateOneofMap",
                 "DummyDllAddToken",
                 "RequireAnyKey",
                 "ForceIl2CppVersion",
@@ -883,6 +885,81 @@ namespace Il2CppDumper.Tests
             Assert.Contains("`PackerSectionSignature`", content);
             Assert.Contains("`RedirectionHeuristic`", content);
             Assert.Contains("`MetadataSanity`", content);
+            Assert.Contains("**Português:**", content);
+        }
+
+        [Fact]
+        public void Config_DefaultConstructor_HasGenerateOneofMapFalseByDefault()
+        {
+            var config = new Config();
+            Assert.False(config.GenerateOneofMap);
+        }
+
+        [Fact]
+        public void Config_DeserializingEmptyJson_ProducesFalseForGenerateOneofMap()
+        {
+            var config = JsonSerializer.Deserialize<Config>("{}");
+            Assert.NotNull(config);
+            Assert.False(config.GenerateOneofMap);
+        }
+
+        [Fact]
+        public void Config_DeserializingGenerateOneofMapTrue_EnablesGenerationGate()
+        {
+            const string json = "{\"GenerateOneofMap\": true}";
+            var config = JsonSerializer.Deserialize<Config>(json);
+            Assert.NotNull(config);
+            Assert.True(config.GenerateOneofMap);
+        }
+
+        [Fact]
+        public void Config_DeserializingGenerateOneofMapFalse_DisablesGenerationGate()
+        {
+            const string json = "{\"GenerateOneofMap\": false}";
+            var config = JsonSerializer.Deserialize<Config>(json);
+            Assert.NotNull(config);
+            Assert.False(config.GenerateOneofMap);
+        }
+
+        [Fact]
+        public void Config_ShippedConfigJson_AlignsWithCodeDefaultsForGenerateOneofMap()
+        {
+            var repoRoot = FindRepoRoot();
+            var configJsonPath = Path.Combine(repoRoot, "Il2CppDumper", "config.json");
+            Assert.True(File.Exists(configJsonPath), $"Expected config.json at {configJsonPath}");
+
+            var json = File.ReadAllText(configJsonPath);
+            var shippedConfig = JsonSerializer.Deserialize<Config>(json);
+            var codeDefaultConfig = new Config();
+
+            Assert.NotNull(shippedConfig);
+            Assert.False(shippedConfig.GenerateOneofMap);
+            Assert.Equal(codeDefaultConfig.GenerateOneofMap, shippedConfig.GenerateOneofMap);
+        }
+
+        [Fact]
+        public void Readme_English_DocumentsOneofMap_WithPortugueseSection()
+        {
+            var repoRoot = FindRepoRoot();
+            var readmePath = Path.Combine(repoRoot, "README.md");
+            var content = File.ReadAllText(readmePath);
+
+            Assert.Contains("#### oneof-members.json", content);
+            Assert.Contains("`GenerateOneofMap`", content);
+            Assert.Contains("`oneof-ambiguities.json`", content);
+            Assert.Contains("**Português:**", content);
+        }
+
+        [Fact]
+        public void Readme_Chinese_DocumentsOneofMap_WithPortugueseSection()
+        {
+            var repoRoot = FindRepoRoot();
+            var readmePath = Path.Combine(repoRoot, "README.zh-CN.md");
+            var content = File.ReadAllText(readmePath);
+
+            Assert.Contains("#### oneof-members.json", content);
+            Assert.Contains("`GenerateOneofMap`", content);
+            Assert.Contains("`oneof-ambiguities.json`", content);
             Assert.Contains("**Português:**", content);
         }
     }

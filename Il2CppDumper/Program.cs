@@ -45,6 +45,10 @@ namespace Il2CppDumper
             {
                 config.GenerateJsonDump = true;
             }
+            if (argList.RemoveAll(a => a.Equals("--output-oneof", StringComparison.OrdinalIgnoreCase) || a.Equals("--generate-oneof-map", StringComparison.OrdinalIgnoreCase)) > 0)
+            {
+                config.GenerateOneofMap = true;
+            }
             if (argList.RemoveAll(a => a.Equals("--stop-on-first-error", StringComparison.OrdinalIgnoreCase)) > 0)
             {
                 config.StopOnFirstError = true;
