@@ -419,7 +419,7 @@ All the configuration options are located in `config.json`
 Available options:
 
 * `DumpMethod`, `DumpField`, `DumpProperty`, `DumpAttribute`, `DumpFieldOffset`, `DumpMethodOffset`, `DumpTypeDefIndex`
-  * Whether to output these information to dump.cs (`DumpProperty` and `DumpAttribute` default to `true`)
+  * Whether to output these information to dump.cs (`DumpProperty` and `DumpAttribute` default to `true`). In `dump.cs`, instance field offsets are emitted as `// 0x...` while static fields are explicitly annotated as `// static 0x...` to disambiguate statics-area storage slots from instance object layout.
 
 * `GenerateDummyDll`, `GenerateStruct`, `GenerateJsonDump`, `GenerateRunManifest`, `GenerateProtectionReport`
   * Whether to generate these things (`GenerateStruct` controls `StructGenerator` output: `script.json`, `stringliteral.json`, `stringliteral-indexed.json`, and `il2cpp.h`; `GenerateJsonDump` controls `dump.json` output, defaults to `false`; `GenerateRunManifest` controls `run-manifest.json` operational summary, defaults to `true`; `GenerateProtectionReport` controls `protection-report.json` pre-analysis diagnostics, defaults to `true`)

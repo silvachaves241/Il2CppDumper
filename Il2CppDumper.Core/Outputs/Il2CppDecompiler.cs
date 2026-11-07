@@ -232,9 +232,17 @@ namespace Il2CppDumper
                                     }
                                 }
                                 if (config.DumpFieldOffset && !isConst)
-                                    writer.Write("; // 0x{0:X}\n", il2Cpp.GetFieldOffsetFromIndex(typeDefIndex, i - typeDef.fieldStart, i, typeDef.IsValueType, isStatic));
+                                {
+                                    var fieldOffset = il2Cpp.GetFieldOffsetFromIndex(typeDefIndex, i - typeDef.fieldStart, i, typeDef.IsValueType, isStatic);
+                                    if (isStatic)
+                                        writer.Write("; // static 0x{0:X}\n", fieldOffset);
+                                    else
+                                        writer.Write("; // 0x{0:X}\n", fieldOffset);
+                                }
                                 else
+                                {
                                     writer.Write(";\n");
+                                }
                                 FieldsCount++;
                             }
                         }

@@ -412,7 +412,7 @@ Il2CppDumper.Diff --drift <left> <right> <output>
 ### 关于config.json
 
 * `DumpMethod`，`DumpField`，`DumpProperty`，`DumpAttribute`，`DumpFieldOffset`, `DumpMethodOffset`, `DumpTypeDefIndex`
-  * 是否在dump.cs输出相应的内容（`DumpProperty` 和 `DumpAttribute` 默认值为 `true`）
+  * 是否在dump.cs输出相应的内容（`DumpProperty` 和 `DumpAttribute` 默认值为 `true`）。在 `dump.cs` 中，实例字段偏移量输出为 `// 0x...`，而静态字段显式标注为 `// static 0x...`，以区分静态区域存储槽位与对象内存布局。
 
 * `GenerateDummyDll`，`GenerateStruct`，`GenerateJsonDump`，`GenerateRunManifest`，`GenerateProtectionReport`
   * 是否生成这些内容（`GenerateStruct` 控制 `StructGenerator` 输出的内容：`script.json`、`stringliteral.json`、`stringliteral-indexed.json` 和 `il2cpp.h`；`GenerateJsonDump` 控制 `dump.json` 输出，默认值为 `false`；`GenerateRunManifest` 控制运行状态清单 `run-manifest.json` 的输出，默认值为 `true`；`GenerateProtectionReport` 控制预分析诊断报告 `protection-report.json` 的输出，默认值为 `true`）
