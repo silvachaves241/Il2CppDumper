@@ -331,6 +331,42 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
+        public void GetCustomAttribute_WithCountExceedingAvailableConstructors_EmitsStructuredItemsWithMultiplicity_AllowingMetricsReconstruction()
+        {
+            var blob = CreateSyntheticBlobWithExaggeratedCount();
+            var (metadata, il2Cpp, imageDef) = CreateEnvironment(blob);
+            var executor = new Il2CppExecutor(metadata, il2Cpp);
+            var decompiler = new Il2CppDecompiler(executor);
+
+            decompiler.GetCustomAttribute(imageDef, 0, 0x04000001, padding: "", owner: "TargetClass.targetField");
+
+            // Decompiler captured 2 items: 1 malformed constructor + 1 truncated summary of 99 items
+            Assert.Equal(2, decompiler.AttributeDecodeFailures.Count);
+            Assert.Equal(1, decompiler.AttributeDecodeFailures[0].Count);
+            Assert.Equal(99, decompiler.AttributeDecodeFailures[1].Count);
+            Assert.Equal(100L, decompiler.CustomAttributeFailedCount);
+
+            // Reconstruct metrics purely from items
+            var manifestWarnings = new RunManifestWarnings();
+            foreach (var item in decompiler.AttributeDecodeFailures)
+            {
+                manifestWarnings.Items.Add(item);
+            }
+            manifestWarnings.SyncFromItems();
+
+            Assert.Equal(100, manifestWarnings.ByCategory.AttributeDecode);
+            Assert.Equal(100, manifestWarnings.Total);
+
+            // Pure reconstruction without relying on external counters or detail parsing:
+            var reconstructedAttributeDecode = manifestWarnings.Items
+                .Where(x => x.Category == "attributeDecode")
+                .Sum(x => x.Count);
+            Assert.Equal(100, reconstructedAttributeDecode);
+            Assert.Equal(reconstructedAttributeDecode, manifestWarnings.ByCategory.AttributeDecode);
+            Assert.Equal(reconstructedAttributeDecode, manifestWarnings.Total);
+        }
+
+        [Fact]
         public void Decompile_WithFailedAttributes_EmitsRunSummaryWithCounts()
         {
             var blob = CreateSyntheticBlobWithValidAndMalformed();

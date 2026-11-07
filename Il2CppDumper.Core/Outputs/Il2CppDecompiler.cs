@@ -574,6 +574,7 @@ namespace Il2CppDumper
                                 TypeDefIndex = typeDefIndex,
                                 TypeName = typeName,
                                 Member = owner,
+                                Count = truncatedCount > int.MaxValue ? int.MaxValue : (int)truncatedCount,
                                 Detail = $"Custom attribute blob declares {reader.Count} attribute(s) but buffer only contains {availableCount} constructor record(s) on '{owner}' (token 0x{token:X8}); {truncatedCount} missing attribute(s) skipped."
                             });
                         }

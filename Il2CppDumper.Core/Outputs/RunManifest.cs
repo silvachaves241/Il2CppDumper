@@ -90,23 +90,33 @@ namespace Il2CppDumper
         {
             if (Items != null && Items.Count > 0)
             {
-                var attrCount = Items.Count(x => string.Equals(x.Category, "attributeDecode", StringComparison.OrdinalIgnoreCase));
-                var strLitCount = Items.Count(x => string.Equals(x.Category, "stringLiteral", StringComparison.OrdinalIgnoreCase));
-                var strDecCount = Items.Count(x => string.Equals(x.Category, "stringDecryptor", StringComparison.OrdinalIgnoreCase));
-                var constDecCount = Items.Count(x => string.Equals(x.Category, "constantDecode", StringComparison.OrdinalIgnoreCase));
-                var outHashCount = Items.Count(x => string.Equals(x.Category, "outputHash", StringComparison.OrdinalIgnoreCase));
+                int SumCategory(string category)
+                {
+                    long sum = 0;
+                    foreach (var item in Items)
+                    {
+                        if (string.Equals(item.Category, category, StringComparison.OrdinalIgnoreCase))
+                        {
+                            sum += Math.Max(1, item.Count);
+                            if (sum >= int.MaxValue) return int.MaxValue;
+                        }
+                    }
+                    return (int)sum;
+                }
 
-                ByCategory.AttributeDecode = Math.Max(ByCategory.AttributeDecode, attrCount);
-                ByCategory.StringLiteral = Math.Max(ByCategory.StringLiteral, strLitCount);
-                ByCategory.StringDecryptor = Math.Max(ByCategory.StringDecryptor, strDecCount);
-                ByCategory.ConstantDecode = Math.Max(ByCategory.ConstantDecode, constDecCount);
-                ByCategory.OutputHash = Math.Max(ByCategory.OutputHash, outHashCount);
+                ByCategory.AttributeDecode = SumCategory("attributeDecode");
+                ByCategory.StringLiteral = SumCategory("stringLiteral");
+                ByCategory.StringDecryptor = SumCategory("stringDecryptor");
+                ByCategory.ConstantDecode = SumCategory("constantDecode");
+                ByCategory.OutputHash = SumCategory("outputHash");
 
-                Total = Math.Max(Items.Count, ByCategory.AttributeDecode + ByCategory.StringLiteral + ByCategory.StringDecryptor + ByCategory.ConstantDecode + ByCategory.OutputHash);
+                long totalSum = (long)ByCategory.AttributeDecode + ByCategory.StringLiteral + ByCategory.StringDecryptor + ByCategory.ConstantDecode + ByCategory.OutputHash;
+                Total = totalSum > int.MaxValue ? int.MaxValue : (int)totalSum;
             }
             else
             {
-                Total = ByCategory.AttributeDecode + ByCategory.StringLiteral + ByCategory.StringDecryptor + ByCategory.ConstantDecode + ByCategory.OutputHash;
+                long totalSum = (long)ByCategory.AttributeDecode + ByCategory.StringLiteral + ByCategory.StringDecryptor + ByCategory.ConstantDecode + ByCategory.OutputHash;
+                Total = totalSum > int.MaxValue ? int.MaxValue : (int)totalSum;
             }
         }
     }
@@ -149,6 +159,9 @@ namespace Il2CppDumper
         [JsonPropertyName("rawBytes")]
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public string? RawBytes { get; set; }
+
+        [JsonPropertyName("count")]
+        public int Count { get; set; } = 1;
 
         [JsonPropertyName("detail")]
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
