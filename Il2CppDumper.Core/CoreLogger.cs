@@ -20,6 +20,17 @@ namespace Il2CppDumper
             return new ScopeDisposer(prevWriter, prevWarnings);
         }
 
+        public static void DetachWriter()
+        {
+            CurrentWriter.Value = null;
+        }
+
+        public static void Reset()
+        {
+            CurrentWriter.Value = null;
+            CurrentWarnings.Value = null;
+        }
+
         public static void WriteLine(string? message = "")
         {
             if (message != null && (message.StartsWith("WARNING:", StringComparison.OrdinalIgnoreCase) ||
@@ -27,7 +38,14 @@ namespace Il2CppDumper
             {
                 CurrentWarnings.Value?.Add(message);
             }
-            CurrentWriter.Value?.WriteLine(message);
+            try
+            {
+                CurrentWriter.Value?.WriteLine(message);
+            }
+            catch (ObjectDisposedException)
+            {
+                CurrentWriter.Value = null;
+            }
         }
 
         public static void WriteLine(string format, params object[] args)
@@ -43,13 +61,27 @@ namespace Il2CppDumper
 
         public static void Write(string? message)
         {
-            CurrentWriter.Value?.Write(message);
+            try
+            {
+                CurrentWriter.Value?.Write(message);
+            }
+            catch (ObjectDisposedException)
+            {
+                CurrentWriter.Value = null;
+            }
         }
 
         public static void LogWarning(string message)
         {
             CurrentWarnings.Value?.Add(message);
-            CurrentWriter.Value?.WriteLine(message);
+            try
+            {
+                CurrentWriter.Value?.WriteLine(message);
+            }
+            catch (ObjectDisposedException)
+            {
+                CurrentWriter.Value = null;
+            }
         }
 
         private sealed class ScopeDisposer : IDisposable

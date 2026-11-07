@@ -767,5 +767,143 @@ namespace Il2CppDumper.Tests
                 }
             }
         }
+
+        [Fact]
+        public void Batch_OuterCallerScopeWriter_IsPreservedAfterBatchExecution()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "batch-outer-scope-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var fixturesDir = Path.Combine(tempDir, "fixtures");
+                var (wasm1, metaPath, _) = CreateSyntheticFixtures(fixturesDir, "sample1.wasm");
+                var outDir = Path.Combine(tempDir, "out");
+
+                var entries = new List<BatchEntry>
+                {
+                    new() { Executable = wasm1, Metadata = metaPath, Output = outDir }
+                };
+
+                var baseConfig = new Config { RequireAnyKey = false, GenerateDummyDll = false };
+
+                using var outerWriter = new StringWriter();
+                using (CoreLogger.Scope(outerWriter))
+                {
+                    CoreLogger.WriteLine("outer_before");
+
+                    using var batchWriter = new StringWriter();
+                    var result = BatchProcessor.ExecuteEntries(entries, baseConfig, tempDir, "batch.json", log: batchWriter);
+                    Assert.Equal(0, result.ExitCode);
+
+                    // After batch execution finishes, the outer scope's writer must be preserved
+                    CoreLogger.WriteLine("outer_after");
+                }
+
+                var outerLogs = outerWriter.ToString();
+                Assert.Contains("outer_before", outerLogs);
+                Assert.Contains("outer_after", outerLogs);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void Batch_MultipleEntries_LoggingSurvivesDisposedWriterAcrossEntries()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "batch-disposed-writer-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var fixturesDir = Path.Combine(tempDir, "fixtures");
+                var (wasm1, metaPath, _) = CreateSyntheticFixtures(fixturesDir, "sample1.wasm");
+                var wasm2 = Path.Combine(fixturesDir, "sample2.wasm");
+                File.Copy(wasm1, wasm2, true);
+
+                var outDir1 = Path.Combine(tempDir, "out1");
+                var outDir2 = Path.Combine(tempDir, "out2");
+
+                var entries = new List<BatchEntry>
+                {
+                    new() { Executable = wasm1, Metadata = metaPath, Output = outDir1 },
+                    new() { Executable = wasm2, Metadata = metaPath, Output = outDir2 }
+                };
+
+                var baseConfig = new Config { RequireAnyKey = false, GenerateDummyDll = false };
+                var innerSw = new StringWriter();
+                var disposingWriter = new DisposingAfterWriteWriter(innerSw);
+
+                var result = BatchProcessor.ExecuteEntries(entries, baseConfig, tempDir, "batch.json", log: disposingWriter);
+                Assert.Equal(0, result.ExitCode);
+                Assert.Equal(2, result.Results.Count);
+                Assert.True(result.Results[0].Success);
+                Assert.True(result.Results[1].Success);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void CoreLogger_DisposedWriter_SilentlyDetachesWithoutException()
+        {
+            var sw = new StringWriter();
+            using (CoreLogger.Scope(sw))
+            {
+                CoreLogger.WriteLine("Initial message");
+                sw.Dispose();
+
+                var ex1 = Record.Exception(() => CoreLogger.WriteLine("Subsequent message"));
+                Assert.Null(ex1);
+
+                var ex2 = Record.Exception(() => CoreLogger.Write("Subsequent write"));
+                Assert.Null(ex2);
+
+                var ex3 = Record.Exception(() => CoreLogger.LogWarning("WARNING: Subsequent warning"));
+                Assert.Null(ex3);
+            }
+
+            CoreLogger.DetachWriter();
+            CoreLogger.Reset();
+        }
+
+        private sealed class DisposingAfterWriteWriter : TextWriter
+        {
+            private readonly TextWriter inner;
+            private int writeCount;
+            private bool disposed;
+
+            public DisposingAfterWriteWriter(TextWriter inner)
+            {
+                this.inner = inner;
+            }
+
+            public override Encoding Encoding => inner.Encoding;
+
+            public override void Write(char value)
+            {
+                if (disposed) throw new ObjectDisposedException(nameof(DisposingAfterWriteWriter));
+                inner.Write(value);
+            }
+
+            public override void WriteLine(string? value)
+            {
+                if (disposed) throw new ObjectDisposedException(nameof(DisposingAfterWriteWriter));
+                inner.WriteLine(value);
+                writeCount++;
+                if (writeCount >= 2)
+                {
+                    disposed = true;
+                }
+            }
+        }
     }
 }
