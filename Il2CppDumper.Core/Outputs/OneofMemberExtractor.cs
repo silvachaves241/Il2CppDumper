@@ -149,31 +149,55 @@ namespace Il2CppDumper
 
                 var fieldType = il2Cpp.types[fieldDef.typeIndex];
                 var fieldName = metadata.GetStringFromIndex(fieldDef.nameIndex);
-                var isConst = (fieldType.attrs & FIELD_ATTRIBUTE_LITERAL) != 0;
+                var isLiteral = (fieldType.attrs & FIELD_ATTRIBUTE_LITERAL) != 0;
                 var isStatic = (fieldType.attrs & FIELD_ATTRIBUTE_STATIC) != 0;
 
-                if (isConst)
+                if (isLiteral)
                 {
-                    if (metadata.GetFieldDefaultValueFromIndex(i, out var fieldDefaultValue) && fieldDefaultValue.dataIndex != -1)
+                    var isPublic = (fieldType.attrs & FIELD_ATTRIBUTE_FIELD_ACCESS_MASK) == FIELD_ATTRIBUTE_PUBLIC;
+                    var isInt32 = fieldType.type == Il2CppTypeEnum.IL2CPP_TYPE_I4;
+
+                    if (!isPublic || !isInt32)
                     {
-                        if (executor.TryGetDefaultValue(fieldDefaultValue.typeIndex, fieldDefaultValue.dataIndex, out var val, typeDefIndex, metadata.GetStringFromIndex(typeDef.nameIndex), fieldName))
+                        // Auxiliary constants (e.g. private const, non-Int32 literals) do not participate in protobuf tag mappings
+                        continue;
+                    }
+
+                    // Candidate public const int protobuf tag: must resolve a positive Int32 default value
+                    if (!metadata.GetFieldDefaultValueFromIndex(i, out var fieldDefaultValue) || fieldDefaultValue.dataIndex == -1)
+                    {
+                        ambiguities.Add(new OneofAmbiguity
                         {
-                            if (val != null)
-                            {
-                                try
-                                {
-                                    var tag = Convert.ToInt32(val);
-                                    if (tag > 0)
-                                    {
-                                        pendingConsts.Add((fieldName, tag));
-                                    }
-                                }
-                                catch
-                                {
-                                    // non-integral const is not a protobuf tag
-                                }
-                            }
-                        }
+                            ClassName = className,
+                            TypeDefIndex = typeDefIndex,
+                            Reason = $"missing default value for public const int field '{fieldName}'"
+                        });
+                        continue;
+                    }
+
+                    if (!executor.TryGetDefaultValue(fieldDefaultValue.typeIndex, fieldDefaultValue.dataIndex, out var val, typeDefIndex, metadata.GetStringFromIndex(typeDef.nameIndex), fieldName) || val == null)
+                    {
+                        ambiguities.Add(new OneofAmbiguity
+                        {
+                            ClassName = className,
+                            TypeDefIndex = typeDefIndex,
+                            Reason = $"failed to decode constant default value for public const int field '{fieldName}'"
+                        });
+                        continue;
+                    }
+
+                    if (val is int tag && tag > 0)
+                    {
+                        pendingConsts.Add((fieldName, tag));
+                    }
+                    else
+                    {
+                        ambiguities.Add(new OneofAmbiguity
+                        {
+                            ClassName = className,
+                            TypeDefIndex = typeDefIndex,
+                            Reason = $"public const int field '{fieldName}' evaluated to invalid tag value '{val}'"
+                        });
                     }
                     continue;
                 }
@@ -355,9 +379,13 @@ namespace Il2CppDumper
             return false;
         }
 
-        private bool HasIMessageInterface(Il2CppTypeDefinition typeDef)
+        private bool HasIMessageInterface(Il2CppTypeDefinition typeDef, HashSet<Il2CppTypeDefinition>? visited = null)
         {
             if (typeDef.interfaces_count <= 0 || metadata.interfaceIndices == null)
+                return false;
+
+            visited ??= new HashSet<Il2CppTypeDefinition>();
+            if (!visited.Add(typeDef))
                 return false;
 
             for (int i = 0; i < typeDef.interfaces_count; i++)
@@ -371,12 +399,34 @@ namespace Il2CppDumper
                         var ifaceType = il2Cpp.types[typeIdx];
                         try
                         {
-                            var ifaceName = executor.GetTypeName(ifaceType, false, false);
-                            if (IsIMessageInterfaceName(ifaceName))
-                                return true;
-                            var ifaceFullName = executor.GetTypeName(ifaceType, true, false);
-                            if (IsIMessageInterfaceName(ifaceFullName))
-                                return true;
+                            Il2CppTypeDefinition? ifaceDef = null;
+                            if (ifaceType.type == Il2CppTypeEnum.IL2CPP_TYPE_CLASS || ifaceType.type == Il2CppTypeEnum.IL2CPP_TYPE_VALUETYPE)
+                            {
+                                ifaceDef = executor.GetTypeDefinitionFromIl2CppType(ifaceType);
+                            }
+                            else if (ifaceType.type == Il2CppTypeEnum.IL2CPP_TYPE_GENERICINST)
+                            {
+                                var genericClass = il2Cpp.MapVATR<Il2CppGenericClass>(ifaceType.data.generic_class);
+                                ifaceDef = executor.GetGenericClassTypeDefinition(genericClass);
+                            }
+
+                            if (ifaceDef != null)
+                            {
+                                var ifaceNs = metadata.GetStringFromIndex(ifaceDef.namespaceIndex);
+                                var ifaceName = metadata.GetStringFromIndex(ifaceDef.nameIndex);
+
+                                if (IsProtobufIMessageIdentity(ifaceNs, ifaceName))
+                                    return true;
+
+                                if (HasIMessageInterface(ifaceDef, visited))
+                                    return true;
+                            }
+                            else
+                            {
+                                var fullName = executor.GetTypeName(ifaceType, true, false);
+                                if (IsProtobufIMessageFullName(fullName))
+                                    return true;
+                            }
                         }
                         catch
                         {
@@ -388,15 +438,33 @@ namespace Il2CppDumper
             return false;
         }
 
-        private static bool IsIMessageInterfaceName(string name)
+        private static bool IsProtobufIMessageIdentity(string? ns, string? name)
         {
             if (string.IsNullOrEmpty(name))
                 return false;
-            return name == "IMessage"
-                || name.StartsWith("IMessage<", StringComparison.Ordinal)
-                || name.EndsWith(".IMessage", StringComparison.Ordinal)
-                || name.Contains(".IMessage<", StringComparison.Ordinal)
-                || name.Contains("Google.Protobuf.IMessage", StringComparison.OrdinalIgnoreCase);
+
+            if (ns == "Google.Protobuf")
+            {
+                return name == "IMessage" || name == "IMessage`1";
+            }
+
+            if (string.IsNullOrEmpty(ns))
+            {
+                return name == "Google.Protobuf.IMessage"
+                    || name.StartsWith("Google.Protobuf.IMessage<", StringComparison.Ordinal)
+                    || name.StartsWith("Google.Protobuf.IMessage`1", StringComparison.Ordinal);
+            }
+
+            return false;
+        }
+
+        private static bool IsProtobufIMessageFullName(string? fullName)
+        {
+            if (string.IsNullOrEmpty(fullName))
+                return false;
+            return fullName == "Google.Protobuf.IMessage"
+                || fullName.StartsWith("Google.Protobuf.IMessage<", StringComparison.Ordinal)
+                || fullName.StartsWith("Google.Protobuf.IMessage`1", StringComparison.Ordinal);
         }
     }
 }
