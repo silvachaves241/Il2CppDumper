@@ -409,13 +409,45 @@ Il2CppDumper.Diff --drift <left> <right> <output>
 * **Códigos de saída:** `0` = sem drift, `1` = drift detectado, `2` = erro de uso ou arquivo.
 * **Classificação e severidade:** `shifted` e `removed` marcam `breaks-external-readers`; adições no final (`added` com offset superior aos existentes) marcam `leaf-consumers-may-survive`; structs sem drift são omitidas; mudanças apenas de tamanho geram `fields: []`.
 
+#### oneof-members.json
+
+protobuf oneof 成员映射提取器（`GenerateOneofMap`，默认值为 `false`）。在 `IMessage` 容器类中恢复共享单个 `object` 多态存储槽位的 protobuf oneof 成员 tag 的规范映射，避免下游正则表达式启发式解析产生分歧：
+
+```json
+{
+  "jnj": {
+    "group": { "property": "eptp", "offset": "0x68" },
+    "members": [
+      { "tag": 1, "constantFields": ["eptk"] }
+    ]
+  }
+}
+```
+
+伴随映射输出，歧义信道（`oneof-ambiguities.json`）记录非干净的常量序列分组（如多个 `object` 字段或缺少对应实例存储槽位的常量）。
+
+**Português:** Extrator de mapeamento de membros oneof (`oneof-members.json`, chave `GenerateOneofMap`, padrão `false`). Recupera o mapeamento canônico de tags membros de oneof protobuf que compartilham o mesmo slot de armazenamento polimórfico `object` em classes contêineres `IMessage`:
+
+```json
+{
+  "jnj": {
+    "group": { "property": "eptp", "offset": "0x68" },
+    "members": [
+      { "tag": 1, "constantFields": ["eptk"] }
+    ]
+  }
+}
+```
+
+Junto aos mapeamentos, o canal de ambiguidade (`oneof-ambiguities.json`) registra agrupamentos não limpos (ex.: múltiplos campos `object` ou consts sem campo de armazenamento correspondente).
+
 ### 关于config.json
 
 * `DumpMethod`，`DumpField`，`DumpProperty`，`DumpAttribute`，`DumpFieldOffset`, `DumpMethodOffset`, `DumpTypeDefIndex`
   * 是否在dump.cs输出相应的内容（`DumpProperty` 和 `DumpAttribute` 默认值为 `true`）。在 `dump.cs` 中，实例字段偏移量输出为 `// 0x...`，而静态字段显式标注为 `// static 0x...`，以区分静态区域存储槽位与对象内存布局。
 
-* `GenerateDummyDll`，`GenerateStruct`，`GenerateJsonDump`，`GenerateRunManifest`，`GenerateProtectionReport`
-  * 是否生成这些内容（`GenerateStruct` 控制 `StructGenerator` 输出的内容：`script.json`、`stringliteral.json`、`stringliteral-indexed.json` 和 `il2cpp.h`；`GenerateJsonDump` 控制 `dump.json` 输出，默认值为 `false`；`GenerateRunManifest` 控制运行状态清单 `run-manifest.json` 的输出，默认值为 `true`；`GenerateProtectionReport` 控制预分析诊断报告 `protection-report.json` 的输出，默认值为 `true`）
+* `GenerateDummyDll`，`GenerateStruct`，`GenerateJsonDump`，`GenerateRunManifest`，`GenerateProtectionReport`，`GenerateOneofMap`
+  * 是否生成这些内容（`GenerateStruct` 控制 `StructGenerator` 输出的内容：`script.json`、`stringliteral.json`、`stringliteral-indexed.json` 和 `il2cpp.h`；`GenerateJsonDump` 控制 `dump.json` 输出，默认值为 `false`；`GenerateRunManifest` 控制运行状态清单 `run-manifest.json` 的输出，默认值为 `true`；`GenerateProtectionReport` 控制预分析诊断报告 `protection-report.json` 的输出，默认值为 `true`；`GenerateOneofMap` 控制 `oneof-members.json` 和 `oneof-ambiguities.json` 输出，默认值为 `false`）
 
 * `DummyDllAddToken`
   * 是否在DummyDll中添加token

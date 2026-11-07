@@ -15,6 +15,7 @@ namespace Il2CppDumper
         public bool GenerateJsonDump { get; set; } = false;
         public bool GenerateRunManifest { get; set; } = true;
         public bool GenerateProtectionReport { get; set; } = true;
+        public bool GenerateOneofMap { get; set; } = false;
         public bool DummyDllAddToken { get; set; } = true;
         public bool RequireAnyKey { get; set; } = true;
         public bool ForceIl2CppVersion { get; set; } = false;

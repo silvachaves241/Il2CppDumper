@@ -412,6 +412,38 @@ Il2CppDumper.Diff --drift <left> <right> <output>
 * **Códigos de saída:** `0` = sem drift, `1` = drift detectado, `2` = erro de uso ou arquivo.
 * **Classificação e severidade:** `shifted` e `removed` marcam `breaks-external-readers`; adições no final (`added` com offset superior aos existentes) marcam `leaf-consumers-may-survive`; structs sem drift são omitidas; mudanças apenas de tamanho geram `fields: []`.
 
+#### oneof-members.json
+
+Oneof member mapping extractor (`GenerateOneofMap`, default `false`). Recovers the canonical mapping of protobuf oneof member tags sharing a single `object` polymorphic storage slot across `IMessage` container classes, avoiding downstream heuristic regex divergence:
+
+```json
+{
+  "jnj": {
+    "group": { "property": "eptp", "offset": "0x68" },
+    "members": [
+      { "tag": 1, "constantFields": ["eptk"] }
+    ]
+  }
+}
+```
+
+Alongside the mappings, an ambiguity channel (`oneof-ambiguities.json`) records non-clean const-run groupings (e.g. multiple `object` fields or consts without following instance storage).
+
+**Português:** Extrator de mapeamento de membros oneof (`oneof-members.json`, chave `GenerateOneofMap`, padrão `false`). Recupera o mapeamento canônico de tags membros de oneof protobuf que compartilham o mesmo slot de armazenamento polimórfico `object` em classes contêineres `IMessage`:
+
+```json
+{
+  "jnj": {
+    "group": { "property": "eptp", "offset": "0x68" },
+    "members": [
+      { "tag": 1, "constantFields": ["eptk"] }
+    ]
+  }
+}
+```
+
+Junto aos mapeamentos, o canal de ambiguidade (`oneof-ambiguities.json`) registra agrupamentos não limpos (ex.: múltiplos campos `object` ou consts sem campo de armazenamento correspondente).
+
 ### Configuration
 
 All the configuration options are located in `config.json`
@@ -421,8 +453,8 @@ Available options:
 * `DumpMethod`, `DumpField`, `DumpProperty`, `DumpAttribute`, `DumpFieldOffset`, `DumpMethodOffset`, `DumpTypeDefIndex`
   * Whether to output these information to dump.cs (`DumpProperty` and `DumpAttribute` default to `true`). In `dump.cs`, instance field offsets are emitted as `// 0x...` while static fields are explicitly annotated as `// static 0x...` to disambiguate statics-area storage slots from instance object layout.
 
-* `GenerateDummyDll`, `GenerateStruct`, `GenerateJsonDump`, `GenerateRunManifest`, `GenerateProtectionReport`
-  * Whether to generate these things (`GenerateStruct` controls `StructGenerator` output: `script.json`, `stringliteral.json`, `stringliteral-indexed.json`, and `il2cpp.h`; `GenerateJsonDump` controls `dump.json` output, defaults to `false`; `GenerateRunManifest` controls `run-manifest.json` operational summary, defaults to `true`; `GenerateProtectionReport` controls `protection-report.json` pre-analysis diagnostics, defaults to `true`)
+* `GenerateDummyDll`, `GenerateStruct`, `GenerateJsonDump`, `GenerateRunManifest`, `GenerateProtectionReport`, `GenerateOneofMap`
+  * Whether to generate these things (`GenerateStruct` controls `StructGenerator` output: `script.json`, `stringliteral.json`, `stringliteral-indexed.json`, and `il2cpp.h`; `GenerateJsonDump` controls `dump.json` output, defaults to `false`; `GenerateRunManifest` controls `run-manifest.json` operational summary, defaults to `true`; `GenerateProtectionReport` controls `protection-report.json` pre-analysis diagnostics, defaults to `true`; `GenerateOneofMap` controls `oneof-members.json` and `oneof-ambiguities.json` output, defaults to `false`)
 
 * `DummyDllAddToken`
   * Whether to add token in DummyDll

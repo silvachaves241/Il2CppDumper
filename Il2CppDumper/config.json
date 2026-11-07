@@ -11,6 +11,7 @@
   "GenerateJsonDump": false,
   "GenerateRunManifest": true,
   "GenerateProtectionReport": true,
+  "GenerateOneofMap": false,
   "DummyDllAddToken": true,
   "RequireAnyKey": true,
   "ForceIl2CppVersion": false,
