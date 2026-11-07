@@ -18,6 +18,10 @@ on:
         description: 'Mark as pre-release'
         type: boolean
         default: false
+      recreate_published:
+        description: 'Delete and recreate if release is already published (force re-release)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -36,6 +40,7 @@ jobs:
       commit_sha: ${{ steps.resolve.outputs.commit_sha }}
       draft: ${{ steps.resolve.outputs.draft }}
       prerelease: ${{ steps.resolve.outputs.prerelease }}
+      recreate_published: ${{ steps.resolve.outputs.recreate_published }}
 
     steps:
       - name: Checkout repository
@@ -50,10 +55,12 @@ jobs:
             TAG="${{ inputs.tag }}"
             DRAFT="${{ inputs.draft }}"
             PRERELEASE="${{ inputs.prerelease }}"
+            RECREATE_PUBLISHED="${{ inputs.recreate_published }}"
           else
             TAG="${{ github.ref_name }}"
             DRAFT="true"
             PRERELEASE="false"
+            RECREATE_PUBLISHED="false"
           fi
           if [ -z "$TAG" ]; then TAG="v0.1.0"; fi
 
@@ -90,6 +97,7 @@ jobs:
           echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
           echo "draft=$DRAFT" >> $GITHUB_OUTPUT
           echo "prerelease=$PRERELEASE" >> $GITHUB_OUTPUT
+          echo "recreate_published=$RECREATE_PUBLISHED" >> $GITHUB_OUTPUT
 
   test:
     name: Test ${{ matrix.os }} (${{ matrix.framework }})
@@ -411,11 +419,14 @@ jobs:
       - name: Verify release status and publish assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RECREATE_PUBLISHED: ${{ needs.resolve.outputs.recreate_published }}
         run: |
           TAG="${{ steps.prep.outputs.tag }}"
           COMMIT_SHA="${{ steps.prep.outputs.commit_sha }}"
           IS_DRAFT="${{ needs.resolve.outputs.draft }}"
           IS_PRERELEASE="${{ needs.resolve.outputs.prerelease }}"
+          RECREATE_FLAG="${RECREATE_PUBLISHED:-false}"
+          PATH_TAKEN="fresh"
 
           # Fetch remote tags to ensure full reference visibility for verification
           git fetch --tags --force origin 2>/dev/null || true
@@ -436,13 +447,8 @@ jobs:
 
           if [ -n "$EXISTING_JSON" ]; then
             IS_EXISTING_DRAFT=$(echo "$EXISTING_JSON" | jq -r '.isDraft')
-            if [ "$IS_EXISTING_DRAFT" = "false" ]; then
-              # R2: Refuse to mutate or overwrite assets on an already-published release
-              echo "Error: Release for tag ${TAG} is already published. Refusing to overwrite assets of an existing published release." >&2
-              exit 1
-            fi
 
-            # R1: Check effective target of existing draft release
+            # Verify target commitish parity if specified
             EXISTING_TARGET=$(echo "$EXISTING_JSON" | jq -r '.targetCommitish // empty')
             if [ -n "$EXISTING_TARGET" ]; then
               if git rev-parse -q --verify "${EXISTING_TARGET}^{commit}" >/dev/null 2>&1; then
@@ -454,13 +460,34 @@ jobs:
               fi
 
               if [ "$EFFECTIVE_DRAFT_SHA" != "$COMMIT_SHA" ] && [ "$EXISTING_TARGET" != "$COMMIT_SHA" ]; then
-                echo "Error: Draft release for ${TAG} targets commit '${EXISTING_TARGET}' (resolved: '${EFFECTIVE_DRAFT_SHA}'), while current build commit is '${COMMIT_SHA}'. Refusing to overwrite assets of a draft targeting a different commit." >&2
+                echo "Error: Release for ${TAG} targets commit '${EXISTING_TARGET}' (resolved: '${EFFECTIVE_DRAFT_SHA}'), while current build commit is '${COMMIT_SHA}'. Refusing to overwrite assets of a release targeting a different commit." >&2
                 exit 1
               fi
             fi
 
-            echo "Existing draft release found for ${TAG} targeting matching commit ${COMMIT_SHA}. Uploading and refreshing assets..."
-            gh release upload "$TAG" dist/* --clobber
+            if [ "$IS_EXISTING_DRAFT" = "false" ]; then
+              if [ "$RECREATE_FLAG" = "true" ]; then
+                echo "Release for tag ${TAG} is already published. Forced re-release requested: deleting and recreating release..."
+                gh release delete "$TAG" --yes
+                PATH_TAKEN="recreated"
+
+                echo "Creating fresh release for ${TAG}..."
+                gh release create "$TAG" dist/* \
+                  --title "Il2CppDumper ${TAG}" \
+                  --notes-file release-notes.md \
+                  --draft \
+                  --target "$COMMIT_SHA"
+              else
+                echo "Release for tag ${TAG} is already published. Reconciling assets and notes (safe idempotent update)..."
+                gh release edit "$TAG" --title "Il2CppDumper ${TAG}" --notes-file release-notes.md --target "$COMMIT_SHA"
+                gh release upload "$TAG" dist/* --clobber
+                PATH_TAKEN="reconciled"
+              fi
+            else
+              echo "Existing draft release found for ${TAG} targeting matching commit ${COMMIT_SHA}. Uploading and refreshing assets..."
+              gh release upload "$TAG" dist/* --clobber
+              PATH_TAKEN="draft-resumed"
+            fi
           else
             echo "Creating initial draft release for ${TAG}..."
             gh release create "$TAG" dist/* \
@@ -468,6 +495,7 @@ jobs:
               --notes-file release-notes.md \
               --draft \
               --target "$COMMIT_SHA"
+            PATH_TAKEN="fresh"
           fi
 
           # 3. Verify that all 5 assets are present on the release before finalizing state
@@ -479,10 +507,12 @@ jobs:
 
           # 4. Update release notes, target commitish, and apply final draft / prerelease states atomically after assets are confirmed
           EDIT_ARGS=("--title" "Il2CppDumper ${TAG}" "--notes-file" "release-notes.md" "--target" "$COMMIT_SHA")
-          if [ "$IS_DRAFT" = "false" ]; then
-            EDIT_ARGS+=("--draft=false")
-          else
-            EDIT_ARGS+=("--draft")
+          if [ "$PATH_TAKEN" != "reconciled" ]; then
+            if [ "$IS_DRAFT" = "false" ]; then
+              EDIT_ARGS+=("--draft=false")
+            else
+              EDIT_ARGS+=("--draft")
+            fi
           fi
           if [ "$IS_PRERELEASE" = "true" ]; then
             EDIT_ARGS+=("--prerelease")
@@ -491,3 +521,14 @@ jobs:
           fi
 
           gh release edit "$TAG" "${EDIT_ARGS[@]}"
+
+          # 5. Emit job summary
+          if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+            cat <<EOF >> "$GITHUB_STEP_SUMMARY"
+### Release Publishing Summary
+- **Tag:** \`${TAG}\`
+- **Commit:** \`${COMMIT_SHA}\`
+- **Publish Path:** \`${PATH_TAKEN}\`
+- **Asset Count:** ${ASSET_COUNT}
+EOF
+          fi
