@@ -70,8 +70,9 @@ namespace Il2CppDumper
                 writer.Write($"// Image {imageIndex}: {metadata.GetStringFromIndex(imageDef.nameIndex)} - {imageDef.typeStart}\n");
             }
             //dump type
-            foreach (var imageDef in metadata.imageDefs)
+            for (var imageIndex = 0; imageIndex < metadata.imageDefs.Length; imageIndex++)
             {
+                var imageDef = metadata.imageDefs[imageIndex];
                 try
                 {
                     var imageName = metadata.GetStringFromIndex(imageDef.nameIndex);
@@ -145,7 +146,7 @@ namespace Il2CppDumper
                         if (extends.Count > 0)
                             writer.Write($" : {string.Join(", ", extends)}");
                         if (config.DumpTypeDefIndex)
-                            writer.Write($" // TypeDefIndex: {typeDefIndex}\n{{");
+                            writer.Write($" // TypeDefIndex: {typeDefIndex} | ImageId: {imageIndex} | Image: {imageName}\n{{");
                         else
                             writer.Write("\n{");
                         TypesCount++;
