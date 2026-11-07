@@ -1,8 +1,10 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -11,11 +13,41 @@ namespace Il2CppDumper
 {
     public class ProtectionReport
     {
+        [JsonPropertyName("sections")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public List<ProtectionSectionEntry>? Sections { get; set; }
+
+        [JsonPropertyName("coffTimestamp")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? CoffTimestamp { get; set; }
+
+        [JsonPropertyName("imageChecksum")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public uint? ImageChecksum { get; set; }
+
         [JsonPropertyName("findings")]
         public List<ProtectionFinding> Findings { get; set; } = new();
 
         [JsonPropertyName("notes")]
         public List<string> Notes { get; set; } = new();
+    }
+
+    public class ProtectionSectionEntry
+    {
+        [JsonPropertyName("name")]
+        public string Name { get; set; } = string.Empty;
+
+        [JsonPropertyName("virtualSize")]
+        public uint VirtualSize { get; set; }
+
+        [JsonPropertyName("rawSize")]
+        public uint RawSize { get; set; }
+
+        [JsonPropertyName("sha256")]
+        public string Sha256 { get; set; } = string.Empty;
+
+        [JsonPropertyName("entropy")]
+        public double Entropy { get; set; }
     }
 
     public class ProtectionFinding
@@ -57,13 +89,14 @@ namespace Il2CppDumper
             ".pack", "PELOCK"
         };
 
-        public static double CalculateEntropy(Stream stream, long offset, long length, int bufferSize = 65536)
+        public static (double entropy, string sha256) CalculateSectionMetrics(Stream stream, long offset, long length, int bufferSize = 65536)
         {
             if (stream == null || length <= 0 || offset < 0 || offset + length > stream.Length)
-                return 0.0;
+                return (0.0, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
 
             stream.Position = offset;
             var frequencies = new long[256];
+            using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             var buffer = new byte[Math.Min(bufferSize, (int)Math.Min(length, 65536))];
             long remaining = length;
 
@@ -73,6 +106,7 @@ namespace Il2CppDumper
                 int read = stream.Read(buffer, 0, toRead);
                 if (read <= 0) break;
 
+                hasher.AppendData(buffer, 0, read);
                 for (int i = 0; i < read; i++)
                 {
                     frequencies[buffer[i]]++;
@@ -81,7 +115,10 @@ namespace Il2CppDumper
             }
 
             long totalCount = length - remaining;
-            if (totalCount <= 0) return 0.0;
+            var hashBytes = hasher.GetHashAndReset();
+            var sha256 = Convert.ToHexString(hashBytes).ToLowerInvariant();
+
+            if (totalCount <= 0) return (0.0, sha256);
 
             double entropy = 0.0;
             double invTotal = 1.0 / totalCount;
@@ -96,7 +133,12 @@ namespace Il2CppDumper
                 }
             }
 
-            return Math.Round(entropy, 2, MidpointRounding.AwayFromZero);
+            return (Math.Round(entropy, 2, MidpointRounding.AwayFromZero), sha256);
+        }
+
+        public static double CalculateEntropy(Stream stream, long offset, long length, int bufferSize = 65536)
+        {
+            return CalculateSectionMetrics(stream, offset, length, bufferSize).entropy;
         }
 
         public static double CalculateEntropy(byte[] data, int offset, int length)
@@ -112,12 +154,15 @@ namespace Il2CppDumper
         {
             var findings = new List<ProtectionFinding>();
             var notes = new List<string>();
+            List<ProtectionSectionEntry>? peSections = null;
+            string? coffTimestamp = null;
+            uint? imageChecksum = null;
 
             if (!string.IsNullOrWhiteSpace(executablePath) && File.Exists(executablePath))
             {
                 try
                 {
-                    AnalyzeExecutable(executablePath, findings, notes);
+                    AnalyzeExecutable(executablePath, findings, notes, out peSections, out coffTimestamp, out imageChecksum);
                 }
                 catch (Exception ex)
                 {
@@ -143,13 +188,26 @@ namespace Il2CppDumper
 
             return new ProtectionReport
             {
+                Sections = peSections,
+                CoffTimestamp = coffTimestamp,
+                ImageChecksum = imageChecksum,
                 Findings = findings,
                 Notes = notes
             };
         }
 
-        private static void AnalyzeExecutable(string executablePath, List<ProtectionFinding> findings, List<string> notes)
+        private static void AnalyzeExecutable(
+            string executablePath,
+            List<ProtectionFinding> findings,
+            List<string> notes,
+            out List<ProtectionSectionEntry>? peSections,
+            out string? coffTimestamp,
+            out uint? imageChecksum)
         {
+            peSections = null;
+            coffTimestamp = null;
+            imageChecksum = null;
+
             using var fs = new FileStream(executablePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             var fileLen = fs.Length;
             if (fileLen < 4)
@@ -166,7 +224,7 @@ namespace Il2CppDumper
 
             if ((magic & 0xFFFF) == 0x5A4D) // 'MZ' -> PE
             {
-                AnalyzePE(fs, reader, disambiguator, findings, notes);
+                AnalyzePE(fs, reader, disambiguator, findings, notes, out peSections, out coffTimestamp, out imageChecksum);
             }
             else if (magic == 0x464C457F) // '\x7FELF' -> ELF
             {
@@ -186,8 +244,20 @@ namespace Il2CppDumper
             }
         }
 
-        private static void AnalyzePE(FileStream fs, BinaryReader reader, SectionNameDisambiguator disambiguator, List<ProtectionFinding> findings, List<string> notes)
+        private static void AnalyzePE(
+            FileStream fs,
+            BinaryReader reader,
+            SectionNameDisambiguator disambiguator,
+            List<ProtectionFinding> findings,
+            List<string> notes,
+            out List<ProtectionSectionEntry>? sectionsOut,
+            out string? coffTimestampOut,
+            out uint? imageChecksumOut)
         {
+            sectionsOut = null;
+            coffTimestampOut = null;
+            imageChecksumOut = null;
+
             if (fs.Length < 0x40) return;
 
             fs.Position = 0x3C;
@@ -209,6 +279,16 @@ namespace Il2CppDumper
             var optHeaderPos = fs.Position;
             var optMagic = sizeOfOptionalHeader >= 2 ? reader.ReadUInt16() : (ushort)0;
 
+            uint checkSum = 0;
+            if (sizeOfOptionalHeader >= 68 && (optMagic == 0x10b || optMagic == 0x20b))
+            {
+                fs.Position = optHeaderPos + 64;
+                checkSum = reader.ReadUInt32();
+            }
+
+            coffTimestampOut = DateTimeOffset.FromUnixTimeSeconds(timeDateStamp).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
+            imageChecksumOut = checkSum;
+
             bool redirectionFound = false;
             // Check relocs stripped
             if ((characteristics & 0x0001) != 0)
@@ -216,6 +296,7 @@ namespace Il2CppDumper
                 redirectionFound = true;
             }
 
+            var sectionEntries = new List<ProtectionSectionEntry>();
             var sectionPos = optHeaderPos + sizeOfOptionalHeader;
             for (int i = 0; i < numberOfSections && sectionPos + 40 <= fs.Length; i++)
             {
@@ -246,10 +327,12 @@ namespace Il2CppDumper
                     });
                 }
 
-                // Check entropy streaming entire section
+                // Compute baseline metrics (entropy & sha256)
+                double entropy = 0.0;
+                string sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
                 if (sizeOfRawData > 0 && pointerToRawData + sizeOfRawData <= fs.Length)
                 {
-                    var entropy = CalculateEntropy(fs, pointerToRawData, sizeOfRawData);
+                    (entropy, sha256) = CalculateSectionMetrics(fs, pointerToRawData, sizeOfRawData);
                     if (entropy >= HighEntropyThreshold)
                     {
                         findings.Add(new ProtectionFinding
@@ -262,12 +345,23 @@ namespace Il2CppDumper
                     }
                 }
 
+                sectionEntries.Add(new ProtectionSectionEntry
+                {
+                    Name = name,
+                    VirtualSize = virtualSize,
+                    RawSize = sizeOfRawData,
+                    Sha256 = sha256,
+                    Entropy = entropy
+                });
+
                 // Check redirection indicators
                 if (sizeOfRawData == 0 && virtualSize > 0 && (sectionCharacteristics & 0x20000020) != 0)
                 {
                     redirectionFound = true;
                 }
             }
+
+            sectionsOut = sectionEntries;
 
             if (redirectionFound)
             {
