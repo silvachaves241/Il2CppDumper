@@ -4,6 +4,21 @@ using System.Text;
 
 namespace Il2CppDumper
 {
+    /// <summary>
+    /// Thrown when a byte read from a compressed-integer blob does not match any
+    /// encoding defined by the IL2CPP compressed integer format.
+    /// </summary>
+    public class InvalidCompressedIntegerException : InvalidOperationException
+    {
+        public InvalidCompressedIntegerException()
+        {
+        }
+
+        public InvalidCompressedIntegerException(string message) : base(message)
+        {
+        }
+    }
+
     public static class BinaryReaderExtensions
     {
         public static string ReadString(this BinaryReader reader, int numChars)
@@ -82,7 +97,7 @@ namespace Il2CppDumper
             }
             else
             {
-                throw new Exception("Invalid compressed integer format");
+                throw new InvalidCompressedIntegerException($"Invalid compressed integer format: 0x{read:X2} at stream position {reader.BaseStream.Position - 1}");
             }
 
             return val;

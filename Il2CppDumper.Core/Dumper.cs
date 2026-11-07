@@ -610,7 +610,15 @@ namespace Il2CppDumper.Core
                 }
             }
 
-            manifestWarnings.Total = manifestWarnings.ByCategory.AttributeDecode + manifestWarnings.ByCategory.StringLiteral + manifestWarnings.ByCategory.StringDecryptor;
+            // Constant decode failures can surface from any consumer of TryGetDefaultValue
+            // (decompiler, json dump, struct/DummyDll generation), so consolidate the count
+            // and the aggregate warning only after the last consumer has run.
+            manifestWarnings.ByCategory.ConstantDecode = executor.ConstantDecodeFailedCount;
+            if (executor.ConstantDecodeFailedCount > 0)
+            {
+                CoreLogger.LogWarning($"WARNING: Constant default value decoding completed with {executor.ConstantDecodeFailedCount} failure(s) taking the metadata-offset fallback path. First failure: {executor.ConstantDecodeFirstFailureDetails}");
+            }
+            manifestWarnings.Total = manifestWarnings.ByCategory.AttributeDecode + manifestWarnings.ByCategory.StringLiteral + manifestWarnings.ByCategory.StringDecryptor + manifestWarnings.ByCategory.ConstantDecode;
             errorMessage = errors.Count > 0 ? string.Join(Environment.NewLine, errors) : null;
             return success;
         }

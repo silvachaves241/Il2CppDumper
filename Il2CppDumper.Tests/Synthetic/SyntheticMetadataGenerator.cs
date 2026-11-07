@@ -60,6 +60,13 @@ namespace Il2CppDumper.Tests.Synthetic
             // Default value data (int32 = 1)
             var defaultValueData = BitConverter.GetBytes(1);
 
+            if (corruption == MetadataCorruptionType.ConstantBlobInvalidPrefix)
+            {
+                // Illegal compressed-integer prefix ahead of the stored value. Every
+                // consumer of TryGetDefaultValue reads from dataIndex 0 and hits it.
+                defaultValueData = new byte[] { 0xE1 }.Concat(defaultValueData).ToArray();
+            }
+
             // Construct payload sections
             byte[] stringLiteralsBytes;
             byte[] stringLiteralDataBytes;
