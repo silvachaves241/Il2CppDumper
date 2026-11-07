@@ -247,7 +247,6 @@ namespace Il2CppDumper.Core
                 };
 
                 var dumpResult = Dumper.Dump(request);
-                CoreLogger.DetachWriter();
                 if (dumpResult.Success)
                 {
                     resultEntry.Success = true;

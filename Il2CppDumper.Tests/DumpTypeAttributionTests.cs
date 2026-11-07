@@ -144,5 +144,68 @@ namespace Il2CppDumper.Tests
                 }
             }
         }
+        [Fact]
+        public void DumpCs_MultipleImages_AttributesTypesToTheirRespectiveImageDef()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "dumpcs-multi-image-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var (metadata, il2Cpp, executor) = SyntheticEnvironment.Create(MetadataVersionFamily.V29, seed: 42);
+                Assert.True(metadata.typeDefs.Length >= 2, "Synthetic environment should have at least 2 typeDefs");
+
+                // Split the 2 types across 2 distinct images
+                var origImg = metadata.imageDefs[0];
+                metadata.imageDefs = new Il2CppImageDefinition[2];
+                metadata.imageDefs[0] = new Il2CppImageDefinition
+                {
+                    nameIndex = origImg.nameIndex,
+                    typeStart = 0,
+                    typeCount = 1
+                };
+                metadata.imageDefs[1] = new Il2CppImageDefinition
+                {
+                    nameIndex = metadata.typeDefs[1].nameIndex,
+                    typeStart = 1,
+                    typeCount = 1
+                };
+
+                var config = new Config
+                {
+                    DumpTypeDefIndex = true,
+                    DumpAttribute = false,
+                    DumpField = true,
+                    DumpMethod = true
+                };
+
+                var decompiler = new Il2CppDecompiler(executor);
+                var success = decompiler.Decompile(config, tempDir);
+                Assert.True(success);
+
+                var dumpCsPath = Path.Combine(tempDir, "dump.cs");
+                var content = File.ReadAllText(dumpCsPath);
+
+                // Header comments at top for both images
+                Assert.Contains("// Image 0:", content);
+                Assert.Contains("// Image 1:", content);
+
+                var img0Name = metadata.GetStringFromIndex(metadata.imageDefs[0].nameIndex);
+                var img1Name = metadata.GetStringFromIndex(metadata.imageDefs[1].nameIndex);
+                Assert.NotEqual(img0Name, img1Name);
+
+                // Type 0 must belong to Image 0
+                Assert.Contains($"// TypeDefIndex: 0 | ImageId: 0 | Image: {img0Name}", content);
+
+                // Type 1 must belong to Image 1
+                Assert.Contains($"// TypeDefIndex: 1 | ImageId: 1 | Image: {img1Name}", content);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
     }
 }

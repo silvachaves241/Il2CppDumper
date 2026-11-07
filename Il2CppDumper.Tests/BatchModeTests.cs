@@ -769,6 +769,50 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
+        public void Batch_OuterCallerScopeWriter_IsPreservedAfterBatchExecution()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "batch-outer-scope-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var fixturesDir = Path.Combine(tempDir, "fixtures");
+                var (wasm1, metaPath, _) = CreateSyntheticFixtures(fixturesDir, "sample1.wasm");
+                var outDir = Path.Combine(tempDir, "out");
+
+                var entries = new List<BatchEntry>
+                {
+                    new() { Executable = wasm1, Metadata = metaPath, Output = outDir }
+                };
+
+                var baseConfig = new Config { RequireAnyKey = false, GenerateDummyDll = false };
+
+                using var outerWriter = new StringWriter();
+                using (CoreLogger.Scope(outerWriter))
+                {
+                    CoreLogger.WriteLine("outer_before");
+
+                    using var batchWriter = new StringWriter();
+                    var result = BatchProcessor.ExecuteEntries(entries, baseConfig, tempDir, "batch.json", log: batchWriter);
+                    Assert.Equal(0, result.ExitCode);
+
+                    // After batch execution finishes, the outer scope's writer must be preserved
+                    CoreLogger.WriteLine("outer_after");
+                }
+
+                var outerLogs = outerWriter.ToString();
+                Assert.Contains("outer_before", outerLogs);
+                Assert.Contains("outer_after", outerLogs);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
         public void Batch_MultipleEntries_LoggingSurvivesDisposedWriterAcrossEntries()
         {
             var tempDir = Path.Combine(Path.GetTempPath(), "batch-disposed-writer-" + Guid.NewGuid());

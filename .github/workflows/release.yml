@@ -448,20 +448,23 @@ jobs:
           if [ -n "$EXISTING_JSON" ]; then
             IS_EXISTING_DRAFT=$(echo "$EXISTING_JSON" | jq -r '.isDraft')
 
-            # Verify target commitish parity if specified
-            EXISTING_TARGET=$(echo "$EXISTING_JSON" | jq -r '.targetCommitish // empty')
-            if [ -n "$EXISTING_TARGET" ]; then
-              if git rev-parse -q --verify "${EXISTING_TARGET}^{commit}" >/dev/null 2>&1; then
-                EFFECTIVE_DRAFT_SHA="$(git rev-parse "${EXISTING_TARGET}^{commit}")"
-              elif git rev-parse -q --verify "${EXISTING_TARGET}" >/dev/null 2>&1; then
-                EFFECTIVE_DRAFT_SHA="$(git rev-parse "${EXISTING_TARGET}")"
-              else
-                EFFECTIVE_DRAFT_SHA="$EXISTING_TARGET"
-              fi
+            # When remote tag exists, its dereferenced SHA (verified in step 1) is the authority.
+            # Use targetCommitish as fallback only when the remote tag does not yet exist (e.g. untagged draft).
+            if [ -z "$REMOTE_TAG_SHA" ]; then
+              EXISTING_TARGET=$(echo "$EXISTING_JSON" | jq -r '.targetCommitish // empty')
+              if [ -n "$EXISTING_TARGET" ]; then
+                if git rev-parse -q --verify "${EXISTING_TARGET}^{commit}" >/dev/null 2>&1; then
+                  EFFECTIVE_DRAFT_SHA="$(git rev-parse "${EXISTING_TARGET}^{commit}")"
+                elif git rev-parse -q --verify "${EXISTING_TARGET}" >/dev/null 2>&1; then
+                  EFFECTIVE_DRAFT_SHA="$(git rev-parse "${EXISTING_TARGET}")"
+                else
+                  EFFECTIVE_DRAFT_SHA="$EXISTING_TARGET"
+                fi
 
-              if [ "$EFFECTIVE_DRAFT_SHA" != "$COMMIT_SHA" ] && [ "$EXISTING_TARGET" != "$COMMIT_SHA" ]; then
-                echo "Error: Release for ${TAG} targets commit '${EXISTING_TARGET}' (resolved: '${EFFECTIVE_DRAFT_SHA}'), while current build commit is '${COMMIT_SHA}'. Refusing to overwrite assets of a release targeting a different commit." >&2
-                exit 1
+                if [ "$EFFECTIVE_DRAFT_SHA" != "$COMMIT_SHA" ] && [ "$EXISTING_TARGET" != "$COMMIT_SHA" ]; then
+                  echo "Error: Draft release for ${TAG} targets commit '${EXISTING_TARGET}' (resolved: '${EFFECTIVE_DRAFT_SHA}'), while current build commit is '${COMMIT_SHA}'. Refusing to overwrite assets of a draft targeting a different commit." >&2
+                  exit 1
+                fi
               fi
             fi
 
@@ -525,10 +528,10 @@ jobs:
           # 5. Emit job summary
           if [ -n "$GITHUB_STEP_SUMMARY" ]; then
             cat <<EOF >> "$GITHUB_STEP_SUMMARY"
-### Release Publishing Summary
-- **Tag:** \`${TAG}\`
-- **Commit:** \`${COMMIT_SHA}\`
-- **Publish Path:** \`${PATH_TAKEN}\`
-- **Asset Count:** ${ASSET_COUNT}
-EOF
+          ### Release Publishing Summary
+          - **Tag:** \`${TAG}\`
+          - **Commit:** \`${COMMIT_SHA}\`
+          - **Publish Path:** \`${PATH_TAKEN}\`
+          - **Asset Count:** ${ASSET_COUNT}
+          EOF
           fi
