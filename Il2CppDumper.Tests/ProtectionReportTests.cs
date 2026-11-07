@@ -1071,5 +1071,118 @@ namespace Il2CppDumper.Tests
                 try { Directory.Delete(tempDir, true); } catch { }
             }
         }
+
+        [Fact]
+        public void PeIntegrityBaseline_TruncatedSection_InvalidatesBaselineAndRecordsWarning()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "pe_trunc_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var metaPath = Path.Combine(tempDir, "global-metadata.dat");
+                File.WriteAllBytes(metaPath, CreateMinimalMetadata());
+
+                var textBytes = new byte[1024];
+                var peSections = new[]
+                {
+                    (".text", textBytes, 1024u, 0x60000020u)
+                };
+                var peBytes = CreateSyntheticPe(peSections);
+
+                // Truncate the file so .text raw data range extends beyond file length
+                // In CreateSyntheticPe, raw data is written starting at offset 0x400 (1024) to 0x800 (2048)
+                // Truncate to 1536 bytes (inside the section raw data range)
+                var truncatedPeBytes = new byte[1536];
+                Array.Copy(peBytes, truncatedPeBytes, 1536);
+
+                var pePath = Path.Combine(tempDir, "truncated.exe");
+                File.WriteAllBytes(pePath, truncatedPeBytes);
+
+                var report = ProtectionDiagnostics.Analyze(pePath, metaPath, new Config());
+
+                // Baseline must be completely invalidated rather than emitting an empty/corrupted digest
+                Assert.Null(report.Sections);
+                Assert.Contains(report.Notes, note => note.Contains("raw data range") && note.Contains("exceeds executable length"));
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void PeIntegrityBaseline_EmptySection_ReportsEmptySha256AndZeroEntropy()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "pe_empty_sec_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var metaPath = Path.Combine(tempDir, "global-metadata.dat");
+                File.WriteAllBytes(metaPath, CreateMinimalMetadata());
+
+                var peSections = new[]
+                {
+                    (".bss", Array.Empty<byte>(), 4096u, 0xC0000080u)
+                };
+                var peBytes = CreateSyntheticPe(peSections);
+                var pePath = Path.Combine(tempDir, "empty_sec.exe");
+                File.WriteAllBytes(pePath, peBytes);
+
+                var report = ProtectionDiagnostics.Analyze(pePath, metaPath, new Config());
+
+                Assert.NotNull(report.Sections);
+                var sec = Assert.Single(report.Sections);
+                Assert.Equal(".bss", sec.Name);
+                Assert.Equal(0u, sec.RawSize);
+                Assert.Equal(4096u, sec.VirtualSize);
+                Assert.Equal("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", sec.Sha256);
+                Assert.Equal(0.0, sec.Entropy);
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void PeIntegrityBaseline_SectionLargerThan64KiB_StreamsAcrossMultipleChunks()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "pe_large_sec_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var metaPath = Path.Combine(tempDir, "global-metadata.dat");
+                File.WriteAllBytes(metaPath, CreateMinimalMetadata());
+
+                var largeData = new byte[100_000];
+                for (int i = 0; i < largeData.Length; i++)
+                {
+                    largeData[i] = (byte)(i % 251);
+                }
+                var expectedSha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(largeData)).ToLowerInvariant();
+                var expectedEntropy = ProtectionDiagnostics.CalculateEntropy(largeData, 0, largeData.Length);
+
+                var peSections = new[]
+                {
+                    (".text", largeData, (uint)largeData.Length, 0x60000020u)
+                };
+                var peBytes = CreateSyntheticPe(peSections);
+                var pePath = Path.Combine(tempDir, "large_sec.exe");
+                File.WriteAllBytes(pePath, peBytes);
+
+                var report = ProtectionDiagnostics.Analyze(pePath, metaPath, new Config());
+
+                Assert.NotNull(report.Sections);
+                var sec = Assert.Single(report.Sections);
+                Assert.Equal(".text", sec.Name);
+                Assert.Equal((uint)largeData.Length, sec.RawSize);
+                Assert.Equal(expectedSha256, sec.Sha256);
+                Assert.Equal(expectedEntropy, sec.Entropy);
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
     }
 }

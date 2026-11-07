@@ -91,7 +91,13 @@ namespace Il2CppDumper
 
         public static (double entropy, string sha256) CalculateSectionMetrics(Stream stream, long offset, long length, int bufferSize = 65536)
         {
-            if (stream == null || length <= 0 || offset < 0 || offset + length > stream.Length)
+            if (stream == null)
+                throw new ArgumentNullException(nameof(stream));
+
+            if (length < 0 || offset < 0 || (stream.Length - offset) < length)
+                throw new ArgumentOutOfRangeException(nameof(length), "Requested section range is out of stream bounds.");
+
+            if (length == 0)
                 return (0.0, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
 
             stream.Position = offset;
@@ -114,14 +120,14 @@ namespace Il2CppDumper
                 remaining -= read;
             }
 
-            long totalCount = length - remaining;
+            if (remaining > 0)
+                throw new EndOfStreamException($"Stream ended prematurely while reading section bytes (expected {length}, remaining {remaining}).");
+
             var hashBytes = hasher.GetHashAndReset();
             var sha256 = Convert.ToHexString(hashBytes).ToLowerInvariant();
 
-            if (totalCount <= 0) return (0.0, sha256);
-
             double entropy = 0.0;
-            double invTotal = 1.0 / totalCount;
+            double invTotal = 1.0 / length;
 
             for (int i = 0; i < 256; i++)
             {
@@ -327,10 +333,21 @@ namespace Il2CppDumper
                     });
                 }
 
+                // Validate section raw data bounds
+                if (sizeOfRawData > 0)
+                {
+                    if (pointerToRawData > fs.Length || (fs.Length - pointerToRawData) < sizeOfRawData)
+                    {
+                        throw new InvalidDataException(
+                            $"Section '{name}' raw data range [0x{pointerToRawData:X}..0x{(long)pointerToRawData + sizeOfRawData:X}) " +
+                            $"exceeds executable length (0x{fs.Length:X}).");
+                    }
+                }
+
                 // Compute baseline metrics (entropy & sha256)
                 double entropy = 0.0;
                 string sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-                if (sizeOfRawData > 0 && pointerToRawData + sizeOfRawData <= fs.Length)
+                if (sizeOfRawData > 0)
                 {
                     (entropy, sha256) = CalculateSectionMetrics(fs, pointerToRawData, sizeOfRawData);
                     if (entropy >= HighEntropyThreshold)
