@@ -36,6 +36,7 @@ namespace Il2CppDumper
         public int PropertiesCount { get; private set; }
         public long CustomAttributeWrittenCount { get; private set; }
         public long CustomAttributeFailedCount { get; private set; }
+        public List<RunManifestWarningItem> AttributeDecodeFailures { get; } = new();
         public string ErrorMessage { get; private set; }
         public List<string> WrittenFiles { get; } = new();
         public JsonDumpModel DumpModel { get; private set; }
@@ -57,6 +58,7 @@ namespace Il2CppDumper
             PropertiesCount = 0;
             CustomAttributeWrittenCount = 0;
             CustomAttributeFailedCount = 0;
+            AttributeDecodeFailures.Clear();
             WrittenFiles.Clear();
             var dumpCsPath = Path.Combine(outputDir, "dump.cs");
             var writer = new StreamWriter(new FileStream(dumpCsPath, FileMode.Create), new UTF8Encoding(false));
@@ -98,7 +100,7 @@ namespace Il2CppDumper
                         writer.Write($"\n// Namespace: {metadata.GetStringFromIndex(typeDef.namespaceIndex)}\n");
                         if (config.DumpAttribute)
                         {
-                            writer.Write(GetCustomAttribute(imageDef, typeDef.customAttributeIndex, typeDef.token, owner: metadata.GetStringFromIndex(typeDef.nameIndex)));
+                            writer.Write(GetCustomAttribute(imageDef, typeDef.customAttributeIndex, typeDef.token, owner: metadata.GetStringFromIndex(typeDef.nameIndex), typeDefIndex: typeDefIndex, typeName: metadata.GetStringFromIndex(typeDef.nameIndex)));
                         }
                         if (config.DumpAttribute && (typeDef.flags & TYPE_ATTRIBUTE_SERIALIZABLE) != 0)
                             writer.Write("[Serializable]\n");
@@ -160,7 +162,7 @@ namespace Il2CppDumper
                                 var isConst = false;
                                 if (config.DumpAttribute)
                                 {
-                                    writer.Write(GetCustomAttribute(imageDef, fieldDef.customAttributeIndex, fieldDef.token, "\t", $"{metadata.GetStringFromIndex(typeDef.nameIndex)}.{metadata.GetStringFromIndex(fieldDef.nameIndex)}"));
+                                    writer.Write(GetCustomAttribute(imageDef, fieldDef.customAttributeIndex, fieldDef.token, "\t", $"{metadata.GetStringFromIndex(typeDef.nameIndex)}.{metadata.GetStringFromIndex(fieldDef.nameIndex)}", typeDefIndex: typeDefIndex, typeName: metadata.GetStringFromIndex(typeDef.nameIndex)));
                                 }
                                 writer.Write("\t");
                                 var access = fieldType.attrs & FIELD_ATTRIBUTE_FIELD_ACCESS_MASK;
@@ -203,7 +205,7 @@ namespace Il2CppDumper
                                 writer.Write($"{executor.GetTypeName(fieldType, false, false)} {metadata.GetStringFromIndex(fieldDef.nameIndex)}");
                                 if (metadata.GetFieldDefaultValueFromIndex(i, out var fieldDefaultValue) && fieldDefaultValue.dataIndex != -1)
                                 {
-                                    if (executor.TryGetDefaultValue(fieldDefaultValue.typeIndex, fieldDefaultValue.dataIndex, out var value))
+                                    if (executor.TryGetDefaultValue(fieldDefaultValue.typeIndex, fieldDefaultValue.dataIndex, out var value, typeDefIndex, metadata.GetStringFromIndex(typeDef.nameIndex), metadata.GetStringFromIndex(fieldDef.nameIndex)))
                                     {
                                         writer.Write($" = ");
                                         if (value is string str)
@@ -246,7 +248,7 @@ namespace Il2CppDumper
                                 var propertyDef = metadata.propertyDefs[i];
                                 if (config.DumpAttribute)
                                 {
-                                    writer.Write(GetCustomAttribute(imageDef, propertyDef.customAttributeIndex, propertyDef.token, "\t", $"{metadata.GetStringFromIndex(typeDef.nameIndex)}.{metadata.GetStringFromIndex(propertyDef.nameIndex)}"));
+                                    writer.Write(GetCustomAttribute(imageDef, propertyDef.customAttributeIndex, propertyDef.token, "\t", $"{metadata.GetStringFromIndex(typeDef.nameIndex)}.{metadata.GetStringFromIndex(propertyDef.nameIndex)}", typeDefIndex: typeDefIndex, typeName: metadata.GetStringFromIndex(typeDef.nameIndex)));
                                 }
                                 writer.Write("\t");
                                 if (propertyDef.get >= 0)
@@ -292,7 +294,7 @@ namespace Il2CppDumper
                                 var isAbstract = (methodDef.flags & METHOD_ATTRIBUTE_ABSTRACT) != 0;
                                 if (config.DumpAttribute)
                                 {
-                                    writer.Write(GetCustomAttribute(imageDef, methodDef.customAttributeIndex, methodDef.token, "\t", $"{metadata.GetStringFromIndex(typeDef.nameIndex)}.{metadata.GetStringFromIndex(methodDef.nameIndex)}"));
+                                    writer.Write(GetCustomAttribute(imageDef, methodDef.customAttributeIndex, methodDef.token, "\t", $"{metadata.GetStringFromIndex(typeDef.nameIndex)}.{metadata.GetStringFromIndex(methodDef.nameIndex)}", typeDefIndex: typeDefIndex, typeName: metadata.GetStringFromIndex(typeDef.nameIndex)));
                                 }
                                 if (config.DumpMethodOffset)
                                 {
@@ -363,7 +365,7 @@ namespace Il2CppDumper
                                     parameterStr += $"{parameterTypeName} {parameterName}";
                                     if (metadata.GetParameterDefaultValueFromIndex(methodDef.parameterStart + j, out var parameterDefault) && parameterDefault.dataIndex != -1)
                                     {
-                                        if (executor.TryGetDefaultValue(parameterDefault.typeIndex, parameterDefault.dataIndex, out var value))
+                                        if (executor.TryGetDefaultValue(parameterDefault.typeIndex, parameterDefault.dataIndex, out var value, typeDefIndex, metadata.GetStringFromIndex(typeDef.nameIndex), $"{metadata.GetStringFromIndex(methodDef.nameIndex)}({parameterName})"))
                                         {
                                             parameterStr += " = ";
                                             if (value is string str)
@@ -469,7 +471,7 @@ namespace Il2CppDumper
             return success;
         }
 
-        public List<string> GetCustomAttributeStrings(Il2CppImageDefinition imageDef, int customAttributeIndex, uint token, string owner = null, bool countMetrics = false)
+        public List<string> GetCustomAttributeStrings(Il2CppImageDefinition imageDef, int customAttributeIndex, uint token, string owner = null, bool countMetrics = false, int? typeDefIndex = null, string typeName = null)
         {
             var result = new List<string>();
             if (il2Cpp.Version < 21)
@@ -527,6 +529,14 @@ namespace Il2CppDumper
                                 if (countMetrics)
                                 {
                                     log.LogWarning($"WARNING: Failed to decode custom attribute '{attributeTypeName}' on '{owner}' (token 0x{token:X8}): {ex.Message}");
+                                    AttributeDecodeFailures.Add(new RunManifestWarningItem
+                                    {
+                                        Category = "attributeDecode",
+                                        TypeDefIndex = typeDefIndex,
+                                        TypeName = typeName,
+                                        Member = owner,
+                                        Detail = $"Failed to decode custom attribute '{attributeTypeName}' on '{owner}' (token 0x{token:X8}): {ex.Message}"
+                                    });
                                 }
                                 for (var j = i + 1; j < availableCount; j++)
                                 {
@@ -536,6 +546,14 @@ namespace Il2CppDumper
                                     if (countMetrics)
                                     {
                                         log.LogWarning($"WARNING: Failed to decode custom attribute '{remainingTypeName}' on '{owner}' (token 0x{token:X8}): Skipped due to previous attribute decoding failure in the same blob");
+                                        AttributeDecodeFailures.Add(new RunManifestWarningItem
+                                        {
+                                            Category = "attributeDecode",
+                                            TypeDefIndex = typeDefIndex,
+                                            TypeName = typeName,
+                                            Member = owner,
+                                            Detail = $"Failed to decode custom attribute '{remainingTypeName}' on '{owner}' (token 0x{token:X8}): Skipped due to previous attribute decoding failure in the same blob"
+                                        });
                                     }
                                 }
                                 break;
@@ -550,6 +568,14 @@ namespace Il2CppDumper
                                 CustomAttributeFailedCount += truncatedCount;
 
                             log.LogWarning($"WARNING: Custom attribute blob declares {reader.Count} attribute(s) but buffer only contains {availableCount} constructor record(s) on '{owner}' (token 0x{token:X8}); {truncatedCount} missing attribute(s) skipped.");
+                            AttributeDecodeFailures.Add(new RunManifestWarningItem
+                            {
+                                Category = "attributeDecode",
+                                TypeDefIndex = typeDefIndex,
+                                TypeName = typeName,
+                                Member = owner,
+                                Detail = $"Custom attribute blob declares {reader.Count} attribute(s) but buffer only contains {availableCount} constructor record(s) on '{owner}' (token 0x{token:X8}); {truncatedCount} missing attribute(s) skipped."
+                            });
                         }
 
                         return result;
@@ -561,6 +587,14 @@ namespace Il2CppDumper
                         if (countMetrics)
                         {
                             log.LogWarning($"WARNING: Failed to read custom attribute data on '{owner}' (token 0x{token:X8}): {ex.Message}");
+                            AttributeDecodeFailures.Add(new RunManifestWarningItem
+                            {
+                                Category = "attributeDecode",
+                                TypeDefIndex = typeDefIndex,
+                                TypeName = typeName,
+                                Member = owner,
+                                Detail = $"Failed to read custom attribute data on '{owner}' (token 0x{token:X8}): {ex.Message}"
+                            });
                         }
                         return result;
                     }
@@ -569,9 +603,9 @@ namespace Il2CppDumper
             return result;
         }
 
-        public string GetCustomAttribute(Il2CppImageDefinition imageDef, int customAttributeIndex, uint token, string padding = "", string owner = null)
+        public string GetCustomAttribute(Il2CppImageDefinition imageDef, int customAttributeIndex, uint token, string padding = "", string owner = null, int? typeDefIndex = null, string typeName = null)
         {
-            var list = GetCustomAttributeStrings(imageDef, customAttributeIndex, token, owner, countMetrics: true);
+            var list = GetCustomAttributeStrings(imageDef, customAttributeIndex, token, owner, countMetrics: true, typeDefIndex, typeName);
             if (list.Count == 0)
                 return string.Empty;
 

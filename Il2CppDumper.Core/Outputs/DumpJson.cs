@@ -502,7 +502,7 @@ namespace Il2CppDumper
                             string? defaultValue = null;
                             if (metadata.GetParameterDefaultValueFromIndex(paramIndex, out var parameterDefault) && parameterDefault.dataIndex != -1)
                             {
-                                if (executor.TryGetDefaultValue(parameterDefault.typeIndex, parameterDefault.dataIndex, out var val))
+                                if (executor.TryGetDefaultValue(parameterDefault.typeIndex, parameterDefault.dataIndex, out var val, typeDefIndex, metadata.GetStringFromIndex(typeDef.nameIndex), $"{methodName}({paramName})"))
                                 {
                                     if (val is string str)
                                         defaultValue = $"\"{str.ToEscapedString()}\"";
@@ -571,7 +571,7 @@ namespace Il2CppDumper
                         var constName = metadata.GetStringFromIndex(fieldDef.nameIndex);
                         if (metadata.GetFieldDefaultValueFromIndex(i, out var fieldDefault) && fieldDefault.dataIndex != -1)
                         {
-                            if (executor.TryGetDefaultValue(fieldDefault.typeIndex, fieldDefault.dataIndex, out var val))
+                            if (executor.TryGetDefaultValue(fieldDefault.typeIndex, fieldDefault.dataIndex, out var val, null, enumName, constName))
                             {
                                 constants[constName] = val;
                             }

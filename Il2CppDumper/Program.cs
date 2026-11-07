@@ -227,9 +227,9 @@ namespace Il2CppDumper
                     try
                     {
                         var sidecarPath = Path.Combine(outputDir, DumpMetadataWriter.FileName);
-                        DumpMetadataWriter.WriteInitial(outputDir, il2cppPath, candidateMetadataPath, config);
+                        var sidecar = DumpMetadataWriter.WriteInitial(outputDir, il2cppPath, candidateMetadataPath, config);
                         var writtenFiles = new[] { sidecarPath };
-                        RunManifestWriter.Write(outputDir, config, DateTime.UtcNow, 0, false, new RunManifestCounts(), new RunManifestWarnings(), writtenFiles);
+                        RunManifestWriter.Write(outputDir, config, DateTime.UtcNow, 0, false, new RunManifestCounts(), new RunManifestWarnings(), writtenFiles, sidecar?.Inputs);
                     }
                     catch (Exception e)
                     {

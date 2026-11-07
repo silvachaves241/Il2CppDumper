@@ -220,7 +220,7 @@ namespace Il2CppDumper
                         //fieldDefault
                         if (metadata.GetFieldDefaultValueFromIndex(i, out var fieldDefault) && fieldDefault.dataIndex != -1)
                         {
-                            if (executor.TryGetDefaultValue(fieldDefault.typeIndex, fieldDefault.dataIndex, out var value))
+                            if (executor.TryGetDefaultValue(fieldDefault.typeIndex, fieldDefault.dataIndex, out var value, index, typeDefinition.Name, fieldDefinition.Name))
                             {
                                 if (!TrySetConstant(fieldDefinition, fieldDefinition.FieldType, value))
                                 {
@@ -315,7 +315,7 @@ namespace Il2CppDumper
                             //ParameterDefault
                             if (metadata.GetParameterDefaultValueFromIndex(methodDef.parameterStart + j, out var parameterDefault) && parameterDefault.dataIndex != -1)
                             {
-                                if (executor.TryGetDefaultValue(parameterDefault.typeIndex, parameterDefault.dataIndex, out var value))
+                                if (executor.TryGetDefaultValue(parameterDefault.typeIndex, parameterDefault.dataIndex, out var value, index, typeDefinition.Name, $"{methodDefinition.Name}({parameterDefinition.Name})"))
                                 {
                                     if (!TrySetConstant(parameterDefinition, parameterDefinition.ParameterType, value))
                                     {

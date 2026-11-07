@@ -20,6 +20,9 @@ namespace Il2CppDumper
         /// <summary>Diagnostic details (byte, position, entry identity) of the first constant decode failure, if any.</summary>
         public string? ConstantDecodeFirstFailureDetails { get; private set; }
 
+        /// <summary>Structured list of constant decode failures for run-manifest reporting.</summary>
+        public List<RunManifestWarningItem> ConstantDecodeFailures { get; } = new();
+
         private static readonly Dictionary<int, string> TypeString = new()
         {
             {1,"void"},
@@ -348,7 +351,10 @@ namespace Il2CppDumper
             return il2Cpp.GetSectionHelper(metadata.methodDefs.Count(x => x.methodIndex >= 0), metadata.typeDefs.Length, metadata.imageDefs.Length);
         }
 
-        public bool TryGetDefaultValue(int typeIndex, int dataIndex, out object value)
+        public bool TryGetDefaultValue(int typeIndex, int dataIndex, out object value) =>
+            TryGetDefaultValue(typeIndex, dataIndex, out value, null, null, null);
+
+        public bool TryGetDefaultValue(int typeIndex, int dataIndex, out object value, int? typeDefIndex, string? typeName, string? member)
         {
             var pointer = metadata.GetDefaultValueFromIndex(dataIndex);
             var defaultValueType = il2Cpp.types[typeIndex];
@@ -367,6 +373,48 @@ namespace Il2CppDumper
                 {
                     ConstantDecodeFirstFailureDetails ??=
                         $"type 0x{(int)defaultValueType.type:X}, dataIndex {dataIndex}, pointer 0x{pointer:X}: {e.Message}";
+
+                    string? rawBytesHex = null;
+                    try
+                    {
+                        var savePos = metadata.Position;
+                        metadata.Position = pointer;
+                        var len = (int)Math.Min(16L, Math.Max(0L, (long)metadata.Length - pointer));
+                        if (len > 0)
+                        {
+                            var bytes = metadata.ReadBytes(len);
+                            rawBytesHex = BitConverter.ToString(bytes).Replace("-", " ");
+                        }
+                        metadata.Position = savePos;
+                    }
+                    catch
+                    {
+                        // best effort
+                    }
+
+                    var detail = rawBytesHex != null
+                        ? $"Invalid compressed integer format (pointer 0x{pointer:X}, dataIndex {dataIndex}): {e.Message}; raw bytes: {rawBytesHex}"
+                        : $"Invalid compressed integer format (pointer 0x{pointer:X}, dataIndex {dataIndex}): {e.Message}";
+
+                    ConstantDecodeFailures.Add(new RunManifestWarningItem
+                    {
+                        Category = "constantDecode",
+                        TypeDefIndex = typeDefIndex,
+                        TypeName = typeName,
+                        Member = member,
+                        RawBytes = rawBytesHex,
+                        Detail = detail
+                    });
+                }
+                else if (typeDefIndex != null || !string.IsNullOrEmpty(typeName) || !string.IsNullOrEmpty(member))
+                {
+                    var existing = ConstantDecodeFailures.FirstOrDefault(f => f.Detail != null && f.Detail.Contains($"dataIndex {dataIndex}"));
+                    if (existing != null)
+                    {
+                        if (existing.TypeDefIndex == null && typeDefIndex != null) existing.TypeDefIndex = typeDefIndex;
+                        if (string.IsNullOrEmpty(existing.TypeName) && !string.IsNullOrEmpty(typeName)) existing.TypeName = typeName;
+                        if (string.IsNullOrEmpty(existing.Member) && !string.IsNullOrEmpty(member)) existing.Member = member;
+                    }
                 }
             }
             value = pointer;

@@ -16,6 +16,10 @@ namespace Il2CppDumper
         [JsonPropertyName("tool")]
         public RunManifestTool Tool { get; set; } = new();
 
+        [JsonPropertyName("inputs")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public DumpMetadataInputs? Inputs { get; set; }
+
         [JsonPropertyName("startedAt")]
         public string StartedAt { get; set; } = string.Empty;
 
@@ -78,6 +82,33 @@ namespace Il2CppDumper
 
         [JsonPropertyName("byCategory")]
         public RunManifestWarningCategories ByCategory { get; set; } = new();
+
+        [JsonPropertyName("items")]
+        public List<RunManifestWarningItem> Items { get; set; } = new();
+
+        public void SyncFromItems()
+        {
+            if (Items != null && Items.Count > 0)
+            {
+                var attrCount = Items.Count(x => string.Equals(x.Category, "attributeDecode", StringComparison.OrdinalIgnoreCase));
+                var strLitCount = Items.Count(x => string.Equals(x.Category, "stringLiteral", StringComparison.OrdinalIgnoreCase));
+                var strDecCount = Items.Count(x => string.Equals(x.Category, "stringDecryptor", StringComparison.OrdinalIgnoreCase));
+                var constDecCount = Items.Count(x => string.Equals(x.Category, "constantDecode", StringComparison.OrdinalIgnoreCase));
+                var outHashCount = Items.Count(x => string.Equals(x.Category, "outputHash", StringComparison.OrdinalIgnoreCase));
+
+                ByCategory.AttributeDecode = Math.Max(ByCategory.AttributeDecode, attrCount);
+                ByCategory.StringLiteral = Math.Max(ByCategory.StringLiteral, strLitCount);
+                ByCategory.StringDecryptor = Math.Max(ByCategory.StringDecryptor, strDecCount);
+                ByCategory.ConstantDecode = Math.Max(ByCategory.ConstantDecode, constDecCount);
+                ByCategory.OutputHash = Math.Max(ByCategory.OutputHash, outHashCount);
+
+                Total = Math.Max(Items.Count, ByCategory.AttributeDecode + ByCategory.StringLiteral + ByCategory.StringDecryptor + ByCategory.ConstantDecode + ByCategory.OutputHash);
+            }
+            else
+            {
+                Total = ByCategory.AttributeDecode + ByCategory.StringLiteral + ByCategory.StringDecryptor + ByCategory.ConstantDecode + ByCategory.OutputHash;
+            }
+        }
     }
 
     public class RunManifestWarningCategories
@@ -96,6 +127,32 @@ namespace Il2CppDumper
 
         [JsonPropertyName("outputHash")]
         public int OutputHash { get; set; }
+    }
+
+    public class RunManifestWarningItem
+    {
+        [JsonPropertyName("category")]
+        public string Category { get; set; } = string.Empty;
+
+        [JsonPropertyName("typeDefIndex")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public int? TypeDefIndex { get; set; }
+
+        [JsonPropertyName("typeName")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? TypeName { get; set; }
+
+        [JsonPropertyName("member")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? Member { get; set; }
+
+        [JsonPropertyName("rawBytes")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? RawBytes { get; set; }
+
+        [JsonPropertyName("detail")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? Detail { get; set; }
     }
 
     public class RunManifestOutput
@@ -220,6 +277,12 @@ namespace Il2CppDumper
                     {
                         warnings.ByCategory.OutputHash++;
                         warnings.Total++;
+                        warnings.Items.Add(new RunManifestWarningItem
+                        {
+                            Category = "outputHash",
+                            Member = relPath,
+                            Detail = $"Could not hash output file '{relPath}': {ex.Message}"
+                        });
                     }
                 }
             }
@@ -236,13 +299,16 @@ namespace Il2CppDumper
             RunManifestCounts counts,
             RunManifestWarnings warnings,
             string outputDir,
-            IEnumerable<string>? producedFiles = null)
+            IEnumerable<string>? producedFiles = null,
+            DumpMetadataInputs? inputs = null)
         {
             var manifestWarnings = warnings ?? new RunManifestWarnings();
             var outputs = CollectOutputs(outputDir, producedFiles, manifestWarnings);
+            manifestWarnings.SyncFromItems();
             return new RunManifest
             {
                 Tool = GetToolInfo(),
+                Inputs = inputs,
                 StartedAt = startedAtUtc.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture),
                 DurationMs = Math.Max(0, durationMs),
                 Success = success,
@@ -261,7 +327,8 @@ namespace Il2CppDumper
             bool success,
             RunManifestCounts counts,
             RunManifestWarnings warnings,
-            IEnumerable<string>? producedFiles = null)
+            IEnumerable<string>? producedFiles = null,
+            DumpMetadataInputs? inputs = null)
         {
             if (config != null && !config.GenerateRunManifest)
             {
@@ -269,7 +336,7 @@ namespace Il2CppDumper
             }
 
             Directory.CreateDirectory(outputDir);
-            var manifest = Create(config ?? new Config(), startedAtUtc, durationMs, success, counts, warnings, outputDir, producedFiles);
+            var manifest = Create(config ?? new Config(), startedAtUtc, durationMs, success, counts, warnings, outputDir, producedFiles, inputs);
             var manifestPath = Path.Combine(outputDir, FileName);
             var json = JsonSerializer.Serialize(manifest, JsonOptions);
             File.WriteAllText(manifestPath, json, new UTF8Encoding(false));

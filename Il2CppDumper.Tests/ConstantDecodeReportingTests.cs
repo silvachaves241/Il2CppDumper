@@ -106,6 +106,18 @@ namespace Il2CppDumper.Tests
             Assert.Equal(1, manifestWarnings.ByCategory.ConstantDecode);
             Assert.Equal(1, manifestWarnings.Total);
 
+            // Structured per-item triage context (#65)
+            Assert.NotNull(manifestWarnings.Items);
+            var item = Assert.Single(manifestWarnings.Items);
+            Assert.Equal("constantDecode", item.Category);
+            Assert.Equal("SyntheticEnum", item.TypeName);
+            Assert.Equal("OptionA", item.Member);
+            Assert.NotNull(item.TypeDefIndex);
+            Assert.NotNull(item.RawBytes);
+            Assert.StartsWith("E1", item.RawBytes);
+            Assert.NotNull(item.Detail);
+            Assert.Contains("0xE1", item.Detail);
+
             // The consumed constant fell back to the metadata-offset attribute path.
             var field = ReadDumpedField(dummyDllPath);
             var offsetAttribute = field.CustomAttributes
@@ -128,6 +140,15 @@ namespace Il2CppDumper.Tests
             Assert.Matches(@"with 1 failure\(s\)", warnings[0]);
             Assert.Equal(1, manifestWarnings.ByCategory.ConstantDecode);
             Assert.Equal(1, manifestWarnings.Total);
+
+            // Deduplication preserves exactly one structured item (#65)
+            Assert.NotNull(manifestWarnings.Items);
+            var item = Assert.Single(manifestWarnings.Items);
+            Assert.Equal("constantDecode", item.Category);
+            Assert.Equal("SyntheticEnum", item.TypeName);
+            Assert.Equal("OptionA", item.Member);
+            Assert.NotNull(item.RawBytes);
+            Assert.StartsWith("E1", item.RawBytes);
         }
     }
 }
