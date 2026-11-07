@@ -215,7 +215,11 @@ Operational summary file (`GenerateRunManifest`, default `true`) written at the 
 
 #### protection-report.json
 
-Pre-analysis protection diagnostics report (`GenerateProtectionReport`, default `true`) generated as a side-channel before dumping. The diagnostic pass explains why protected binaries or obfuscated targets fail without altering the dump execution flow or blocking the process. Findings vocabulary includes:
+Pre-analysis protection diagnostics report (`GenerateProtectionReport`, default `true`) generated as a side-channel before dumping. The diagnostic pass explains why protected binaries or obfuscated targets fail without altering the dump execution flow or blocking the process.
+
+For Portable Executable (PE) targets, the report emits a per-section integrity baseline (`sections`) recording each section's `name`, `virtualSize`, `rawSize`, incremental `sha256`, and Shannon `entropy`, alongside header metadata `coffTimestamp` (ISO-8601 UTC) and `imageChecksum` (optional header checksum). Non-PE targets omit these PE-specific fields.
+
+Findings vocabulary includes:
 - `HighEntropySection`: Triggered when binary section entropy reaches or exceeds `7.20` on a Shannon scale of 0.00 to 8.00 bits per byte (indicates encrypted, packed, or compressed code/data).
 - `PackerSectionSignature`: Section name matches generic packer signatures (`UPX0`, `UPX1`, `UPX2`, `.aspack`, `.adata`, `.mpress1`, `.mpress2`, `.themida`, `.vmp0`, `.vmp1`, `.pack`, `PELOCK`).
 - `RedirectionHeuristic`: Identifies relocation stripping, raw/virtual size discrepancies, or dynamic initialization tags (`DT_INIT`, `.init_proc`, `LC_ENCRYPTION_INFO`) indicating pointer redirection.
@@ -223,7 +227,11 @@ Pre-analysis protection diagnostics report (`GenerateProtectionReport`, default 
 
 Remediation strings suggest valid configuration switches (`NoRedirectedPointer=true`, `ForceDump=true`, `ForceIl2CppVersion=true`, `ForceVersion=<version>`). When `GenerateProtectionReport` is `false`, no report file is written.
 
-**Português:** Relatório de diagnóstico de proteção pré-análise (`protection-report.json`, chave `GenerateProtectionReport`, padrão `true`), gerado como canal auxiliar antes da tentativa de dump. O diagnóstico esclarece o motivo pelo qual alvos protegidos ou ofuscados falham, sem alterar o fluxo do dump nem bloquear o processo. Vocabulário de achados (`findings`):
+**Português:** Relatório de diagnóstico de proteção pré-análise (`protection-report.json`, chave `GenerateProtectionReport`, padrão `true`), gerado como canal auxiliar antes da tentativa de dump. O diagnóstico esclarece o motivo pelo qual alvos protegidos ou ofuscados falham, sem alterar o fluxo do dump nem bloquear o processo.
+
+Para alvos Portable Executable (PE), o relatório inclui uma linha de base de integridade por seção (`sections`) contendo `name`, `virtualSize`, `rawSize`, `sha256` incremental e `entropy` de Shannon para cada seção, além de metadados de cabeçalho `coffTimestamp` (ISO-8601 UTC) e `imageChecksum` (checksum do cabeçalho opcional). Alvos que não utilizam formato PE omitem esses campos específicos.
+
+Vocabulário de achados (`findings`):
 - `HighEntropySection`: Acionado quando a entropia da seção atinge ou supera `7.20` na escala de Shannon (0.00 a 8.00 bits por byte), indicando código/dados compactados, criptografados ou empacotados.
 - `PackerSectionSignature`: Nome de seção compatível com assinaturas genéricas de packers (`UPX0`, `UPX1`, `UPX2`, `.aspack`, `.adata`, `.mpress1`, `.mpress2`, `.themida`, `.vmp0`, `.vmp1`, `.pack`, `PELOCK`).
 - `RedirectionHeuristic`: Identifica remoção de realocações, discrepâncias entre tamanho virtual e dados brutos, ou tags dinâmicas (`DT_INIT`, `.init_proc`, `LC_ENCRYPTION_INFO`) indicando redirecionamento de ponteiros.
