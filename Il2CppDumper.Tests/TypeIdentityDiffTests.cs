@@ -551,6 +551,248 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
+        public void ExplicitAttribution_SameAssemblyDifferentImages_DoesNotFallbackToAssembly()
+        {
+            var left = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        image = "A.dll",
+                        assembly = "Shared",
+                        fullName = "Ns.Player",
+                        fields = new() { new() { name = "hp", type = "int", offset = "0x10", isStatic = false } }
+                    }
+                }
+            };
+
+            var right = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        image = "B.dll",
+                        assembly = "Shared",
+                        fullName = "Ns.Player",
+                        fields = new() { new() { name = "hp", type = "int", offset = "0x10", isStatic = false } }
+                    }
+                }
+            };
+
+            var diff = DumpDiffer.Compare(left, right);
+            Assert.True(diff.HasDifferences);
+            Assert.Single(diff.types.removed);
+            Assert.Equal("A.dll!Ns.Player", diff.types.removed[0]);
+            Assert.Single(diff.types.added);
+            Assert.Equal("B.dll!Ns.Player", diff.types.added[0]);
+            Assert.Empty(diff.types.changed);
+
+            var drift = FieldOffsetDiff.Compare(left, right);
+            Assert.True(drift.HasDrift);
+            Assert.Equal(2, drift.structs.Count);
+
+            var tempDir = Path.Combine(Path.GetTempPath(), "same-asm-diff-img-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var leftPath = Path.Combine(tempDir, "left.json");
+                var rightPath = Path.Combine(tempDir, "right.json");
+                var diffPath = Path.Combine(tempDir, "diff.json");
+                var driftPath = Path.Combine(tempDir, "drift.json");
+
+                File.WriteAllText(leftPath, JsonSerializer.Serialize(left, JsonDumpGenerator.JsonOptions));
+                File.WriteAllText(rightPath, JsonSerializer.Serialize(right, JsonDumpGenerator.JsonOptions));
+
+                using var diffLog = new StringWriter();
+                var diffExit = DumpDiffer.Execute(leftPath, rightPath, diffPath, diffLog);
+                Assert.Equal(1, diffExit);
+
+                using var driftLog = new StringWriter();
+                var driftExit = FieldOffsetDiff.Execute(leftPath, rightPath, driftPath, driftLog);
+                Assert.Equal(1, driftExit);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ExplicitAttribution_SameAssemblyDifferentImages_Inverted_DoesNotFallbackToAssembly()
+        {
+            var left = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        image = "B.dll",
+                        assembly = "Shared",
+                        fullName = "Ns.Player",
+                        fields = new() { new() { name = "hp", type = "int", offset = "0x10", isStatic = false } }
+                    }
+                }
+            };
+
+            var right = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        image = "A.dll",
+                        assembly = "Shared",
+                        fullName = "Ns.Player",
+                        fields = new() { new() { name = "hp", type = "int", offset = "0x10", isStatic = false } }
+                    }
+                }
+            };
+
+            var diff = DumpDiffer.Compare(left, right);
+            Assert.True(diff.HasDifferences);
+            Assert.Single(diff.types.removed);
+            Assert.Equal("B.dll!Ns.Player", diff.types.removed[0]);
+            Assert.Single(diff.types.added);
+            Assert.Equal("A.dll!Ns.Player", diff.types.added[0]);
+            Assert.Empty(diff.types.changed);
+
+            var drift = FieldOffsetDiff.Compare(left, right);
+            Assert.True(drift.HasDrift);
+            Assert.Equal(2, drift.structs.Count);
+        }
+
+        [Fact]
+        public void PartialAssemblyMatch_OneMissingImage_MatchesUniquely()
+        {
+            var left = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        image = "A.dll",
+                        assembly = "Shared",
+                        fullName = "Ns.Player",
+                        fields = new() { new() { name = "hp", type = "int", offset = "0x10", isStatic = false } }
+                    }
+                }
+            };
+
+            var right = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        image = null,
+                        assembly = "Shared",
+                        fullName = "Ns.Player",
+                        fields = new() { new() { name = "hp", type = "int", offset = "0x10", isStatic = false } }
+                    }
+                }
+            };
+
+            var diff = DumpDiffer.Compare(left, right);
+            Assert.False(diff.HasDifferences);
+            Assert.Empty(diff.types.added);
+            Assert.Empty(diff.types.removed);
+            Assert.Empty(diff.types.changed);
+
+            var drift = FieldOffsetDiff.Compare(left, right);
+            Assert.False(drift.HasDrift);
+            Assert.Empty(drift.structs);
+        }
+
+        [Fact]
+        public void PartialAssemblyMatch_Inverted_OneMissingImage_MatchesUniquely()
+        {
+            var left = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        image = null,
+                        assembly = "Shared",
+                        fullName = "Ns.Player",
+                        fields = new() { new() { name = "hp", type = "int", offset = "0x10", isStatic = false } }
+                    }
+                }
+            };
+
+            var right = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        image = "A.dll",
+                        assembly = "Shared",
+                        fullName = "Ns.Player",
+                        fields = new() { new() { name = "hp", type = "int", offset = "0x10", isStatic = false } }
+                    }
+                }
+            };
+
+            var diff = DumpDiffer.Compare(left, right);
+            Assert.False(diff.HasDifferences);
+            Assert.Empty(diff.types.added);
+            Assert.Empty(diff.types.removed);
+            Assert.Empty(diff.types.changed);
+
+            var drift = FieldOffsetDiff.Compare(left, right);
+            Assert.False(drift.HasDrift);
+            Assert.Empty(drift.structs);
+        }
+
+        [Fact]
+        public void ExplicitAttribution_SameImageSameAssembly_MatchesDirectly()
+        {
+            var left = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        image = "A.dll",
+                        assembly = "Shared",
+                        fullName = "Ns.Player",
+                        fields = new() { new() { name = "hp", type = "int", offset = "0x10", isStatic = false } }
+                    }
+                }
+            };
+
+            var right = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        image = "A.dll",
+                        assembly = "Shared",
+                        fullName = "Ns.Player",
+                        fields = new() { new() { name = "hp", type = "int", offset = "0x10", isStatic = false } }
+                    }
+                }
+            };
+
+            var diff = DumpDiffer.Compare(left, right);
+            Assert.False(diff.HasDifferences);
+            Assert.Empty(diff.types.added);
+            Assert.Empty(diff.types.removed);
+            Assert.Empty(diff.types.changed);
+
+            var drift = FieldOffsetDiff.Compare(left, right);
+            Assert.False(drift.HasDrift);
+            Assert.Empty(drift.structs);
+        }
+
+        [Fact]
         public void SeparatorCollision_PreservesComponentBoundaries_DetectsDistinctTypes()
         {
             var left = new JsonDumpModel

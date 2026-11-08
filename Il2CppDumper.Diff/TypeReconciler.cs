@@ -165,6 +165,7 @@ namespace Il2CppDumper.Diff
 
                 // Pass 4: Partial assembly fallback (one specifies image and assembly, other specifies only assembly)
                 // Group remaining unmatched by assembly: only match if strictly unique (1 left, 1 right in that assembly)
+                // and at least one candidate lacks an image (never fallback between explicitly different images).
                 var remainingAssemblies = leftRemaining.Select(x => x.Key.Assembly)
                     .Concat(rightRemaining.Select(x => x.Key.Assembly))
                     .Where(a => !string.IsNullOrEmpty(a))
@@ -178,22 +179,28 @@ namespace Il2CppDumper.Diff
 
                     if (leftAsmMatches.Count > 0 && rightAsmMatches.Count > 0)
                     {
-                        if (leftAsmMatches.Count == 1 && rightAsmMatches.Count == 1)
-                        {
-                            var left = leftAsmMatches[0];
-                            var right = rightAsmMatches[0];
+                        bool leftHasMissingImage = leftAsmMatches.Any(x => string.IsNullOrEmpty(x.Key.Image));
+                        bool rightHasMissingImage = rightAsmMatches.Any(x => string.IsNullOrEmpty(x.Key.Image));
 
-                            var image = right.Type.image ?? left.Type.image;
-                            var assembly = right.Type.assembly ?? left.Type.assembly;
-                            var displayKey = JsonDumpType.FormatKey(image, assembly, fullName);
-                            reconciled.Add(new ReconciledType(displayKey, image, assembly, fullName, left.Type, right.Type));
-
-                            leftRemaining.Remove(left);
-                            rightRemaining.Remove(right);
-                        }
-                        else
+                        if (leftHasMissingImage || rightHasMissingImage)
                         {
-                            ambiguousCollisions.Add(fullName);
+                            if (leftAsmMatches.Count == 1 && rightAsmMatches.Count == 1)
+                            {
+                                var left = leftAsmMatches[0];
+                                var right = rightAsmMatches[0];
+
+                                var image = right.Type.image ?? left.Type.image;
+                                var assembly = right.Type.assembly ?? left.Type.assembly;
+                                var displayKey = JsonDumpType.FormatKey(image, assembly, fullName);
+                                reconciled.Add(new ReconciledType(displayKey, image, assembly, fullName, left.Type, right.Type));
+
+                                leftRemaining.Remove(left);
+                                rightRemaining.Remove(right);
+                            }
+                            else
+                            {
+                                ambiguousCollisions.Add(fullName);
+                            }
                         }
                     }
                 }
