@@ -77,20 +77,15 @@ namespace Il2CppDumper.Diff
 
         public static FieldOffsetDriftReport Compare(JsonDumpModel leftModel, JsonDumpModel rightModel)
         {
-            var leftTypes = CollectTypes(leftModel, "left");
-            var rightTypes = CollectTypes(rightModel, "right");
-
-            var allTypeNames = leftTypes.Keys
-                .Union(rightTypes.Keys)
-                .OrderBy(x => x, StringComparer.Ordinal)
-                .ToList();
+            var reconciled = TypeReconciler.Reconcile(leftModel, rightModel);
 
             var driftedStructs = new List<FieldOffsetStructDrift>();
 
-            foreach (var typeName in allTypeNames)
+            foreach (var item in reconciled)
             {
-                leftTypes.TryGetValue(typeName, out var leftType);
-                rightTypes.TryGetValue(typeName, out var rightType);
+                var leftType = item.Left;
+                var rightType = item.Right;
+                var typeName = item.Key;
 
                 // Collect instance fields that have an offset (exclude static and constants/literals without offset)
                 var leftInstanceFields = (leftType?.fields ?? new List<JsonDumpField>())
@@ -248,9 +243,9 @@ namespace Il2CppDumper.Diff
                 {
                     driftedStructs.Add(new FieldOffsetStructDrift
                     {
-                        @struct = typeName,
-                        image = leftType?.image ?? rightType?.image,
-                        assembly = leftType?.assembly ?? rightType?.assembly,
+                        @struct = item.Key,
+                        image = item.Image,
+                        assembly = item.Assembly,
                         size = sizeObj,
                         fields = driftedFields,
                         verdict = new FieldOffsetVerdict
@@ -316,47 +311,6 @@ namespace Il2CppDumper.Diff
                 throw new InvalidDataException($"Invalid {label} dump.json: missing 'types' array property.");
             }
             return model;
-        }
-
-        private static Dictionary<string, JsonDumpType> CollectTypes(JsonDumpModel model, string label = "input")
-        {
-            var dict = new Dictionary<string, JsonDumpType>(StringComparer.Ordinal);
-            var duplicates = new HashSet<string>(StringComparer.Ordinal);
-
-            void CollectType(JsonDumpType t, string? parentImage, string? parentAssembly)
-            {
-                if (string.IsNullOrEmpty(t.image)) t.image = parentImage;
-                if (string.IsNullOrEmpty(t.assembly)) t.assembly = parentAssembly;
-
-                if (!string.IsNullOrEmpty(t.fullName))
-                {
-                    var key = t.GetIdentityKey();
-                    if (!dict.TryAdd(key, t))
-                    {
-                        duplicates.Add(key);
-                    }
-                }
-                if (t.nested != null)
-                {
-                    foreach (var child in t.nested)
-                    {
-                        CollectType(child, t.image, t.assembly);
-                    }
-                }
-            }
-
-            foreach (var t in model.types)
-            {
-                CollectType(t, null, null);
-            }
-
-            if (duplicates.Count > 0)
-            {
-                var sortedDups = duplicates.OrderBy(x => x, StringComparer.Ordinal);
-                throw new InvalidDataException($"Ambiguous type collision in {label} dump.json: duplicate type(s) lack distinct image/assembly identity to resolve collisions: {string.Join(", ", sortedDups)}");
-            }
-
-            return dict;
         }
 
         private static bool TryParseHexOffset(string? offsetStr, out ulong offset)

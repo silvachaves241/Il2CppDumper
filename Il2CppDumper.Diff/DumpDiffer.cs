@@ -70,12 +70,8 @@ namespace Il2CppDumper.Diff
 
         public static DumpDiffResult Compare(JsonDumpModel leftModel, JsonDumpModel rightModel)
         {
-            var leftArtifacts = new ParsedArtifacts();
-            CollectModelTypes(leftModel, leftArtifacts.Types, "left");
-
-            var rightArtifacts = new ParsedArtifacts();
-            CollectModelTypes(rightModel, rightArtifacts.Types, "right");
-
+            var leftArtifacts = new ParsedArtifacts { Model = leftModel };
+            var rightArtifacts = new ParsedArtifacts { Model = rightModel };
             return Compare(leftArtifacts, rightArtifacts);
         }
 
@@ -88,20 +84,16 @@ namespace Il2CppDumper.Diff
             };
 
             // 1. Compare Types
-            var leftTypes = leftArtifacts.Types;
-            var rightTypes = rightArtifacts.Types;
+            var reconciled = TypeReconciler.Reconcile(leftArtifacts.Model, rightArtifacts.Model);
 
-            var leftTypeNames = leftTypes.Keys.ToHashSet(StringComparer.Ordinal);
-            var rightTypeNames = rightTypes.Keys.ToHashSet(StringComparer.Ordinal);
+            result.types.added = reconciled.Where(r => r.IsAdded).Select(r => r.Key).OrderBy(x => x, StringComparer.Ordinal).ToList();
+            result.types.removed = reconciled.Where(r => r.IsRemoved).Select(r => r.Key).OrderBy(x => x, StringComparer.Ordinal).ToList();
 
-            result.types.added = rightTypeNames.Except(leftTypeNames).OrderBy(x => x, StringComparer.Ordinal).ToList();
-            result.types.removed = leftTypeNames.Except(rightTypeNames).OrderBy(x => x, StringComparer.Ordinal).ToList();
-
-            var commonTypeNames = leftTypeNames.Intersect(rightTypeNames).OrderBy(x => x, StringComparer.Ordinal).ToList();
-            foreach (var typeName in commonTypeNames)
+            foreach (var item in reconciled.Where(r => r.IsMatched).OrderBy(r => r.Key, StringComparer.Ordinal))
             {
-                var leftType = leftTypes[typeName];
-                var rightType = rightTypes[typeName];
+                var typeName = item.Key;
+                var leftType = item.Left!;
+                var rightType = item.Right!;
 
                 // Compare fields (offset is passthrough only; only type change triggers changedField)
                 var leftFields = (leftType.fields ?? new List<JsonDumpField>())
@@ -207,9 +199,9 @@ namespace Il2CppDumper.Diff
                 {
                     result.types.changed.Add(new DumpDiffTypeChange
                     {
-                        type = typeName,
-                        image = leftType.image ?? rightType.image,
-                        assembly = leftType.assembly ?? rightType.assembly,
+                        type = item.Key,
+                        image = item.Image,
+                        assembly = item.Assembly,
                         fields = new DumpDiffFieldChanges
                         {
                             added = addedFields,
@@ -418,49 +410,6 @@ namespace Il2CppDumper.Diff
             return $"{m.returnType} {m.name}({pars})";
         }
 
-        private static void CollectModelTypes(JsonDumpModel? model, Dictionary<string, JsonDumpType> target, string label)
-        {
-            if (model == null || model.types == null)
-            {
-                throw new InvalidDataException($"Invalid {label} dump.json: missing 'types' array property.");
-            }
-
-            var duplicates = new HashSet<string>(StringComparer.Ordinal);
-
-            void CollectType(JsonDumpType t, string? parentImage, string? parentAssembly)
-            {
-                if (string.IsNullOrEmpty(t.image)) t.image = parentImage;
-                if (string.IsNullOrEmpty(t.assembly)) t.assembly = parentAssembly;
-
-                if (!string.IsNullOrEmpty(t.fullName))
-                {
-                    var key = t.GetIdentityKey();
-                    if (!target.TryAdd(key, t))
-                    {
-                        duplicates.Add(key);
-                    }
-                }
-                if (t.nested != null)
-                {
-                    foreach (var child in t.nested)
-                    {
-                        CollectType(child, t.image, t.assembly);
-                    }
-                }
-            }
-
-            foreach (var t in model.types)
-            {
-                CollectType(t, null, null);
-            }
-
-            if (duplicates.Count > 0)
-            {
-                var sortedDups = duplicates.OrderBy(x => x, StringComparer.Ordinal);
-                throw new InvalidDataException($"Ambiguous type collision in {label} dump.json: duplicate type(s) lack distinct image/assembly identity to resolve collisions: {string.Join(", ", sortedDups)}");
-            }
-        }
-
         private static string ComputeStreamSha256(string filePath)
         {
             using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 81920, useAsync: false);
@@ -485,7 +434,7 @@ namespace Il2CppDumper.Diff
         private class ParsedArtifacts
         {
             public DumpDiffEndpoint Endpoint { get; set; } = new();
-            public Dictionary<string, JsonDumpType> Types { get; set; } = new(StringComparer.Ordinal);
+            public JsonDumpModel Model { get; set; } = new();
             public List<ScriptMethodEntry>? ScriptMethods { get; set; }
             public Dictionary<uint, string>? Literals { get; set; }
         }
@@ -561,17 +510,19 @@ namespace Il2CppDumper.Diff
                     throw new InvalidDataException($"Invalid {label} dump.json: missing 'types' array property.");
                 }
 
-                JsonDumpModel? model;
                 try
                 {
-                    model = JsonSerializer.Deserialize<JsonDumpModel>(doc.RootElement.GetRawText());
+                    artifacts.Model = JsonSerializer.Deserialize<JsonDumpModel>(doc.RootElement.GetRawText())
+                        ?? throw new InvalidDataException($"Invalid {label} dump.json: missing 'types' array property.");
+                }
+                catch (InvalidDataException)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
                     throw new InvalidDataException($"Failed to deserialize {label} dump.json: {ex.Message}", ex);
                 }
-
-                CollectModelTypes(model, artifacts.Types, label);
             }
 
             // 3. Parse script.json (optional, but if present must be valid)

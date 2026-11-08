@@ -46,6 +46,11 @@ namespace Il2CppDumper.Tests
             using (metadata)
             using (il2Cpp)
             {
+                // Ensure at least one nested type exists in metadata
+                metadata.nestedTypeIndices = new[] { 1 };
+                metadata.typeDefs[0].nestedTypesStart = 0;
+                metadata.typeDefs[0].nested_type_count = 1;
+
                 var config = new Config
                 {
                     DumpTypeDefIndex = true,
@@ -58,6 +63,10 @@ namespace Il2CppDumper.Tests
                 var model = JsonDumpGenerator.Create(executor, config);
                 Assert.NotNull(model);
                 Assert.NotEmpty(model.types);
+
+                var rootWithNested = model.types.FirstOrDefault(t => t.nested != null && t.nested.Count > 0);
+                Assert.NotNull(rootWithNested);
+                Assert.NotEmpty(rootWithNested!.nested);
 
                 // All root types must preserve non-empty image and assembly
                 foreach (var type in model.types)
@@ -375,6 +384,212 @@ namespace Il2CppDumper.Tests
             var ex = Assert.Throws<InvalidDataException>(() => FieldOffsetDiff.Compare(collidingModel, collidingModel));
             Assert.Contains("Ambiguous type collision", ex.Message);
             Assert.Contains("Assembly-CSharp.dll!Game.Duplicate", ex.Message);
+        }
+
+        [Fact]
+        public void MixedSchema_IdenticalTypes_ProducesZeroDifferencesAndZeroDrift()
+        {
+            var legacy = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        fullName = "Ns.Player",
+                        fields = new() { new() { name = "hp", type = "int", offset = "0x10", isStatic = false } }
+                    }
+                }
+            };
+
+            var scoped = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        image = "Game.dll",
+                        assembly = "Game",
+                        fullName = "Ns.Player",
+                        fields = new() { new() { name = "hp", type = "int", offset = "0x10", isStatic = false } }
+                    }
+                }
+            };
+
+            var diff = DumpDiffer.Compare(legacy, scoped);
+            Assert.False(diff.HasDifferences);
+            Assert.Empty(diff.types.added);
+            Assert.Empty(diff.types.removed);
+            Assert.Empty(diff.types.changed);
+
+            var drift = FieldOffsetDiff.Compare(legacy, scoped);
+            Assert.False(drift.HasDrift);
+            Assert.Empty(drift.structs);
+        }
+
+        [Fact]
+        public void MixedSchema_FieldChangeAndOffsetShift_DetectsDifferencesAndDrift()
+        {
+            var legacy = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        fullName = "Ns.Player",
+                        fields = new() { new() { name = "hp", type = "int", offset = "0x10", isStatic = false } }
+                    }
+                }
+            };
+
+            var scoped = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        image = "Game.dll",
+                        assembly = "Game",
+                        fullName = "Ns.Player",
+                        fields = new() { new() { name = "hp", type = "string", offset = "0x40", isStatic = false } }
+                    }
+                }
+            };
+
+            var diff = DumpDiffer.Compare(legacy, scoped);
+            Assert.True(diff.HasDifferences);
+            Assert.Empty(diff.types.added);
+            Assert.Empty(diff.types.removed);
+            Assert.Single(diff.types.changed);
+            Assert.Equal("Game.dll!Ns.Player", diff.types.changed[0].type);
+            Assert.Equal("Game.dll", diff.types.changed[0].image);
+            Assert.Equal("Game", diff.types.changed[0].assembly);
+            Assert.Equal("int", diff.types.changed[0].fields.changed[0].left.type);
+            Assert.Equal("string", diff.types.changed[0].fields.changed[0].right.type);
+
+            var drift = FieldOffsetDiff.Compare(legacy, scoped);
+            Assert.True(drift.HasDrift);
+            Assert.Single(drift.structs);
+            Assert.Equal("Game.dll!Ns.Player", drift.structs[0].@struct);
+            Assert.Equal("Game.dll", drift.structs[0].image);
+            Assert.Equal("Game", drift.structs[0].assembly);
+            Assert.Equal("0x10", drift.structs[0].fields[0].left);
+            Assert.Equal("0x40", drift.structs[0].fields[0].right);
+            Assert.Equal(FieldOffsetDriftType.Shifted, drift.structs[0].fields[0].drift);
+        }
+
+        [Fact]
+        public void MixedSchema_PartialAttributionAmbiguity_ThrowsInvalidDataException_ExitCode2()
+        {
+            var legacyUnattributed = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new() { fullName = "Ns.Player", fields = new() { new() { name = "hp", type = "int", offset = "0x10" } } }
+                }
+            };
+
+            var scopedAmbiguous = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new() { image = "A.dll", assembly = "A", fullName = "Ns.Player", fields = new() { new() { name = "hp", type = "int", offset = "0x10" } } },
+                    new() { image = "B.dll", assembly = "B", fullName = "Ns.Player", fields = new() { new() { name = "hp", type = "int", offset = "0x10" } } }
+                }
+            };
+
+            var exDiff = Assert.Throws<InvalidDataException>(() => DumpDiffer.Compare(legacyUnattributed, scopedAmbiguous));
+            Assert.Contains("Ambiguous type collision", exDiff.Message);
+            Assert.Contains("Ns.Player", exDiff.Message);
+
+            var exDrift = Assert.Throws<InvalidDataException>(() => FieldOffsetDiff.Compare(legacyUnattributed, scopedAmbiguous));
+            Assert.Contains("Ambiguous type collision", exDrift.Message);
+            Assert.Contains("Ns.Player", exDrift.Message);
+        }
+
+        [Fact]
+        public void ExplicitAttribution_DifferentImages_DoesNotFallbackToFullName()
+        {
+            var left = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        image = "A.dll",
+                        assembly = "A",
+                        fullName = "Ns.Player",
+                        fields = new() { new() { name = "hp", type = "int", offset = "0x10", isStatic = false } }
+                    }
+                }
+            };
+
+            var right = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        image = "B.dll",
+                        assembly = "B",
+                        fullName = "Ns.Player",
+                        fields = new() { new() { name = "hp", type = "int", offset = "0x10", isStatic = false } }
+                    }
+                }
+            };
+
+            var diff = DumpDiffer.Compare(left, right);
+            Assert.True(diff.HasDifferences);
+            Assert.Single(diff.types.removed);
+            Assert.Equal("A.dll!Ns.Player", diff.types.removed[0]);
+            Assert.Single(diff.types.added);
+            Assert.Equal("B.dll!Ns.Player", diff.types.added[0]);
+            Assert.Empty(diff.types.changed);
+
+            var drift = FieldOffsetDiff.Compare(left, right);
+            Assert.True(drift.HasDrift);
+            Assert.Equal(2, drift.structs.Count);
+        }
+
+        [Fact]
+        public void SeparatorCollision_PreservesComponentBoundaries_DetectsDistinctTypes()
+        {
+            var left = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        image = "A.dll!B.dll",
+                        assembly = "A.B",
+                        fullName = "Ns.Player",
+                        fields = new() { new() { name = "hp", type = "int", offset = "0x10", isStatic = false } }
+                    }
+                }
+            };
+
+            var right = new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        image = "A.dll",
+                        assembly = "A",
+                        fullName = "B.dll!Ns.Player",
+                        fields = new() { new() { name = "hp", type = "int", offset = "0x10", isStatic = false } }
+                    }
+                }
+            };
+
+            var diff = DumpDiffer.Compare(left, right);
+            Assert.True(diff.HasDifferences);
+            Assert.Single(diff.types.removed);
+            Assert.Single(diff.types.added);
+            Assert.Empty(diff.types.changed);
+
+            var drift = FieldOffsetDiff.Compare(left, right);
+            Assert.True(drift.HasDrift);
+            Assert.Equal(2, drift.structs.Count);
         }
     }
 }
