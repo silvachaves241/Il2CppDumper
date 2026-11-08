@@ -24,7 +24,7 @@ namespace Il2CppDumper.Tests
             return bytes;
         }
 
-        private static byte[] CreateSyntheticPe(
+        internal static byte[] CreateSyntheticPe(
             (string name, byte[] data, uint virtualSize, uint characteristics)[] sections,
             bool relocsStripped = false,
             uint timeDateStamp = 0,

@@ -67,7 +67,7 @@ namespace Il2CppDumper
 
         public override ulong MapRTVA(ulong addr)
         {
-            var section = sections.FirstOrDefault(x => addr >= x.PointerToRawData && addr <= x.PointerToRawData + x.SizeOfRawData);
+            var section = sections.FirstOrDefault(x => addr >= x.PointerToRawData && addr < x.PointerToRawData + x.SizeOfRawData);
             if (section == null)
             {
                 return 0ul;
