@@ -160,9 +160,7 @@ namespace Il2CppDumper
             interfaceIndices = Version >= 38
                 ? ReadMetadataIndexArray(header.interfaces, typeIndexSize)
                 : ReadClassArray<int>(header.interfacesOffset, header.interfacesSize / 4);
-            nestedTypeIndices = Version >= 38
-                ? ReadMetadataIndexArray(header.nestedTypes, typeDefinitionIndexSize)
-                : ReadClassArray<int>(header.nestedTypesOffset, header.nestedTypesSize / 4);
+            nestedTypeIndices = ReadNestedTypeIndices();
             eventDefs = Version >= 38
                 ? ReadMetadataClassArray<Il2CppEventDefinition>(header.events)
                 : ReadMetadataClassArray<Il2CppEventDefinition>(header.eventsOffset, header.eventsSize);
@@ -447,6 +445,80 @@ namespace Il2CppDumper
                 result[i] = ReadMetadataIndex(indexSize);
             }
             return result;
+        }
+
+        private int[] ReadNestedTypeIndices()
+        {
+            if (Version >= 38)
+            {
+                return ReadNestedTypeIndicesV38Plus(header.nestedTypes);
+            }
+            return ReadNestedTypeIndicesLegacy(header.nestedTypesOffset, header.nestedTypesSize);
+        }
+
+        private int[] ReadNestedTypeIndicesV38Plus(Il2CppSectionMetadata section)
+        {
+            if (section == null)
+            {
+                throw new InvalidDataException("Metadata nestedTypes section metadata is missing.");
+            }
+
+            if (section.count < 0)
+            {
+                throw new InvalidDataException($"Invalid nestedTypes count: {section.count}.");
+            }
+
+            if (section.count == 0)
+            {
+                if (section.sectionSize != 0)
+                {
+                    throw new InvalidDataException($"Invalid nestedTypes section size {section.sectionSize} for count 0.");
+                }
+                return Array.Empty<int>();
+            }
+
+            if (section.sectionSize <= 0)
+            {
+                throw new InvalidDataException($"Invalid nestedTypes section size: {section.sectionSize}.");
+            }
+
+            if (section.sectionSize % section.count != 0)
+            {
+                throw new InvalidDataException($"NestedTypes section size {section.sectionSize} is not divisible by count {section.count}.");
+            }
+
+            var width = section.sectionSize / section.count;
+            if (width != 1 && width != 2 && width != 4)
+            {
+                throw new InvalidDataException($"Unsupported nestedTypes entry width: {width}. Expected 1, 2, or 4 bytes.");
+            }
+
+            if (section.offset < 0 || (ulong)section.offset + (ulong)section.sectionSize > Length)
+            {
+                throw new InvalidDataException($"NestedTypes section [offset: {section.offset}, size: {section.sectionSize}] extends beyond metadata stream length {Length}.");
+            }
+
+            return ReadMetadataIndexArray(section, width);
+        }
+
+        private int[] ReadNestedTypeIndicesLegacy(uint offset, int size)
+        {
+            if (size == 0)
+            {
+                return Array.Empty<int>();
+            }
+
+            if (size < 0 || size % 4 != 0)
+            {
+                throw new InvalidDataException($"Invalid legacy nestedTypes size: {size}. Expected positive multiple of 4.");
+            }
+
+            if ((ulong)offset + (ulong)size > Length)
+            {
+                throw new InvalidDataException($"Legacy nestedTypes table [offset: {offset}, size: {size}] extends beyond metadata stream length {Length}.");
+            }
+
+            return ReadClassArray<int>(offset, size / 4);
         }
 
         private int ReadMetadataIndex(int size)
