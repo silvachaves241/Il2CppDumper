@@ -236,99 +236,63 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
-        public void ExportVerification_NestedTypeAttachedProperlyInGeneratedAssembly()
+        public void V39_MultiImageParentChild_ExportVerification_PreservesOwnership()
         {
-            // Verify that with correctly resolved nestedTypeIndices, DummyAssemblyExporter
-            // attaches the child type to the parent's NestedTypes collection and sets DeclaringType.
-            var bytes = new byte[4096];
-            BitConverter.GetBytes(0xFAB11BAFu).CopyTo(bytes, 0);
-            BitConverter.GetBytes(29).CopyTo(bytes, 4);
+            // Regression test for Issue #87:
+            // Constructs a real v39 metadata buffer containing 2 images (ImageA.dll, ImageB.dll),
+            // 4 type definitions (ParentA/ChildA in ImageA, ParentB/ChildB in ImageB), and a 4-byte
+            // nestedTypes table containing [1, 3] (sectionSize = 8, count = 2).
+            // On the unfixed base code, typeDefinitionIndexSize evaluates to 1 (since 4 < 255),
+            // causing nestedTypes to be read as [1, 0]. ParentB is mistakenly linked to ParentA (from ImageA),
+            // ChildB is left unattached, and ownership assertions fail.
+            // On the fixed head, width is correctly resolved to 4 from sectionSize / count, nestedTypes is [1, 3],
+            // and re-opened assemblies verify exact parent-child attachment, declaring types, and absence from root.
+            var buffer = CreateV39MultiImageBufferWithNestedTypes(new[] { 1, 3 });
 
-            var metadata = new Metadata(new MemoryStream(bytes));
-            metadata.header.stringOffset = 1024;
-            metadata.header.stringSize = 2048;
+            using var metadata = new Metadata(new MemoryStream(buffer));
 
-            uint strPos = 0;
-            AddString(metadata, "", ref strPos);
-            var imgName = AddString(metadata, "TestAssembly.dll", ref strPos);
-            var parentName = AddString(metadata, "ParentClass", ref strPos);
-            var childName = AddString(metadata, "ChildClass", ref strPos);
+            // Verify that metadata parsed nestedTypeIndices directly from stream without manual intervention
+            Assert.Equal(new[] { 1, 3 }, metadata.nestedTypeIndices);
 
-            metadata.imageDefs = new[]
-            {
-                new Il2CppImageDefinition { nameIndex = imgName, assemblyIndex = -1, typeStart = 0, typeCount = 2 }
-            };
-
-            metadata.typeDefs = new[]
-            {
-                new Il2CppTypeDefinition
-                {
-                    nameIndex = parentName,
-                    declaringTypeIndex = -1,
-                    parentIndex = -1,
-                    genericContainerIndex = -1,
-                    method_count = 0,
-                    property_count = 0,
-                    nestedTypesStart = 0,
-                    nested_type_count = 1,
-                    flags = (uint)TypeAttributes.Public
-                },
-                new Il2CppTypeDefinition
-                {
-                    nameIndex = childName,
-                    declaringTypeIndex = -1,
-                    parentIndex = -1,
-                    genericContainerIndex = -1,
-                    method_count = 0,
-                    property_count = 0,
-                    nestedTypesStart = -1,
-                    nested_type_count = 0,
-                    flags = (uint)TypeAttributes.NestedPublic
-                }
-            };
-
-            metadata.methodDefs = Array.Empty<Il2CppMethodDefinition>();
-            metadata.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
-            metadata.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
-
-            // nestedTypeIndices points entry 0 to typeDef 1 (ChildClass)
-            metadata.nestedTypeIndices = new[] { 1 };
-
-            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[64]), 0)
-            {
-                Version = 16,
-                methodPointers = Array.Empty<ulong>(),
-                types = new[]
-                {
-                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VOID },
-                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VOID }
-                }
-            };
-
+            var il2Cpp = new SyntheticIl2Cpp(version: 39);
             var executor = new Il2CppExecutor(metadata, il2Cpp);
 
-            var tempDir = Path.Combine(Path.GetTempPath(), "Il2CppDumper_Issue87_" + Guid.NewGuid().ToString("N"));
+            var tempDir = Path.Combine(Path.GetTempPath(), "Il2CppDumper_Issue87_MultiImage_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempDir);
             try
             {
                 DummyAssemblyExporter.Export(executor, tempDir, false);
 
-                var dllPath = Path.Combine(tempDir, "DummyDll", "TestAssembly.dll");
-                Assert.True(File.Exists(dllPath), $"Expected generated DLL at {dllPath}");
+                var dllA = Path.Combine(tempDir, "DummyDll", "ImageA.dll");
+                var dllB = Path.Combine(tempDir, "DummyDll", "ImageB.dll");
+                Assert.True(File.Exists(dllA), $"Expected generated DLL at {dllA}");
+                Assert.True(File.Exists(dllB), $"Expected generated DLL at {dllB}");
 
-                using var assembly = AssemblyDefinition.ReadAssembly(dllPath);
-                var module = assembly.MainModule;
+                // Verify ImageA.dll
+                using (var assemblyA = AssemblyDefinition.ReadAssembly(dllA))
+                {
+                    var moduleA = assemblyA.MainModule;
+                    var parentA = moduleA.Types.FirstOrDefault(t => t.Name == "ParentA");
+                    Assert.NotNull(parentA);
+                    Assert.Single(parentA.NestedTypes);
+                    var childA = parentA.NestedTypes[0];
+                    Assert.Equal("ChildA", childA.Name);
+                    Assert.Equal(parentA, childA.DeclaringType);
+                    Assert.DoesNotContain(moduleA.Types, t => t.Name == "ChildA");
+                }
 
-                var parentType = module.Types.FirstOrDefault(t => t.Name == "ParentClass");
-                Assert.NotNull(parentType);
-
-                // ChildClass must be attached to ParentClass.NestedTypes and not directly in module.Types
-                Assert.Single(parentType.NestedTypes);
-                var nestedChild = parentType.NestedTypes[0];
-                Assert.Equal("ChildClass", nestedChild.Name);
-                Assert.Equal(parentType, nestedChild.DeclaringType);
-
-                Assert.DoesNotContain(module.Types, t => t.Name == "ChildClass");
+                // Verify ImageB.dll
+                using (var assemblyB = AssemblyDefinition.ReadAssembly(dllB))
+                {
+                    var moduleB = assemblyB.MainModule;
+                    var parentB = moduleB.Types.FirstOrDefault(t => t.Name == "ParentB");
+                    Assert.NotNull(parentB);
+                    Assert.Single(parentB.NestedTypes);
+                    var childB = parentB.NestedTypes[0];
+                    Assert.Equal("ChildB", childB.Name);
+                    Assert.Equal(parentB, childB.DeclaringType);
+                    Assert.DoesNotContain(moduleB.Types, t => t.Name == "ChildB");
+                }
             }
             finally
             {
@@ -339,14 +303,276 @@ namespace Il2CppDumper.Tests
             }
         }
 
-        private static uint AddString(Metadata m, string value, ref uint pos)
+        private static byte[] CreateV39MultiImageBufferWithNestedTypes(int[] nestedTypes)
         {
-            var result = pos;
-            var bytes = Encoding.UTF8.GetBytes(value + "\0");
-            m.Position = m.header.stringOffset + pos;
-            m.Writer.Write(bytes);
-            pos += (uint)bytes.Length;
-            return result;
+            using var ms = new MemoryStream();
+            using var writer = new BinaryWriter(ms, Encoding.UTF8);
+
+            // String table
+            using var stringMs = new MemoryStream();
+            using var stringWriter = new BinaryWriter(stringMs, Encoding.UTF8);
+            var stringOffsetMap = new System.Collections.Generic.Dictionary<string, uint>();
+
+            uint GetOrAddString(string val)
+            {
+                if (!stringOffsetMap.TryGetValue(val, out var offset))
+                {
+                    offset = (uint)stringMs.Position;
+                    var bytes = Encoding.UTF8.GetBytes(val);
+                    stringWriter.Write(bytes);
+                    stringWriter.Write((byte)0);
+                    stringOffsetMap[val] = offset;
+                }
+                return offset;
+            }
+
+            GetOrAddString(string.Empty);
+            var asmA = GetOrAddString("AssemblyA");
+            var asmB = GetOrAddString("AssemblyB");
+            var imgA = GetOrAddString("ImageA.dll");
+            var imgB = GetOrAddString("ImageB.dll");
+            var ns = GetOrAddString("TestNamespace");
+            var parentAName = GetOrAddString("ParentA");
+            var childAName = GetOrAddString("ChildA");
+            var parentBName = GetOrAddString("ParentB");
+            var childBName = GetOrAddString("ChildB");
+
+            var stringBytes = stringMs.ToArray();
+
+            // Nested types payload: 4 bytes per entry
+            var nestedTypesBytes = new byte[nestedTypes.Length * 4];
+            for (int i = 0; i < nestedTypes.Length; i++)
+            {
+                BitConverter.GetBytes(nestedTypes[i]).CopyTo(nestedTypesBytes, i * 4);
+            }
+
+            static void WriteMetadataIndexLocal(BinaryWriter w, int value, int size)
+            {
+                if (size == 4)
+                    w.Write(value);
+                else if (size == 2)
+                    w.Write(value == -1 ? ushort.MaxValue : (ushort)value);
+                else
+                    w.Write(value == -1 ? byte.MaxValue : (byte)value);
+            }
+
+            // Type definitions (4 types: ParentA=0, ChildA=1, ParentB=2, ChildB=3)
+            byte[] typeDefsBytes;
+            using (var tMs = new MemoryStream())
+            using (var tWriter = new BinaryWriter(tMs, Encoding.UTF8))
+            {
+                void WriteType(uint nameIdx, int nestedTypesStart, ushort nestedTypeCount, uint flags)
+                {
+                    tWriter.Write(nameIdx);
+                    tWriter.Write(ns);
+                    WriteMetadataIndexLocal(tWriter, 0, 4); // byvalTypeIndex
+                    WriteMetadataIndexLocal(tWriter, -1, 4); // declaringTypeIndex
+                    WriteMetadataIndexLocal(tWriter, -1, 4); // parentIndex
+                    WriteMetadataIndexLocal(tWriter, -1, 1); // genericContainerIndex
+                    tWriter.Write(flags);
+                    WriteMetadataIndexLocal(tWriter, -1, 4); // fieldStart
+                    WriteMetadataIndexLocal(tWriter, -1, 4); // methodStart
+                    WriteMetadataIndexLocal(tWriter, -1, 4); // eventStart
+                    WriteMetadataIndexLocal(tWriter, -1, 4); // propertyStart
+                    WriteMetadataIndexLocal(tWriter, nestedTypesStart, 4); // nestedTypesStart
+                    WriteMetadataIndexLocal(tWriter, -1, 4); // interfacesStart
+                    tWriter.Write(-1); // vtableStart
+                    WriteMetadataIndexLocal(tWriter, -1, 4); // interfaceOffsetsStart
+                    tWriter.Write((ushort)0); // method_count
+                    tWriter.Write((ushort)0); // property_count
+                    tWriter.Write((ushort)0); // field_count
+                    tWriter.Write((ushort)0); // event_count
+                    tWriter.Write(nestedTypeCount); // nested_type_count
+                    tWriter.Write((ushort)0); // vtable_count
+                    tWriter.Write((ushort)0); // interfaces_count
+                    tWriter.Write((ushort)0); // interface_offsets_count
+                    tWriter.Write(0u); // bitfield
+                    tWriter.Write(0u); // token
+                }
+
+                // Type 0: ParentA (nestedTypesStart: 0, count: 1)
+                WriteType(parentAName, nestedTypesStart: 0, nestedTypeCount: 1, flags: 0x00000001u); // Public
+                // Type 1: ChildA (nestedTypesStart: -1, count: 0)
+                WriteType(childAName, nestedTypesStart: -1, nestedTypeCount: 0, flags: 0x00000002u); // NestedPublic
+                // Type 2: ParentB (nestedTypesStart: 1, count: 1)
+                WriteType(parentBName, nestedTypesStart: 1, nestedTypeCount: 1, flags: 0x00000001u); // Public
+                // Type 3: ChildB (nestedTypesStart: -1, count: 0)
+                WriteType(childBName, nestedTypesStart: -1, nestedTypeCount: 0, flags: 0x00000002u); // NestedPublic
+
+                typeDefsBytes = tMs.ToArray();
+            }
+
+            // Images (2 images: ImageA.dll=0, ImageB.dll=1)
+            byte[] imagesBytes;
+            using (var iMs = new MemoryStream())
+            using (var iWriter = new BinaryWriter(iMs, Encoding.UTF8))
+            {
+                // Image 0: ImageA.dll -> types 0..1 (typeStart: 0, typeCount: 2)
+                iWriter.Write(imgA);
+                iWriter.Write(0); // assemblyIndex
+                WriteMetadataIndexLocal(iWriter, 0, 1); // typeStart
+                iWriter.Write(2u); // typeCount
+                WriteMetadataIndexLocal(iWriter, -1, 1); // exportedTypeStart
+                iWriter.Write(0u); // exportedTypeCount
+                WriteMetadataIndexLocal(iWriter, -1, 4); // entryPointIndex
+                iWriter.Write(1u); // token
+                iWriter.Write(0); // customAttributeStart
+                iWriter.Write(0u); // customAttributeCount
+
+                // Image 1: ImageB.dll -> types 2..3 (typeStart: 2, typeCount: 2)
+                iWriter.Write(imgB);
+                iWriter.Write(1); // assemblyIndex
+                WriteMetadataIndexLocal(iWriter, 2, 1); // typeStart
+                iWriter.Write(2u); // typeCount
+                WriteMetadataIndexLocal(iWriter, -1, 1); // exportedTypeStart
+                iWriter.Write(0u); // exportedTypeCount
+                WriteMetadataIndexLocal(iWriter, -1, 4); // entryPointIndex
+                iWriter.Write(2u); // token
+                iWriter.Write(0); // customAttributeStart
+                iWriter.Write(0u); // customAttributeCount
+
+                imagesBytes = iMs.ToArray();
+            }
+
+            // Assemblies (2 assemblies: AssemblyA=0, AssemblyB=1)
+            byte[] assembliesBytes;
+            using (var aMs = new MemoryStream())
+            using (var aWriter = new BinaryWriter(aMs, Encoding.UTF8))
+            {
+                var asmA_def = new Il2CppAssemblyDefinition
+                {
+                    imageIndex = 0,
+                    token = 0x20000001,
+                    unusedCustomAttributeIndex = -1,
+                    referencedAssemblyStart = -1,
+                    referencedAssemblyCount = 0,
+                    aname = new Il2CppAssemblyNameDefinition
+                    {
+                        nameIndex = asmA,
+                        cultureIndex = 0,
+                        publicKeyIndex = 0,
+                        hash_alg = 0,
+                        hash_len = 0,
+                        flags = 0,
+                        major = 1,
+                        minor = 0,
+                        build = 0,
+                        revision = 0,
+                        public_key_token = new byte[8]
+                    },
+                    moduleToken = 0x00000001
+                };
+                var asmB_def = new Il2CppAssemblyDefinition
+                {
+                    imageIndex = 1,
+                    token = 0x20000002,
+                    unusedCustomAttributeIndex = -1,
+                    referencedAssemblyStart = -1,
+                    referencedAssemblyCount = 0,
+                    aname = new Il2CppAssemblyNameDefinition
+                    {
+                        nameIndex = asmB,
+                        cultureIndex = 0,
+                        publicKeyIndex = 0,
+                        hash_alg = 0,
+                        hash_len = 0,
+                        flags = 0,
+                        major = 1,
+                        minor = 0,
+                        build = 0,
+                        revision = 0,
+                        public_key_token = new byte[8]
+                    },
+                    moduleToken = 0x00000002
+                };
+                SyntheticMetadataGenerator.WriteClass(aWriter, asmA_def, 39);
+                SyntheticMetadataGenerator.WriteClass(aWriter, asmB_def, 39);
+                assembliesBytes = aMs.ToArray();
+            }
+
+            // Header size: 4 magic + 4 version + 31 * 12 sections = 380 bytes
+            uint currentOffset = 380;
+
+            uint stringsOffset = currentOffset;
+            int stringsSize = stringBytes.Length;
+            currentOffset += (uint)stringsSize;
+
+            uint nestedTypesOffset = currentOffset;
+            int nestedTypesSize = nestedTypesBytes.Length;
+            currentOffset += (uint)nestedTypesSize;
+
+            uint typeDefsOffset = currentOffset;
+            int typeDefsSize = typeDefsBytes.Length;
+            currentOffset += (uint)typeDefsSize;
+
+            uint imagesOffset = currentOffset;
+            int imagesSize = imagesBytes.Length;
+            currentOffset += (uint)imagesSize;
+
+            uint assembliesOffset = currentOffset;
+            int assembliesSize = assembliesBytes.Length;
+            currentOffset += (uint)assembliesSize;
+
+            writer.Write(0xFAB11BAFu); // magic
+            writer.Write(39);           // version 39
+
+            Il2CppSectionMetadata Sec(uint off, int size, int count) => new()
+            {
+                offset = (int)off,
+                sectionSize = size,
+                count = count
+            };
+
+            var sections = new System.Collections.Generic.List<Il2CppSectionMetadata>
+            {
+                Sec(currentOffset, 0, 0), // stringLiterals
+                Sec(currentOffset, 0, 0), // stringLiteralData
+                Sec(stringsOffset, stringsSize, stringsSize), // strings
+                Sec(currentOffset, 0, 0), // events
+                Sec(currentOffset, 0, 0), // properties
+                Sec(currentOffset, 0, 0), // methods
+                Sec(currentOffset, 0, 0), // parameterDefaultValues
+                Sec(currentOffset, 0, 0), // fieldDefaultValues
+                Sec(currentOffset, 0, 0), // fieldAndParameterDefaultValueData
+                Sec(currentOffset, 0, 0), // fieldMarshaledSizes
+                Sec(currentOffset, 0, 0), // parameters
+                Sec(currentOffset, 0, 0), // fields
+                Sec(currentOffset, 0, 0), // genericParameters
+                Sec(currentOffset, 0, 0), // genericParameterConstraints
+                Sec(currentOffset, 0, 0), // genericContainers
+                Sec(nestedTypesOffset, nestedTypesSize, nestedTypes.Length), // nestedTypes
+                Sec(currentOffset, 0, 0), // interfaces
+                Sec(currentOffset, 0, 0), // vtableMethods
+                Sec(currentOffset, 0, 0), // interfaceOffsets
+                Sec(typeDefsOffset, typeDefsSize, 4), // typeDefinitions
+                Sec(imagesOffset, imagesSize, 2), // images
+                Sec(assembliesOffset, assembliesSize, 2), // assemblies
+                Sec(currentOffset, 0, 0), // fieldRefs
+                Sec(currentOffset, 0, 0), // referencedAssemblies
+                Sec(currentOffset, 0, 0), // attributeData
+                Sec(currentOffset, 0, 0), // attributeDataRanges
+                Sec(currentOffset, 0, 0), // unresolvedIndirectCallParameterTypes
+                Sec(currentOffset, 0, 0), // unresolvedIndirectCallParameterRanges
+                Sec(currentOffset, 0, 0), // windowsRuntimeTypeNames
+                Sec(currentOffset, 0, 0), // windowsRuntimeStrings
+                Sec(currentOffset, 0, 0), // exportedTypeDefinitions
+            };
+
+            foreach (var s in sections)
+            {
+                writer.Write(s.offset);
+                writer.Write(s.sectionSize);
+                writer.Write(s.count);
+            }
+
+            writer.Write(stringBytes);
+            writer.Write(nestedTypesBytes);
+            writer.Write(typeDefsBytes);
+            writer.Write(imagesBytes);
+            writer.Write(assembliesBytes);
+
+            writer.Flush();
+            return ms.ToArray();
         }
     }
 }
