@@ -660,14 +660,14 @@ namespace Il2CppDumper.Core
                 }
             }
 
+            OneofMemberExtractor? oneofExtractor = null;
             if (config.GenerateOneofMap)
             {
                 CoreLogger.WriteLine("Generate oneof members map...");
                 try
                 {
-                    var oneofExtractor = new OneofMemberExtractor(executor);
+                    oneofExtractor = new OneofMemberExtractor(executor);
                     oneofExtractor.Write(outputDir, config);
-                    writtenFiles.AddRange(oneofExtractor.WrittenFiles);
                     CoreLogger.WriteLine("Done!");
                 }
                 catch (Exception e)
@@ -676,6 +676,13 @@ namespace Il2CppDumper.Core
                     CoreLogger.WriteLine("ERROR: Some errors in generating oneof map");
                     errors.Add("ERROR: Some errors in generating oneof map");
                     success = false;
+                }
+                finally
+                {
+                    if (oneofExtractor != null)
+                    {
+                        writtenFiles.AddRange(oneofExtractor.WrittenFiles);
+                    }
                 }
             }
 
