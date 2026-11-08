@@ -1,6 +1,8 @@
 {
   "types": [
     {
+      "image": "SyntheticImage.dll",
+      "assembly": "SyntheticAssembly",
       "fullName": "SyntheticNamespace.SyntheticClass",
       "bases": [],
       "attributes": [],
@@ -33,6 +35,8 @@
       "nested": []
     },
     {
+      "image": "SyntheticImage.dll",
+      "assembly": "SyntheticAssembly",
       "fullName": "SyntheticNamespace.SyntheticEnum",
       "bases": [],
       "attributes": [],

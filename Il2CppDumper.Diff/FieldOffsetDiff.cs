@@ -77,20 +77,15 @@ namespace Il2CppDumper.Diff
 
         public static FieldOffsetDriftReport Compare(JsonDumpModel leftModel, JsonDumpModel rightModel)
         {
-            var leftTypes = CollectTypes(leftModel);
-            var rightTypes = CollectTypes(rightModel);
-
-            var allTypeNames = leftTypes.Keys
-                .Union(rightTypes.Keys)
-                .OrderBy(x => x, StringComparer.Ordinal)
-                .ToList();
+            var reconciled = TypeReconciler.Reconcile(leftModel, rightModel);
 
             var driftedStructs = new List<FieldOffsetStructDrift>();
 
-            foreach (var typeName in allTypeNames)
+            foreach (var item in reconciled)
             {
-                leftTypes.TryGetValue(typeName, out var leftType);
-                rightTypes.TryGetValue(typeName, out var rightType);
+                var leftType = item.Left;
+                var rightType = item.Right;
+                var typeName = item.Key;
 
                 // Collect instance fields that have an offset (exclude static and constants/literals without offset)
                 var leftInstanceFields = (leftType?.fields ?? new List<JsonDumpField>())
@@ -248,7 +243,9 @@ namespace Il2CppDumper.Diff
                 {
                     driftedStructs.Add(new FieldOffsetStructDrift
                     {
-                        @struct = typeName,
+                        @struct = item.Key,
+                        image = item.Image,
+                        assembly = item.Assembly,
                         size = sizeObj,
                         fields = driftedFields,
                         verdict = new FieldOffsetVerdict
@@ -314,33 +311,6 @@ namespace Il2CppDumper.Diff
                 throw new InvalidDataException($"Invalid {label} dump.json: missing 'types' array property.");
             }
             return model;
-        }
-
-        private static Dictionary<string, JsonDumpType> CollectTypes(JsonDumpModel model)
-        {
-            var dict = new Dictionary<string, JsonDumpType>(StringComparer.Ordinal);
-
-            void CollectType(JsonDumpType t)
-            {
-                if (!string.IsNullOrEmpty(t.fullName))
-                {
-                    dict.TryAdd(t.fullName, t);
-                }
-                if (t.nested != null)
-                {
-                    foreach (var child in t.nested)
-                    {
-                        CollectType(child);
-                    }
-                }
-            }
-
-            foreach (var t in model.types)
-            {
-                CollectType(t);
-            }
-
-            return dict;
         }
 
         private static bool TryParseHexOffset(string? offsetStr, out ulong offset)

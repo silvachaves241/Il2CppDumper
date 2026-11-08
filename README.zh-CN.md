@@ -200,9 +200,9 @@ else
 
 #### dump.json
 
-机器可读的结构化转储输出（`GenerateJsonDump`），以 JSON 格式捕获与 `dump.cs` 相同的结构化信息（`types`、`fields`、`properties`、`methods`、`enums`、`nested`）。类型、字段、属性与方法均保留声明的 `attributes`（包括标记类的 `[Serializable]`）。
+机器可读的结构化转储输出（`GenerateJsonDump`），以 JSON 格式捕获与 `dump.cs` 相同的结构化信息（`types`、`fields`、`properties`、`methods`、`enums`、`nested`）。类型、字段、属性与方法均保留声明的 `attributes`（包括标记类的 `[Serializable]`）。类型（包含嵌套类型）保留镜像与程序集归属（`image`、`assembly`），建立跨构建的稳定类型标识（`<image>!<fullName>`），防止不同镜像间的同名类型冲突。
 
-**Português:** Saída de dump legível por máquina (`dump.json`, chave `GenerateJsonDump`), capturando as mesmas informações estruturadas de `dump.cs` em formato JSON (`types`, `fields`, `properties`, `methods`, `enums`, `nested`). Tipos, campos, propriedades e métodos preservam `attributes` declarados (incluindo `[Serializable]` em tipos anotados).
+**Português:** Saída de dump legível por máquina (`dump.json`, chave `GenerateJsonDump`), capturando as mesmas informações estruturadas de `dump.cs` em formato JSON (`types`, `fields`, `properties`, `methods`, `enums`, `nested`). Tipos, campos, propriedades e métodos preservam `attributes` declarados (incluindo `[Serializable]` em tipos anotados). Tipos (incluindo tipos aninhados) preservam atribuição de imagem e assembly (`image`, `assembly`), estabelecendo uma identidade estável entre builds (`<image>!<fullName>`) para evitar colisões entre tipos homônimos de imagens distintas.
 
 #### run-manifest.json
 
@@ -293,6 +293,12 @@ Il2CppDumper.Diff <left> <right> <output>
 * `1`: 发现差异。
 * `2`: 参数使用或输入错误。
 
+#### 类型标识与歧义处理策略 (Type identity & ambiguity policy)
+在不同版本转储之间比对时，类型通过稳定的复合键 `<image>!<fullName>`（若 `image` 缺失则使用 `<assembly>!<fullName>`）进行关联匹配。
+* **向后兼容性 (Legacy compatibility):** 缺少 `image`/`assembly` 元数据的旧版 dump 只要全名全局唯一，仍继续按 `fullName` 正常比对。
+* **歧义处理策略 (Ambiguity policy):** 若旧版输入中存在没有镜像/程序集身份区分的重名类型冲突，比对工具将直接输出显式歧义错误并以状态码 `2`（输入错误）退出，绝不静默合并或隐藏变更。
+* **增量数据模式字段 (Additive schema fields):** 在 `dump-diff.json` 中，`DumpDiffTypeChange` 在可用时输出增量字段 `image` 与 `assembly`。
+
 #### 数据模式参考 (Schema reference - `dump-diff.json`)
 ```json
 {
@@ -351,6 +357,7 @@ Il2CppDumper.Diff <left> <right> <output>
 **Português:** Ferramenta autônoma de comparação estruturada (`Il2CppDumper.Diff`), consumindo dois dumps estruturados (`dump.json` e mapas de endereço de `script.json`) e emitindo um delta legível por máquina (`dump-diff.json`).
 * **Entradas:** diretórios ou caminhos diretos para `dump.json` de ambas as versões. `dump.cs` nunca é consumido.
 * **Códigos de saída:** `0` = idênticos, `1` = diferenças encontradas, `2` = erro de uso ou entrada.
+* **Identidade de tipos e ambiguidade:** tipos são correlacionados pela chave estável `<image>!<fullName>` (ou `<assembly>!<fullName>`). Dumps legados com nomes únicos mantêm compatibilidade via `fullName`; colisões sem imagem/assembly geram erro explícito com código `2`. `DumpDiffTypeChange` emite campos aditivos `image` e `assembly`.
 * **Esquema:** inclui hashes de proveniência (`dump-metadata.json` quando disponível ou SHA-256 do arquivo em streaming), tipos adicionados/removidos/alterados, métodos com endereços alterados, literais por índice e sumário.
 
 #### 结构体字段偏移漂移报告 (Field offset drift report - `field-offset-drift.json`)

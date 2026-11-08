@@ -35,6 +35,14 @@ namespace Il2CppDumper.Diff
         [JsonPropertyName("struct")]
         public string @struct { get; set; } = string.Empty;
 
+        [JsonPropertyName("image")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? image { get; set; }
+
+        [JsonPropertyName("assembly")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? assembly { get; set; }
+
         [JsonPropertyName("size")]
         public FieldOffsetSize size { get; set; } = new();
 
