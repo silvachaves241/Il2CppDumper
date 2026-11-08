@@ -213,6 +213,50 @@ namespace Il2CppDumper
             return Encoding.UTF8.GetString(bytes.ToArray());
         }
 
+        public string ReadStringToNull(ulong addr, int maxBytes)
+        {
+            if (!TryReadStringToNull(addr, maxBytes, out var result))
+            {
+                throw new InvalidDataException("String is not null-terminated within the specified bounds or exceeds stream length.");
+            }
+            return result;
+        }
+
+        public bool TryReadStringToNull(ulong addr, int maxBytes, out string result)
+        {
+            result = string.Empty;
+            if (maxBytes <= 0 || addr >= Length)
+            {
+                return false;
+            }
+
+            Position = addr;
+            var bytes = new List<byte>(Math.Min(maxBytes, 128));
+            try
+            {
+                for (var i = 0; i < maxBytes; i++)
+                {
+                    if (Position >= Length)
+                    {
+                        return false;
+                    }
+                    var b = ReadByte();
+                    if (b == 0)
+                    {
+                        result = Encoding.UTF8.GetString(bytes.ToArray());
+                        return true;
+                    }
+                    bytes.Add(b);
+                }
+            }
+            catch (EndOfStreamException)
+            {
+                return false;
+            }
+
+            return false;
+        }
+
         public long ReadIntPtr()
         {
             return Is32Bit ? ReadInt32() : ReadInt64();
