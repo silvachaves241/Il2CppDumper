@@ -93,6 +93,26 @@ namespace Il2CppDumper
             return false;
         }
 
+        public override bool IsValidMethodPointer(ulong pointer)
+        {
+            if (pointer == 0 || sections == null || sections.Length == 0 || pointer < ImageBase)
+            {
+                return false;
+            }
+            var addr = pointer - ImageBase;
+            var section = sections.FirstOrDefault(x => addr >= x.VirtualAddress && addr < x.VirtualAddress + Math.Max(x.VirtualSize, x.SizeOfRawData));
+            if (section == null)
+            {
+                return false;
+            }
+            var hasExecSections = sections.Any(x => (x.Characteristics & 0x20000000) != 0);
+            if (hasExecSections && (section.Characteristics & 0x20000000) == 0)
+            {
+                return false;
+            }
+            return true;
+        }
+
         public override ulong GetRVA(ulong pointer)
         {
             return pointer - ImageBase;

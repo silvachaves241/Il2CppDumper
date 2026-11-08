@@ -187,6 +187,25 @@ namespace Il2CppDumper
             return false;
         }
 
+        public override bool IsValidMethodPointer(ulong pointer)
+        {
+            if (pointer == 0 || sections == null || sections.Count == 0)
+            {
+                return false;
+            }
+            var sec = sections.FirstOrDefault(x => pointer >= x.addr && pointer < x.addr + x.size);
+            if (sec == null)
+            {
+                return false;
+            }
+            var hasExec = sections.Any(x => x.flags == 0x80000400);
+            if (hasExec && sec.flags != 0x80000400)
+            {
+                return false;
+            }
+            return true;
+        }
+
         public override ulong GetRVA(ulong pointer)
         {
             return pointer - vmaddr;

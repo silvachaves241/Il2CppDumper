@@ -95,55 +95,59 @@ namespace Il2CppDumper
                         var i = metadata.GetMethodIndexFromTypeDefinition(typeIndex, methodIndexInType);
                         var methodDef = metadata.methodDefs[i];
                         var methodName = metadata.GetStringFromIndex(methodDef.nameIndex);
-                        var methodPointer = il2Cpp.GetMethodPointer(imageName, methodDef);
-                        if (methodPointer > 0)
+                        var isAbstract = il2Cpp.IsMethodAbstract(methodDef);
+                        if (!isAbstract)
                         {
-                            var methodTypeSignature = new List<Il2CppTypeEnum>();
-                            var scriptMethod = new ScriptMethod();
-                            json.ScriptMethod.Add(scriptMethod);
-                            scriptMethod.Address = il2Cpp.GetRVA(methodPointer);
-                            var methodFullName = typeName + "$$" + methodName;
-                            scriptMethod.Name = methodFullName;
+                            var methodPointer = il2Cpp.GetMethodPointer(imageName, methodDef);
+                            if (methodPointer > 0 && il2Cpp.IsValidMethodPointer(methodPointer))
+                            {
+                                var methodTypeSignature = new List<Il2CppTypeEnum>();
+                                var scriptMethod = new ScriptMethod();
+                                json.ScriptMethod.Add(scriptMethod);
+                                scriptMethod.Address = il2Cpp.GetRVA(methodPointer);
+                                var methodFullName = typeName + "$$" + methodName;
+                                scriptMethod.Name = methodFullName;
 
-                            var methodReturnType = il2Cpp.types[methodDef.returnType];
-                            var returnType = ParseType(methodReturnType);
-                            if (methodReturnType.byref == 1)
-                            {
-                                returnType += "*";
-                            }
-                            methodTypeSignature.Add(methodReturnType.byref == 1 ? Il2CppTypeEnum.IL2CPP_TYPE_PTR : methodReturnType.type);
-                            var signature = $"{returnType} {FixName(methodFullName)} (";
-                            var parameterStrs = new List<string>();
-                            if ((methodDef.flags & METHOD_ATTRIBUTE_STATIC) == 0)
-                            {
-                                var thisType = ParseType(il2Cpp.types[typeDef.byvalTypeIndex]);
-                                methodTypeSignature.Add(il2Cpp.types[typeDef.byvalTypeIndex].type);
-                                parameterStrs.Add($"{thisType} __this");
-                            }
-                            else if (il2Cpp.Version <= 24)
-                            {
-                                methodTypeSignature.Add(Il2CppTypeEnum.IL2CPP_TYPE_PTR);
-                                parameterStrs.Add($"Il2CppObject* __this");
-                            }
-                            for (var j = 0; j < methodDef.parameterCount; j++)
-                            {
-                                var parameterDef = metadata.parameterDefs[methodDef.parameterStart + j];
-                                var parameterName = metadata.GetStringFromIndex(parameterDef.nameIndex);
-                                var parameterType = il2Cpp.types[parameterDef.typeIndex];
-                                var parameterCType = ParseType(parameterType);
-                                if (parameterType.byref == 1)
+                                var methodReturnType = il2Cpp.types[methodDef.returnType];
+                                var returnType = ParseType(methodReturnType);
+                                if (methodReturnType.byref == 1)
                                 {
-                                    parameterCType += "*";
+                                    returnType += "*";
                                 }
-                                methodTypeSignature.Add(parameterType.byref == 1 ? Il2CppTypeEnum.IL2CPP_TYPE_PTR : parameterType.type);
-                                parameterStrs.Add($"{parameterCType} {FixName(parameterName)}");
+                                methodTypeSignature.Add(methodReturnType.byref == 1 ? Il2CppTypeEnum.IL2CPP_TYPE_PTR : methodReturnType.type);
+                                var signature = $"{returnType} {FixName(methodFullName)} (";
+                                var parameterStrs = new List<string>();
+                                if ((methodDef.flags & METHOD_ATTRIBUTE_STATIC) == 0)
+                                {
+                                    var thisType = ParseType(il2Cpp.types[typeDef.byvalTypeIndex]);
+                                    methodTypeSignature.Add(il2Cpp.types[typeDef.byvalTypeIndex].type);
+                                    parameterStrs.Add($"{thisType} __this");
+                                }
+                                else if (il2Cpp.Version <= 24)
+                                {
+                                    methodTypeSignature.Add(Il2CppTypeEnum.IL2CPP_TYPE_PTR);
+                                    parameterStrs.Add($"Il2CppObject* __this");
+                                }
+                                for (var j = 0; j < methodDef.parameterCount; j++)
+                                {
+                                    var parameterDef = metadata.parameterDefs[methodDef.parameterStart + j];
+                                    var parameterName = metadata.GetStringFromIndex(parameterDef.nameIndex);
+                                    var parameterType = il2Cpp.types[parameterDef.typeIndex];
+                                    var parameterCType = ParseType(parameterType);
+                                    if (parameterType.byref == 1)
+                                    {
+                                        parameterCType += "*";
+                                    }
+                                    methodTypeSignature.Add(parameterType.byref == 1 ? Il2CppTypeEnum.IL2CPP_TYPE_PTR : parameterType.type);
+                                    parameterStrs.Add($"{parameterCType} {FixName(parameterName)}");
+                                }
+                                methodTypeSignature.Add(Il2CppTypeEnum.IL2CPP_TYPE_PTR);
+                                parameterStrs.Add("const MethodInfo* method");
+                                signature += string.Join(", ", parameterStrs);
+                                signature += ");";
+                                scriptMethod.Signature = signature;
+                                scriptMethod.TypeSignature = GetMethodTypeSignature(methodTypeSignature);
                             }
-                            methodTypeSignature.Add(Il2CppTypeEnum.IL2CPP_TYPE_PTR);
-                            parameterStrs.Add("const MethodInfo* method");
-                            signature += string.Join(", ", parameterStrs);
-                            signature += ");";
-                            scriptMethod.Signature = signature;
-                            scriptMethod.TypeSignature = GetMethodTypeSignature(methodTypeSignature);
                         }
                         //泛型实例函数
                         if (il2Cpp.methodDefinitionMethodSpecs.TryGetValue(i, out var methodSpecs))
@@ -151,7 +155,7 @@ namespace Il2CppDumper
                             foreach (var methodSpec in methodSpecs)
                             {
                                 var genericMethodPointer = il2Cpp.methodSpecGenericMethodPointers[methodSpec];
-                                if (genericMethodPointer > 0)
+                                if (genericMethodPointer > 0 && il2Cpp.IsValidMethodPointer(genericMethodPointer))
                                 {
                                     var methodTypeSignature = new List<Il2CppTypeEnum>();
                                     var scriptMethod = new ScriptMethod();
@@ -513,11 +517,15 @@ namespace Il2CppDumper
             json.ScriptMetadataMethod.Add(scriptMetadataMethod);
             scriptMetadataMethod.Address = il2Cpp.GetRVA(address);
             scriptMetadataMethod.Name = "Method$" + methodName;
-            var imageName = typeDefImageNames[typeDef];
-            var methodPointer = il2Cpp.GetMethodPointer(imageName, methodDef);
-            if (methodPointer > 0)
+            var isAbstract = il2Cpp.IsMethodAbstract(methodDef);
+            if (!isAbstract)
             {
-                scriptMetadataMethod.MethodAddress = il2Cpp.GetRVA(methodPointer);
+                var imageName = typeDefImageNames[typeDef];
+                var methodPointer = il2Cpp.GetMethodPointer(imageName, methodDef);
+                if (methodPointer > 0 && il2Cpp.IsValidMethodPointer(methodPointer))
+                {
+                    scriptMetadataMethod.MethodAddress = il2Cpp.GetRVA(methodPointer);
+                }
             }
         }
 

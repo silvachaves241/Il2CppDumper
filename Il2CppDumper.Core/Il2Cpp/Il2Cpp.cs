@@ -459,8 +459,49 @@ namespace Il2CppDumper
             return normalizedRGCTXDataDictionary != null && normalizedRGCTXDataDictionary.TryGetValue(NormalizeModuleName(imageName), out rgctxs);
         }
 
+        public bool IsMethodAbstract(Il2CppMethodDefinition methodDef)
+        {
+            if (methodDef == null)
+            {
+                return false;
+            }
+            if ((methodDef.flags & Il2CppConstants.METHOD_ATTRIBUTE_ABSTRACT) != 0)
+            {
+                return true;
+            }
+            if (metadata != null && methodDef.declaringType >= 0 && methodDef.declaringType < metadata.typeDefs.Length)
+            {
+                var declaringTypeDef = metadata.typeDefs[methodDef.declaringType];
+                if ((declaringTypeDef.flags & Il2CppConstants.TYPE_ATTRIBUTE_INTERFACE) != 0)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        public virtual bool IsValidMethodPointer(ulong pointer)
+        {
+            if (pointer == 0)
+            {
+                return false;
+            }
+            try
+            {
+                return MapVATR(pointer) > 0 || pointer < (ulong)Length;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public ulong GetMethodPointer(string imageName, Il2CppMethodDefinition methodDef)
         {
+            if (IsMethodAbstract(methodDef))
+            {
+                return 0;
+            }
             if (Version >= 24.2)
             {
                 if (methodDef.methodIndex < 0)
@@ -477,14 +518,16 @@ namespace Il2CppDumper
                 {
                     return 0;
                 }
-                return ptrs[methodPointerIndex - 1];
+                var ptr = ptrs[methodPointerIndex - 1];
+                return IsValidMethodPointer(ptr) ? ptr : 0;
             }
             else
             {
                 var methodIndex = methodDef.methodIndex;
                 if (methodIndex >= 0 && methodIndex < methodPointers.Length)
                 {
-                    return methodPointers[methodIndex];
+                    var ptr = methodPointers[methodIndex];
+                    return IsValidMethodPointer(ptr) ? ptr : 0;
                 }
             }
             return 0;

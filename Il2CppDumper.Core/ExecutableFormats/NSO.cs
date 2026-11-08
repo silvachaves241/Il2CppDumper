@@ -200,6 +200,24 @@ namespace Il2CppDumper
             }
         }
 
+        public override bool IsValidMethodPointer(ulong pointer)
+        {
+            if (pointer == 0 || segments == null || segments.Count == 0)
+            {
+                return false;
+            }
+            var segment = segments.FirstOrDefault(x => pointer >= x.MemoryOffset && pointer < x.MemoryOffset + x.DecompressedSize);
+            if (segment == null)
+            {
+                return false;
+            }
+            if (header.TextSegment != null && segment.MemoryOffset != header.TextSegment.MemoryOffset)
+            {
+                return false;
+            }
+            return true;
+        }
+
         public override ulong MapVATR(ulong addr)
         {
             var segment = segments.First(x => addr >= x.MemoryOffset && addr <= x.MemoryOffset + x.DecompressedSize);
