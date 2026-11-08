@@ -837,26 +837,52 @@ namespace Il2CppDumper
                 return true;
             }
 
-            var stringOffset = Version >= 38 ? (uint)header.strings.offset : header.stringOffset;
-            var stringSize = Version >= 38 ? header.strings.sectionSize : header.stringSize;
-            var stringAddress = (ulong)stringOffset + index;
-            if (stringSize <= 0 || index >= stringSize || stringAddress >= Length)
+            if (header == null)
             {
                 result = string.Empty;
                 return false;
             }
 
-            try
+            long stringOffset;
+            int stringSize;
+            if (Version >= 38)
             {
-                result = ReadStringToNull(stringOffset + index);
-                stringCache.Add(index, result);
-                return true;
+                if (header.strings == null)
+                {
+                    result = string.Empty;
+                    return false;
+                }
+                stringOffset = header.strings.offset;
+                stringSize = header.strings.sectionSize;
             }
-            catch (EndOfStreamException)
+            else
+            {
+                stringOffset = header.stringOffset;
+                stringSize = header.stringSize;
+            }
+
+            if (stringOffset < 0 || stringSize <= 0 || (ulong)stringOffset >= Length || index >= (uint)stringSize)
             {
                 result = string.Empty;
                 return false;
             }
+
+            var stringAddress = (ulong)stringOffset + index;
+            if (stringAddress >= Length)
+            {
+                result = string.Empty;
+                return false;
+            }
+
+            var maxBytes = (int)((uint)stringSize - index);
+            if (TryReadStringToNull(stringAddress, maxBytes, out result))
+            {
+                stringCache.Add(index, result);
+                return true;
+            }
+
+            result = string.Empty;
+            return false;
         }
 
         public int GetCustomAttributeIndex(Il2CppImageDefinition imageDef, int customAttributeIndex, uint token)
