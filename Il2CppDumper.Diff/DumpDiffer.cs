@@ -65,7 +65,22 @@ namespace Il2CppDumper.Diff
         {
             var leftArtifacts = ResolveArtifacts(leftPath, "left");
             var rightArtifacts = ResolveArtifacts(rightPath, "right");
+            return Compare(leftArtifacts, rightArtifacts);
+        }
 
+        public static DumpDiffResult Compare(JsonDumpModel leftModel, JsonDumpModel rightModel)
+        {
+            var leftArtifacts = new ParsedArtifacts();
+            CollectModelTypes(leftModel, leftArtifacts.Types, "left");
+
+            var rightArtifacts = new ParsedArtifacts();
+            CollectModelTypes(rightModel, rightArtifacts.Types, "right");
+
+            return Compare(leftArtifacts, rightArtifacts);
+        }
+
+        private static DumpDiffResult Compare(ParsedArtifacts leftArtifacts, ParsedArtifacts rightArtifacts)
+        {
             var result = new DumpDiffResult
             {
                 left = leftArtifacts.Endpoint,
@@ -193,6 +208,8 @@ namespace Il2CppDumper.Diff
                     result.types.changed.Add(new DumpDiffTypeChange
                     {
                         type = typeName,
+                        image = leftType.image ?? rightType.image,
+                        assembly = leftType.assembly ?? rightType.assembly,
                         fields = new DumpDiffFieldChanges
                         {
                             added = addedFields,
@@ -401,6 +418,49 @@ namespace Il2CppDumper.Diff
             return $"{m.returnType} {m.name}({pars})";
         }
 
+        private static void CollectModelTypes(JsonDumpModel? model, Dictionary<string, JsonDumpType> target, string label)
+        {
+            if (model == null || model.types == null)
+            {
+                throw new InvalidDataException($"Invalid {label} dump.json: missing 'types' array property.");
+            }
+
+            var duplicates = new HashSet<string>(StringComparer.Ordinal);
+
+            void CollectType(JsonDumpType t, string? parentImage, string? parentAssembly)
+            {
+                if (string.IsNullOrEmpty(t.image)) t.image = parentImage;
+                if (string.IsNullOrEmpty(t.assembly)) t.assembly = parentAssembly;
+
+                if (!string.IsNullOrEmpty(t.fullName))
+                {
+                    var key = t.GetIdentityKey();
+                    if (!target.TryAdd(key, t))
+                    {
+                        duplicates.Add(key);
+                    }
+                }
+                if (t.nested != null)
+                {
+                    foreach (var child in t.nested)
+                    {
+                        CollectType(child, t.image, t.assembly);
+                    }
+                }
+            }
+
+            foreach (var t in model.types)
+            {
+                CollectType(t, null, null);
+            }
+
+            if (duplicates.Count > 0)
+            {
+                var sortedDups = duplicates.OrderBy(x => x, StringComparer.Ordinal);
+                throw new InvalidDataException($"Ambiguous type collision in {label} dump.json: duplicate type(s) lack distinct image/assembly identity to resolve collisions: {string.Join(", ", sortedDups)}");
+            }
+        }
+
         private static string ComputeStreamSha256(string filePath)
         {
             using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 81920, useAsync: false);
@@ -511,30 +571,7 @@ namespace Il2CppDumper.Diff
                     throw new InvalidDataException($"Failed to deserialize {label} dump.json: {ex.Message}", ex);
                 }
 
-                if (model == null || model.types == null)
-                {
-                    throw new InvalidDataException($"Invalid {label} dump.json: missing 'types' array property.");
-                }
-
-                void CollectType(JsonDumpType t)
-                {
-                    if (!string.IsNullOrEmpty(t.fullName))
-                    {
-                        artifacts.Types[t.fullName] = t;
-                    }
-                    if (t.nested != null)
-                    {
-                        foreach (var child in t.nested)
-                        {
-                            CollectType(child);
-                        }
-                    }
-                }
-
-                foreach (var t in model.types)
-                {
-                    CollectType(t);
-                }
+                CollectModelTypes(model, artifacts.Types, label);
             }
 
             // 3. Parse script.json (optional, but if present must be valid)

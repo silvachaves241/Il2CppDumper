@@ -203,9 +203,9 @@ Provenance sidecar written at the start of every run (success or failure), recor
 
 #### dump.json
 
-Machine-readable dump output (`GenerateJsonDump`) capturing the same structured information as `dump.cs` in JSON format (`types`, `fields`, `properties`, `methods`, `enums`, `nested`). Types, fields, properties, and methods preserve declared `attributes` (including `[Serializable]` on decorated types).
+Machine-readable dump output (`GenerateJsonDump`) capturing the same structured information as `dump.cs` in JSON format (`types`, `fields`, `properties`, `methods`, `enums`, `nested`). Types, fields, properties, and methods preserve declared `attributes` (including `[Serializable]` on decorated types). Types (including nested types) preserve image and assembly attribution (`image`, `assembly`), establishing a stable cross-build type identity (`<image>!<fullName>`) to prevent homonymous types in different images from colliding.
 
-**Português:** Saída de dump legível por máquina (`dump.json`, chave `GenerateJsonDump`), capturando as mesmas informações estruturadas de `dump.cs` em formato JSON (`types`, `fields`, `properties`, `methods`, `enums`, `nested`). Tipos, campos, propriedades e métodos preservam `attributes` declarados (incluindo `[Serializable]` em tipos anotados).
+**Português:** Saída de dump legível por máquina (`dump.json`, chave `GenerateJsonDump`), capturando as mesmas informações estruturadas de `dump.cs` em formato JSON (`types`, `fields`, `properties`, `methods`, `enums`, `nested`). Tipos, campos, propriedades e métodos preservam `attributes` declarados (incluindo `[Serializable]` em tipos anotados). Tipos (incluindo tipos aninhados) preservam atribuição de imagem e assembly (`image`, `assembly`), estabelecendo uma identidade estável entre builds (`<image>!<fullName>`) para evitar colisões entre tipos homônimos de imagens distintas.
 
 #### run-manifest.json
 
@@ -296,6 +296,12 @@ Il2CppDumper.Diff <left> <right> <output>
 * `1`: Differences found.
 * `2`: Usage / input error.
 
+#### Type identity & ambiguity policy
+Types are correlated across builds using the stable composite key `<image>!<fullName>` (or `<assembly>!<fullName>` when image is absent).
+* **Legacy compatibility:** Legacy dumps lacking `image`/`assembly` metadata continue to correlate by `fullName` when names are globally unique.
+* **Ambiguity policy:** If legacy input contains duplicate type full names without image/assembly identity, comparators exit with code `2` (input error) and report an explicit collision error instead of silently collapsing types or hiding deltas.
+* **Additive schema fields:** In `dump-diff.json`, `DumpDiffTypeChange` emits additive `image` and `assembly` fields when available.
+
 #### Schema reference (`dump-diff.json`)
 ```json
 {
@@ -354,6 +360,7 @@ Il2CppDumper.Diff <left> <right> <output>
 **Português:** Ferramenta autônoma de comparação estruturada (`Il2CppDumper.Diff`), consumindo dois dumps estruturados (`dump.json` e mapas de endereço de `script.json`) e emitindo um delta legível por máquina (`dump-diff.json`).
 * **Entradas:** diretórios ou caminhos diretos para `dump.json` de ambas as versões. `dump.cs` nunca é consumido.
 * **Códigos de saída:** `0` = idênticos, `1` = diferenças encontradas, `2` = erro de uso ou entrada.
+* **Identidade de tipos e ambiguidade:** tipos são correlacionados pela chave estável `<image>!<fullName>` (ou `<assembly>!<fullName>`). Dumps legados com nomes únicos mantêm compatibilidade via `fullName`; colisões sem imagem/assembly geram erro explícito com código `2`. `DumpDiffTypeChange` emite campos aditivos `image` e `assembly`.
 * **Esquema:** inclui hashes de proveniência (`dump-metadata.json` quando disponível ou SHA-256 do arquivo em streaming), tipos adicionados/removidos/alterados, métodos com endereços alterados, literais por índice e sumário.
 
 #### Field offset drift report (`field-offset-drift.json`)

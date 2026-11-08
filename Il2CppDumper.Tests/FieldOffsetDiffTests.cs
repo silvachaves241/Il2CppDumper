@@ -699,7 +699,9 @@ namespace Il2CppDumper.Tests
             var reportShifted = FieldOffsetDiff.Compare(baseModel, shiftedModel);
             Assert.True(reportShifted.HasDrift);
             Assert.Single(reportShifted.structs);
-            Assert.Equal("Repro.Mode", reportShifted.structs[0].@struct);
+            Assert.Equal("Repro.dll!Repro.Mode", reportShifted.structs[0].@struct);
+            Assert.Equal("Repro.dll", reportShifted.structs[0].image);
+            Assert.Equal("Repro", reportShifted.structs[0].assembly);
             Assert.Single(reportShifted.structs[0].fields);
             Assert.Equal("value__", reportShifted.structs[0].fields[0].name);
             Assert.Equal(valueField.offset, reportShifted.structs[0].fields[0].left);

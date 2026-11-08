@@ -45,6 +45,13 @@ namespace Il2CppDumper.Diff
     public class DumpDiffTypeChange
     {
         public string type { get; set; } = string.Empty;
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? image { get; set; }
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? assembly { get; set; }
+
         public DumpDiffFieldChanges fields { get; set; } = new();
         public DumpDiffMethodChanges methods { get; set; } = new();
     }

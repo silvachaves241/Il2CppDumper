@@ -17,6 +17,10 @@ namespace Il2CppDumper
 
     public class JsonDumpType
     {
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? image { get; set; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? assembly { get; set; }
         public string fullName { get; set; } = string.Empty;
         public List<string> bases { get; set; } = new();
         public List<string> attributes { get; set; } = new();
@@ -27,6 +31,14 @@ namespace Il2CppDumper
         public List<JsonDumpType> nested { get; set; } = new();
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public string? size { get; set; }
+
+        public string GetIdentityKey() => FormatKey(image, assembly, fullName);
+
+        public static string FormatKey(string? image, string? assembly, string fullName)
+        {
+            var scope = !string.IsNullOrEmpty(image) ? image : assembly;
+            return !string.IsNullOrEmpty(scope) ? $"{scope}!{fullName}" : fullName;
+        }
     }
 
     public class JsonDumpField
@@ -176,6 +188,8 @@ namespace Il2CppDumper
                                     {
                                         if (!parentModel.nested.Contains(childModel))
                                         {
+                                            if (string.IsNullOrEmpty(childModel.image)) childModel.image = parentModel.image;
+                                            if (string.IsNullOrEmpty(childModel.assembly)) childModel.assembly = parentModel.assembly;
                                             parentModel.nested.Add(childModel);
                                             nestedChildren.Add(childTypeDef);
                                             if (childTypeDef.IsEnum)
@@ -206,6 +220,8 @@ namespace Il2CppDumper
                     {
                         if (!parentModel.nested.Contains(typeModel))
                         {
+                            if (string.IsNullOrEmpty(typeModel.image)) typeModel.image = parentModel.image;
+                            if (string.IsNullOrEmpty(typeModel.assembly)) typeModel.assembly = parentModel.assembly;
                             parentModel.nested.Add(typeModel);
                             nestedChildren.Add(typeDef);
                             if (typeDef.IsEnum)
@@ -243,6 +259,20 @@ namespace Il2CppDumper
             Il2CppTypeDefinition typeDef,
             int typeDefIndex)
         {
+            var imageName = metadata.GetStringFromIndex(imageDef.nameIndex);
+            string? assemblyName = null;
+            if (imageDef.assemblyIndex >= 0 && metadata.assemblyDefs != null && imageDef.assemblyIndex < metadata.assemblyDefs.Length)
+            {
+                var assemblyDef = metadata.assemblyDefs[imageDef.assemblyIndex];
+                assemblyName = metadata.GetStringFromIndex(assemblyDef.aname.nameIndex);
+            }
+            else if (!string.IsNullOrEmpty(imageName))
+            {
+                assemblyName = imageName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+                    ? imageName[..^4]
+                    : imageName;
+            }
+
             var fullName = executor.GetTypeDefName(typeDef, true, true);
             var extends = new List<string>();
             if (typeDef.parentIndex >= 0 && typeDef.parentIndex < il2Cpp.types.Length)
@@ -284,6 +314,8 @@ namespace Il2CppDumper
 
             var typeModel = new JsonDumpType
             {
+                image = imageName,
+                assembly = assemblyName,
                 fullName = fullName,
                 bases = extends,
                 attributes = typeAttributes
