@@ -427,6 +427,37 @@ namespace Il2CppDumper.Tests
             Assert.Contains("\"Player.Attack_0x1050\": { \"va\": \"0x1050\" }", js);
         }
 
+        private static (int exitCode, string stdout, string stderr) RunNode(params string[] args)
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("node")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            foreach (var arg in args)
+            {
+                psi.ArgumentList.Add(arg);
+            }
+            using var p = System.Diagnostics.Process.Start(psi)
+                ?? throw new InvalidOperationException("Failed to launch node process.");
+
+            var stdoutTask = p.StandardOutput.ReadToEndAsync();
+            var stderrTask = p.StandardError.ReadToEndAsync();
+            var exited = p.WaitForExit(30000);
+            if (!exited)
+            {
+                try { p.Kill(); } catch { }
+            }
+            p.WaitForExit();
+
+            var stdout = stdoutTask.GetAwaiter().GetResult();
+            var stderr = stderrTask.GetAwaiter().GetResult();
+
+            Assert.True(exited, $"Node process timed out after 30s. StdOut: {stdout}, StdErr: {stderr}");
+            return (p.ExitCode, stdout, stderr);
+        }
+
         [Fact]
         public void R1_Frida17Api_CompilesAndAttachesInNodeWithProcessFindModuleByName()
         {
@@ -488,16 +519,8 @@ console.log(""R1_SUCCESS"");
             File.WriteAllText(tempJs, harnessJs);
             try
             {
-                var psi = new System.Diagnostics.ProcessStartInfo("node", tempJs)
-                {
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false
-                };
-                using var p = System.Diagnostics.Process.Start(psi)!;
-                p.WaitForExit(5000);
-                var stdout = p.StandardOutput.ReadToEnd();
-                Assert.Equal(0, p.ExitCode);
+                var (exitCode, stdout, stderr) = RunNode(tempJs);
+                Assert.True(exitCode == 0, $"Node script failed with exit code {exitCode}. StdErr: {stderr}");
                 Assert.Contains("R1_SUCCESS", stdout);
             }
             finally
@@ -672,15 +695,8 @@ console.log(""R1_SUCCESS"");
             File.WriteAllText(tempJs, js);
             try
             {
-                var psi = new System.Diagnostics.ProcessStartInfo("node", $"-c \"{tempJs}\"")
-                {
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false
-                };
-                using var p = System.Diagnostics.Process.Start(psi)!;
-                p.WaitForExit(5000);
-                Assert.Equal(0, p.ExitCode);
+                var (exitCode, _, stderr) = RunNode("-c", tempJs);
+                Assert.True(exitCode == 0, $"Node syntax check failed with exit code {exitCode}. StdErr: {stderr}");
             }
             finally
             {
