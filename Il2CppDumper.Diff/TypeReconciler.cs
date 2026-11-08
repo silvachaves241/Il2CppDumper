@@ -13,21 +13,6 @@ namespace Il2CppDumper.Diff
         public string? PreferredScope => !string.IsNullOrEmpty(Image) ? Image : Assembly;
 
         public string FormatDisplayKey() => JsonDumpType.FormatKey(Image, Assembly, FullName);
-
-        public bool IsScopeCompatible(TypeIdentityKey other)
-        {
-            if (!string.IsNullOrEmpty(Image) && !string.IsNullOrEmpty(other.Image))
-            {
-                return string.Equals(Image, other.Image, StringComparison.Ordinal);
-            }
-
-            if (!string.IsNullOrEmpty(Assembly) && !string.IsNullOrEmpty(other.Assembly))
-            {
-                return string.Equals(Assembly, other.Assembly, StringComparison.Ordinal);
-            }
-
-            return false;
-        }
     }
 
     public class ReconciledType
@@ -64,102 +49,195 @@ namespace Il2CppDumper.Diff
             ValidateSingleSide(leftItems, "left");
             ValidateSingleSide(rightItems, "right");
 
-            var matchedLeft = new bool[leftItems.Count];
-            var matchedRight = new bool[rightItems.Count];
+            var leftByFullName = leftItems
+                .GroupBy(x => x.Key.FullName, StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+
+            var rightByFullName = rightItems
+                .GroupBy(x => x.Key.FullName, StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+
+            var allFullNames = leftByFullName.Keys
+                .Union(rightByFullName.Keys, StringComparer.Ordinal)
+                .OrderBy(x => x, StringComparer.Ordinal)
+                .ToList();
+
             var reconciled = new List<ReconciledType>();
-
-            // 1. Qualified matches: both sides have explicit attribution
-            for (int i = 0; i < leftItems.Count; i++)
-            {
-                var (leftKey, leftType) = leftItems[i];
-                if (!leftKey.HasAttribution) continue;
-
-                for (int j = 0; j < rightItems.Count; j++)
-                {
-                    if (matchedRight[j]) continue;
-                    var (rightKey, rightType) = rightItems[j];
-                    if (!rightKey.HasAttribution) continue;
-
-                    if (string.Equals(leftKey.FullName, rightKey.FullName, StringComparison.Ordinal) &&
-                        leftKey.IsScopeCompatible(rightKey))
-                    {
-                        matchedLeft[i] = true;
-                        matchedRight[j] = true;
-                        var image = rightType.image ?? leftType.image;
-                        var assembly = rightType.assembly ?? leftType.assembly;
-                        var key = JsonDumpType.FormatKey(image, assembly, rightKey.FullName);
-                        reconciled.Add(new ReconciledType(key, image, assembly, rightKey.FullName, leftType, rightType));
-                        break;
-                    }
-                }
-            }
-
-            // 2. Legacy matches: neither side has explicit attribution
-            for (int i = 0; i < leftItems.Count; i++)
-            {
-                if (matchedLeft[i]) continue;
-                var (leftKey, leftType) = leftItems[i];
-                if (leftKey.HasAttribution) continue;
-
-                for (int j = 0; j < rightItems.Count; j++)
-                {
-                    if (matchedRight[j]) continue;
-                    var (rightKey, rightType) = rightItems[j];
-                    if (rightKey.HasAttribution) continue;
-
-                    if (string.Equals(leftKey.FullName, rightKey.FullName, StringComparison.Ordinal))
-                    {
-                        matchedLeft[i] = true;
-                        matchedRight[j] = true;
-                        reconciled.Add(new ReconciledType(leftKey.FullName, null, null, leftKey.FullName, leftType, rightType));
-                        break;
-                    }
-                }
-            }
-
-            // 3. Mixed fallback: one side lacks attribution, other side has attribution.
-            // Allowed ONLY IF the match is strictly unique across both sets for that fullName.
-            var leftCountsByName = leftItems.GroupBy(x => x.Key.FullName, StringComparer.Ordinal)
-                .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
-            var rightCountsByName = rightItems.GroupBy(x => x.Key.FullName, StringComparer.Ordinal)
-                .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
-
             var ambiguousCollisions = new HashSet<string>(StringComparer.Ordinal);
 
-            for (int i = 0; i < leftItems.Count; i++)
+            foreach (var fullName in allFullNames)
             {
-                if (matchedLeft[i]) continue;
-                var (leftKey, leftType) = leftItems[i];
+                leftByFullName.TryGetValue(fullName, out var leftGroup);
+                rightByFullName.TryGetValue(fullName, out var rightGroup);
 
-                for (int j = 0; j < rightItems.Count; j++)
+                // Case 1: Present only on left (Removed)
+                if (rightGroup == null || rightGroup.Count == 0)
                 {
-                    if (matchedRight[j]) continue;
-                    var (rightKey, rightType) = rightItems[j];
-
-                    if (!string.Equals(leftKey.FullName, rightKey.FullName, StringComparison.Ordinal))
-                        continue;
-
-                    // If both have attribution, DO NOT fallback across explicitly different scopes
-                    if (leftKey.HasAttribution && rightKey.HasAttribution)
-                        continue;
-
-                    int totalLeft = leftCountsByName[leftKey.FullName];
-                    int totalRight = rightCountsByName[rightKey.FullName];
-
-                    if (totalLeft == 1 && totalRight == 1)
+                    foreach (var (key, type) in leftGroup!)
                     {
-                        matchedLeft[i] = true;
-                        matchedRight[j] = true;
-                        var image = rightType.image ?? leftType.image;
-                        var assembly = rightType.assembly ?? leftType.assembly;
-                        var key = JsonDumpType.FormatKey(image, assembly, leftKey.FullName);
-                        reconciled.Add(new ReconciledType(key, image, assembly, leftKey.FullName, leftType, rightType));
+                        var displayKey = JsonDumpType.FormatKey(type.image, type.assembly, fullName);
+                        reconciled.Add(new ReconciledType(displayKey, type.image, type.assembly, fullName, type, null));
+                    }
+                    continue;
+                }
+
+                // Case 2: Present only on right (Added)
+                if (leftGroup == null || leftGroup.Count == 0)
+                {
+                    foreach (var (key, type) in rightGroup)
+                    {
+                        var displayKey = JsonDumpType.FormatKey(type.image, type.assembly, fullName);
+                        reconciled.Add(new ReconciledType(displayKey, type.image, type.assembly, fullName, null, type));
+                    }
+                    continue;
+                }
+
+                // Case 3: Present on both sides — reconcile candidates sharing this fullName
+                var leftRemaining = new List<(TypeIdentityKey Key, JsonDumpType Type)>(leftGroup);
+                var rightRemaining = new List<(TypeIdentityKey Key, JsonDumpType Type)>(rightGroup);
+
+                // Pass 1: Exact image match (when both sides specify image)
+                for (int i = leftRemaining.Count - 1; i >= 0; i--)
+                {
+                    var left = leftRemaining[i];
+                    if (string.IsNullOrEmpty(left.Key.Image)) continue;
+
+                    for (int j = rightRemaining.Count - 1; j >= 0; j--)
+                    {
+                        var right = rightRemaining[j];
+                        if (string.IsNullOrEmpty(right.Key.Image)) continue;
+
+                        if (string.Equals(left.Key.Image, right.Key.Image, StringComparison.Ordinal))
+                        {
+                            var image = right.Type.image ?? left.Type.image;
+                            var assembly = right.Type.assembly ?? left.Type.assembly;
+                            var displayKey = JsonDumpType.FormatKey(image, assembly, fullName);
+                            reconciled.Add(new ReconciledType(displayKey, image, assembly, fullName, left.Type, right.Type));
+
+                            leftRemaining.RemoveAt(i);
+                            rightRemaining.RemoveAt(j);
+                            break;
+                        }
+                    }
+                }
+
+                // Pass 2: Exact assembly match (when neither specifies image, but both specify assembly)
+                for (int i = leftRemaining.Count - 1; i >= 0; i--)
+                {
+                    var left = leftRemaining[i];
+                    if (!string.IsNullOrEmpty(left.Key.Image) || string.IsNullOrEmpty(left.Key.Assembly)) continue;
+
+                    for (int j = rightRemaining.Count - 1; j >= 0; j--)
+                    {
+                        var right = rightRemaining[j];
+                        if (!string.IsNullOrEmpty(right.Key.Image) || string.IsNullOrEmpty(right.Key.Assembly)) continue;
+
+                        if (string.Equals(left.Key.Assembly, right.Key.Assembly, StringComparison.Ordinal))
+                        {
+                            var displayKey = JsonDumpType.FormatKey(null, left.Key.Assembly, fullName);
+                            reconciled.Add(new ReconciledType(displayKey, null, left.Key.Assembly, fullName, left.Type, right.Type));
+
+                            leftRemaining.RemoveAt(i);
+                            rightRemaining.RemoveAt(j);
+                            break;
+                        }
+                    }
+                }
+
+                // Pass 3: Full legacy match (neither side specifies image nor assembly)
+                for (int i = leftRemaining.Count - 1; i >= 0; i--)
+                {
+                    var left = leftRemaining[i];
+                    if (left.Key.HasAttribution) continue;
+
+                    for (int j = rightRemaining.Count - 1; j >= 0; j--)
+                    {
+                        var right = rightRemaining[j];
+                        if (right.Key.HasAttribution) continue;
+
+                        reconciled.Add(new ReconciledType(fullName, null, null, fullName, left.Type, right.Type));
+
+                        leftRemaining.RemoveAt(i);
+                        rightRemaining.RemoveAt(j);
                         break;
                     }
-                    else
+                }
+
+                // Pass 4: Partial assembly fallback (one specifies image and assembly, other specifies only assembly)
+                // Group remaining unmatched by assembly: only match if strictly unique (1 left, 1 right in that assembly)
+                var remainingAssemblies = leftRemaining.Select(x => x.Key.Assembly)
+                    .Concat(rightRemaining.Select(x => x.Key.Assembly))
+                    .Where(a => !string.IsNullOrEmpty(a))
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
+
+                foreach (var asm in remainingAssemblies)
+                {
+                    var leftAsmMatches = leftRemaining.Where(x => string.Equals(x.Key.Assembly, asm, StringComparison.Ordinal)).ToList();
+                    var rightAsmMatches = rightRemaining.Where(x => string.Equals(x.Key.Assembly, asm, StringComparison.Ordinal)).ToList();
+
+                    if (leftAsmMatches.Count > 0 && rightAsmMatches.Count > 0)
                     {
-                        ambiguousCollisions.Add(leftKey.FullName);
+                        if (leftAsmMatches.Count == 1 && rightAsmMatches.Count == 1)
+                        {
+                            var left = leftAsmMatches[0];
+                            var right = rightAsmMatches[0];
+
+                            var image = right.Type.image ?? left.Type.image;
+                            var assembly = right.Type.assembly ?? left.Type.assembly;
+                            var displayKey = JsonDumpType.FormatKey(image, assembly, fullName);
+                            reconciled.Add(new ReconciledType(displayKey, image, assembly, fullName, left.Type, right.Type));
+
+                            leftRemaining.Remove(left);
+                            rightRemaining.Remove(right);
+                        }
+                        else
+                        {
+                            ambiguousCollisions.Add(fullName);
+                        }
                     }
+                }
+
+                // Pass 5: Unattributed mixed fallback (legacy dump vs modern dump with attribution)
+                // Only allow fallback if the type is strictly unique across both sets (1 left, 1 right in total for this fullName)
+                if (leftRemaining.Count > 0 && rightRemaining.Count > 0)
+                {
+                    bool leftHasUnattributed = leftRemaining.Any(x => !x.Key.HasAttribution);
+                    bool rightHasUnattributed = rightRemaining.Any(x => !x.Key.HasAttribution);
+
+                    if (leftHasUnattributed || rightHasUnattributed)
+                    {
+                        if (leftGroup.Count == 1 && rightGroup.Count == 1 && leftRemaining.Count == 1 && rightRemaining.Count == 1)
+                        {
+                            var left = leftRemaining[0];
+                            var right = rightRemaining[0];
+
+                            var image = right.Type.image ?? left.Type.image;
+                            var assembly = right.Type.assembly ?? left.Type.assembly;
+                            var displayKey = JsonDumpType.FormatKey(image, assembly, fullName);
+                            reconciled.Add(new ReconciledType(displayKey, image, assembly, fullName, left.Type, right.Type));
+
+                            leftRemaining.Clear();
+                            rightRemaining.Clear();
+                        }
+                        else
+                        {
+                            ambiguousCollisions.Add(fullName);
+                        }
+                    }
+                }
+
+                // Pass 6: Any remaining unmatched items are added or removed
+                foreach (var left in leftRemaining)
+                {
+                    var displayKey = JsonDumpType.FormatKey(left.Type.image, left.Type.assembly, fullName);
+                    reconciled.Add(new ReconciledType(displayKey, left.Type.image, left.Type.assembly, fullName, left.Type, null));
+                }
+
+                foreach (var right in rightRemaining)
+                {
+                    var displayKey = JsonDumpType.FormatKey(right.Type.image, right.Type.assembly, fullName);
+                    reconciled.Add(new ReconciledType(displayKey, right.Type.image, right.Type.assembly, fullName, null, right.Type));
                 }
             }
 
@@ -167,27 +245,6 @@ namespace Il2CppDumper.Diff
             {
                 var sortedAmbiguous = ambiguousCollisions.OrderBy(x => x, StringComparer.Ordinal);
                 throw new InvalidDataException($"Ambiguous type collision between dumps: duplicate type(s) with partial or missing attribution cannot be uniquely matched: {string.Join(", ", sortedAmbiguous)}");
-            }
-
-            // 4. Unmatched remaining items (Removed or Added)
-            for (int i = 0; i < leftItems.Count; i++)
-            {
-                if (!matchedLeft[i])
-                {
-                    var (leftKey, leftType) = leftItems[i];
-                    var key = JsonDumpType.FormatKey(leftType.image, leftType.assembly, leftKey.FullName);
-                    reconciled.Add(new ReconciledType(key, leftType.image, leftType.assembly, leftKey.FullName, leftType, null));
-                }
-            }
-
-            for (int j = 0; j < rightItems.Count; j++)
-            {
-                if (!matchedRight[j])
-                {
-                    var (rightKey, rightType) = rightItems[j];
-                    var key = JsonDumpType.FormatKey(rightType.image, rightType.assembly, rightKey.FullName);
-                    reconciled.Add(new ReconciledType(key, rightType.image, rightType.assembly, rightKey.FullName, null, rightType));
-                }
             }
 
             return reconciled;

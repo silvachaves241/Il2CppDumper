@@ -591,5 +591,181 @@ namespace Il2CppDumper.Tests
             Assert.True(drift.HasDrift);
             Assert.Equal(2, drift.structs.Count);
         }
+
+        [Fact]
+        public void OrderIndependence_ExactMatchTakesPrecedenceOverPartialMatch()
+        {
+            var itemA = new JsonDumpType
+            {
+                image = "A.dll",
+                assembly = "Shared",
+                fullName = "Ns.Player",
+                fields = new() { new() { name = "hp", type = "int", offset = "0x10", isStatic = false } }
+            };
+
+            var itemB = new JsonDumpType
+            {
+                image = "B.dll",
+                assembly = "Shared",
+                fullName = "Ns.Player",
+                fields = new() { new() { name = "hp", type = "float", offset = "0x40", isStatic = false } }
+            };
+
+            var itemPartial = new JsonDumpType
+            {
+                image = null,
+                assembly = "Shared",
+                fullName = "Ns.Player",
+                fields = new() { new() { name = "hp", type = "float", offset = "0x40", isStatic = false } }
+            };
+
+            var left = new JsonDumpModel { types = new List<JsonDumpType> { itemA, itemB } };
+            var rightPartialFirst = new JsonDumpModel { types = new List<JsonDumpType> { itemPartial, itemA } };
+            var rightExactFirst = new JsonDumpModel { types = new List<JsonDumpType> { itemA, itemPartial } };
+
+            // 1. Partial first in list
+            var diff1 = DumpDiffer.Compare(left, rightPartialFirst);
+            Assert.False(diff1.HasDifferences);
+            Assert.Empty(diff1.types.added);
+            Assert.Empty(diff1.types.removed);
+            Assert.Empty(diff1.types.changed);
+
+            var drift1 = FieldOffsetDiff.Compare(left, rightPartialFirst);
+            Assert.False(drift1.HasDrift);
+            Assert.Empty(drift1.structs);
+
+            // 2. Exact first in list
+            var diff2 = DumpDiffer.Compare(left, rightExactFirst);
+            Assert.False(diff2.HasDifferences);
+            Assert.Empty(diff2.types.added);
+            Assert.Empty(diff2.types.removed);
+            Assert.Empty(diff2.types.changed);
+
+            var drift2 = FieldOffsetDiff.Compare(left, rightExactFirst);
+            Assert.False(drift2.HasDrift);
+            Assert.Empty(drift2.structs);
+        }
+
+        [Fact]
+        public void PartialAssemblyMatch_AmbiguousAgainstMultipleCandidates_ThrowsInvalidDataException_ExitCode2()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "partial-ambig-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var left = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new() { image = null, assembly = "Shared", fullName = "Ns.Player", fields = new() { new() { name = "hp", type = "int", offset = "0x10" } } }
+                    }
+                };
+
+                var right = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new() { image = "A.dll", assembly = "Shared", fullName = "Ns.Player", fields = new() { new() { name = "hp", type = "int", offset = "0x10" } } },
+                        new() { image = "B.dll", assembly = "Shared", fullName = "Ns.Player", fields = new() { new() { name = "hp", type = "float", offset = "0x40" } } }
+                    }
+                };
+
+                var leftPath = Path.Combine(tempDir, "left.json");
+                var rightPath = Path.Combine(tempDir, "right.json");
+                var diffPath = Path.Combine(tempDir, "diff.json");
+                var driftPath = Path.Combine(tempDir, "drift.json");
+
+                File.WriteAllText(leftPath, JsonSerializer.Serialize(left, JsonDumpGenerator.JsonOptions));
+                File.WriteAllText(rightPath, JsonSerializer.Serialize(right, JsonDumpGenerator.JsonOptions));
+
+                using var diffLog = new StringWriter();
+                var diffExit = DumpDiffer.Execute(leftPath, rightPath, diffPath, diffLog);
+                Assert.Equal(2, diffExit);
+                Assert.Contains("ERROR: Ambiguous type collision", diffLog.ToString());
+                Assert.Contains("Ns.Player", diffLog.ToString());
+
+                using var driftLog = new StringWriter();
+                var driftExit = FieldOffsetDiff.Execute(leftPath, rightPath, driftPath, driftLog);
+                Assert.Equal(2, driftExit);
+                Assert.Contains("ERROR: Ambiguous type collision", driftLog.ToString());
+                Assert.Contains("Ns.Player", driftLog.ToString());
+
+                var exDiff = Assert.Throws<InvalidDataException>(() => DumpDiffer.Compare(left, right));
+                Assert.Contains("Ambiguous type collision", exDiff.Message);
+                Assert.Contains("Ns.Player", exDiff.Message);
+
+                var exDrift = Assert.Throws<InvalidDataException>(() => FieldOffsetDiff.Compare(left, right));
+                Assert.Contains("Ambiguous type collision", exDrift.Message);
+                Assert.Contains("Ns.Player", exDrift.Message);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void PartialAssemblyMatch_Inverted_AmbiguousAgainstMultipleCandidates_ThrowsInvalidDataException_ExitCode2()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "partial-ambig-inv-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var left = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new() { image = "A.dll", assembly = "Shared", fullName = "Ns.Player", fields = new() { new() { name = "hp", type = "int", offset = "0x10" } } },
+                        new() { image = "B.dll", assembly = "Shared", fullName = "Ns.Player", fields = new() { new() { name = "hp", type = "float", offset = "0x40" } } }
+                    }
+                };
+
+                var right = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new() { image = null, assembly = "Shared", fullName = "Ns.Player", fields = new() { new() { name = "hp", type = "int", offset = "0x10" } } }
+                    }
+                };
+
+                var leftPath = Path.Combine(tempDir, "left.json");
+                var rightPath = Path.Combine(tempDir, "right.json");
+                var diffPath = Path.Combine(tempDir, "diff.json");
+                var driftPath = Path.Combine(tempDir, "drift.json");
+
+                File.WriteAllText(leftPath, JsonSerializer.Serialize(left, JsonDumpGenerator.JsonOptions));
+                File.WriteAllText(rightPath, JsonSerializer.Serialize(right, JsonDumpGenerator.JsonOptions));
+
+                using var diffLog = new StringWriter();
+                var diffExit = DumpDiffer.Execute(leftPath, rightPath, diffPath, diffLog);
+                Assert.Equal(2, diffExit);
+                Assert.Contains("ERROR: Ambiguous type collision", diffLog.ToString());
+                Assert.Contains("Ns.Player", diffLog.ToString());
+
+                using var driftLog = new StringWriter();
+                var driftExit = FieldOffsetDiff.Execute(leftPath, rightPath, driftPath, driftLog);
+                Assert.Equal(2, driftExit);
+                Assert.Contains("ERROR: Ambiguous type collision", driftLog.ToString());
+                Assert.Contains("Ns.Player", driftLog.ToString());
+
+                var exDiff = Assert.Throws<InvalidDataException>(() => DumpDiffer.Compare(left, right));
+                Assert.Contains("Ambiguous type collision", exDiff.Message);
+                Assert.Contains("Ns.Player", exDiff.Message);
+
+                var exDrift = Assert.Throws<InvalidDataException>(() => FieldOffsetDiff.Compare(left, right));
+                Assert.Contains("Ambiguous type collision", exDrift.Message);
+                Assert.Contains("Ns.Player", exDrift.Message);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
     }
 }
