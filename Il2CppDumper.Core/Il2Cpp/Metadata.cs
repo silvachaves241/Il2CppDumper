@@ -904,9 +904,11 @@ namespace Il2CppDumper
             }
         }
 
+        private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+
         public bool TryGetStringLiteral(uint index, out string value, out int dataIndex, out int length)
         {
-            return TryGetStringLiteral(index, out value, out dataIndex, out length, out _, out _);
+            return TryGetStringLiteral(index, out value, out dataIndex, out length, out _, out _, out _);
         }
 
         public bool TryGetStringLiteral(
@@ -917,11 +919,24 @@ namespace Il2CppDumper
             out string rawBase64,
             out string decryptorId)
         {
+            return TryGetStringLiteral(index, out value, out dataIndex, out length, out rawBase64, out decryptorId, out _);
+        }
+
+        public bool TryGetStringLiteral(
+            uint index,
+            out string value,
+            out int dataIndex,
+            out int length,
+            out string rawBase64,
+            out string decryptorId,
+            out bool isInvalidUtf8)
+        {
             value = string.Empty;
             dataIndex = -1;
             length = 0;
             rawBase64 = null;
             decryptorId = null;
+            isInvalidUtf8 = false;
 
             if (stringLiterals == null || index >= stringLiterals.Length)
             {
@@ -991,7 +1006,19 @@ namespace Il2CppDumper
             {
                 Position = (ulong)dataOffset + (ulong)stringLiteral.dataIndex;
                 var rawBytes = ReadBytes(length);
-                var rawText = Encoding.UTF8.GetString(rawBytes);
+
+                bool validUtf8;
+                string rawText;
+                try
+                {
+                    rawText = StrictUtf8.GetString(rawBytes);
+                    validUtf8 = true;
+                }
+                catch (DecoderFallbackException)
+                {
+                    rawText = Encoding.UTF8.GetString(rawBytes);
+                    validUtf8 = false;
+                }
 
                 if (StringDecryptor != null)
                 {
@@ -1011,6 +1038,7 @@ namespace Il2CppDumper
                         var decrypted = StringDecryptor.Decrypt(index, rawBytes);
                         value = decrypted;
                         decryptorId = safeId;
+                        isInvalidUtf8 = false;
                     }
                     catch (Exception ex)
                     {
@@ -1026,11 +1054,17 @@ namespace Il2CppDumper
                         }
                         value = rawText;
                         decryptorId = null;
+                        isInvalidUtf8 = !validUtf8;
                     }
                 }
                 else
                 {
                     value = rawText;
+                    if (!validUtf8)
+                    {
+                        isInvalidUtf8 = true;
+                        rawBase64 = Convert.ToBase64String(rawBytes);
+                    }
                 }
 
                 return true;
@@ -1070,7 +1104,7 @@ namespace Il2CppDumper
                     dataIndex = stringLiteral?.dataIndex ?? 0
                 };
 
-                bool hasLit = TryGetStringLiteral(i, out var val, out var dIdx, out var len, out var raw, out var decryptor);
+                bool hasLit = TryGetStringLiteral(i, out var val, out var dIdx, out var len, out var raw, out var decryptor, out var isInvalidUtf8);
                 if (!hasLit)
                 {
                     failedCount++;
@@ -1090,6 +1124,18 @@ namespace Il2CppDumper
                     record.length = len;
                     record.raw = raw;
                     record.decryptor = decryptor;
+
+                    if (isInvalidUtf8)
+                    {
+                        failedCount++;
+                        failures.Add(new RunManifestWarningItem
+                        {
+                            Category = "stringLiteral",
+                            Member = $"stringLiteral[{i}]",
+                            RawBytes = raw,
+                            Detail = $"String literal index {i} at dataIndex {dIdx} (length {len}) contains invalid UTF-8 byte sequence"
+                        });
+                    }
                 }
 
                 result.Add(record);
