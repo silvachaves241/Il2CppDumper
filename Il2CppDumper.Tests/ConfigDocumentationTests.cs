@@ -93,6 +93,8 @@ namespace Il2CppDumper.Tests
             Assert.Contains("DumpResult", content);
             Assert.Contains("Dumper.Dump", content);
             Assert.Contains("`RequireAnyKey`", content);
+            Assert.Contains("`Outputs`", content);
+            Assert.Contains("`ProducedFiles`", content);
         }
 
         [Fact]
@@ -109,6 +111,8 @@ namespace Il2CppDumper.Tests
             Assert.Contains("DumpResult", content);
             Assert.Contains("Dumper.Dump", content);
             Assert.Contains("`RequireAnyKey`", content);
+            Assert.Contains("`Outputs`", content);
+            Assert.Contains("`ProducedFiles`", content);
         }
 
         [Fact]

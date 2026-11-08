@@ -141,6 +141,8 @@ else
 ```
 
 > **Note on `RequireAnyKey`:** When invoking `Il2CppDumper.Core` in-process, `Config.RequireAnyKey` has **no effect**. The library never blocks or prompts for key presses during unattended or automated runs.
+>
+> **Note on `Outputs` and `ProducedFiles`:** `DumpResult.Outputs` (mapping artifact identifier to its file or directory path) and `DumpResult.ProducedFiles` (concrete list of written file paths) contain only artifacts produced or updated during the current execution. When reusing an output directory across multiple runs, stale files from prior executions are excluded from the current run's results without deleting unrelated user files.
 
 ### Outputs
 
