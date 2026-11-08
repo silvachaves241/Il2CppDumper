@@ -138,6 +138,8 @@ else
 ```
 
 > **关于 `RequireAnyKey` 的说明：** 在进程内直接调用 `Il2CppDumper.Core` 时，`Config.RequireAnyKey` 配置项**完全不生效**。类库在无人值守或自动化调用路径中绝不会因等待按键而产生阻塞。
+>
+> **关于 `Outputs` 与 `ProducedFiles` 的说明：** `DumpResult.Outputs`（制品标识符到文件或目录路径的映射）与 `DumpResult.ProducedFiles`（具体写入的文件路径列表）仅包含当前次执行实际生成或更新的文件。当跨多次调用复用同一输出目录时，先前执行遗留的陈旧制品会自动从当前结果中排除，且不会擅自删除用户的不相关文件。
 
 ### 输出文件
 

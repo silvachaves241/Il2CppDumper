@@ -9,8 +9,19 @@ namespace Il2CppDumper.Core
         public bool Success;
         public string? Error;           // mirrors the #8 failure text
         public IReadOnlyList<string> Warnings;
-        public IReadOnlyDictionary<string, string> Outputs; // artifact → path
-        public IReadOnlyList<string> ProducedFiles;        // files written in this specific execution
+
+        /// <summary>
+        /// Key-value mapping of artifact identifier to its full path on disk (e.g. "dump.cs" -> "C:\...\dump.cs",
+        /// "DummyDll" -> "C:\...\DummyDll"). Contains only artifacts produced or updated in the current execution.
+        /// Stale artifacts from previous runs in a reused directory are excluded.
+        /// </summary>
+        public IReadOnlyDictionary<string, string> Outputs;
+
+        /// <summary>
+        /// Exact list of individual file paths written to disk during this specific execution, including
+        /// individual assembly DLLs within DummyDll and diagnostic/provenance sidecars.
+        /// </summary>
+        public IReadOnlyList<string> ProducedFiles;
 
         public DumpResult()
         {

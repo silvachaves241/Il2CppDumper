@@ -66,6 +66,24 @@ namespace Il2CppDumper.Core
                 var writtenFiles = new List<string>();
                 DumpMetadata? dumpMetadata = null;
 
+                DumpResult CreateResult(bool success, string? error)
+                {
+                    PopulateOutputs(outputDir, writtenFiles, outputs);
+                    var produced = writtenFiles
+                        .Where(File.Exists)
+                        .Select(f => Path.GetFullPath(Path.IsPathRooted(f) ? f : Path.Combine(outputDir, f)))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    return new DumpResult(
+                        success,
+                        success ? null : error ?? "ERROR: An error occurred while processing.",
+                        warnings,
+                        outputs,
+                        produced
+                    );
+                }
+
                 if (Directory.Exists(outputDir))
                 {
                     if (config.GenerateRunManifest)
@@ -139,7 +157,6 @@ namespace Il2CppDumper.Core
                         if (manifest != null)
                         {
                             var manifestPath = Path.Combine(outputDir, RunManifestWriter.FileName);
-                            outputs["run-manifest.json"] = manifestPath;
                             writtenFiles.Add(manifestPath);
                         }
                     }
@@ -159,8 +176,7 @@ namespace Il2CppDumper.Core
                     var msg = $"ERROR: Executable file not found: {il2cppPath}";
                     CoreLogger.WriteLine(msg);
                     WriteRunManifest(false);
-                    PopulateOutputs(outputDir, outputs);
-                    return new DumpResult(false, msg, warnings, outputs);
+                    return CreateResult(false, msg);
                 }
 
                 if (config.GenerateProtectionReport)
@@ -170,7 +186,6 @@ namespace Il2CppDumper.Core
                         var writtenReportPath = ProtectionReportWriter.Write(outputDir, il2cppPath, metadataPath, config);
                         if (writtenReportPath != null && File.Exists(writtenReportPath))
                         {
-                            outputs[ProtectionReportWriter.FileName] = writtenReportPath;
                             writtenFiles.Add(writtenReportPath);
                         }
                     }
@@ -185,8 +200,7 @@ namespace Il2CppDumper.Core
                     var msg = "ERROR: Metadata file not found or encrypted.";
                     CoreLogger.WriteLine(msg);
                     WriteRunManifest(false);
-                    PopulateOutputs(outputDir, outputs);
-                    return new DumpResult(false, msg, warnings, outputs);
+                    return CreateResult(false, msg);
                 }
 
                 try
@@ -210,8 +224,7 @@ namespace Il2CppDumper.Core
                             var msg = "ERROR: Metadata file not found or encrypted.";
                             CoreLogger.WriteLine(msg);
                             WriteRunManifest(false);
-                            PopulateOutputs(outputDir, outputs);
-                            return new DumpResult(false, msg, warnings, outputs);
+                            return CreateResult(false, msg);
                         }
                     }
                 }
@@ -220,15 +233,13 @@ namespace Il2CppDumper.Core
                     var msg = e.ToString();
                     CoreLogger.WriteLine(msg);
                     WriteRunManifest(false);
-                    PopulateOutputs(outputDir, outputs);
-                    return new DumpResult(false, msg, warnings, outputs);
+                    return CreateResult(false, msg);
                 }
 
                 try
                 {
                     dumpMetadata = DumpMetadataWriter.WriteInitial(outputDir, il2cppPath, metadataPath, config);
                     writtenFiles.Add(Path.Combine(outputDir, DumpMetadataWriter.FileName));
-                    PopulateOutputs(outputDir, outputs);
                 }
                 catch (Exception e)
                 {
@@ -236,8 +247,7 @@ namespace Il2CppDumper.Core
                     var msg = $"ERROR: Failed to write dump metadata: {e.Message}";
                     CoreLogger.WriteLine(msg);
                     WriteRunManifest(false);
-                    PopulateOutputs(outputDir, outputs);
-                    return new DumpResult(false, msg, warnings, outputs);
+                    return CreateResult(false, msg);
                 }
 
                 Metadata? metadata = null;
@@ -247,29 +257,20 @@ namespace Il2CppDumper.Core
                     if (!Init(il2cppPath, metadataPath, config, out metadata, out il2Cpp, outputDir, dumpMetadata, request))
                     {
                         WriteRunManifest(false);
-                        PopulateOutputs(outputDir, outputs);
-                        return new DumpResult(false, "ERROR: An error occurred while processing.", warnings, outputs);
+                        return CreateResult(false, "ERROR: An error occurred while processing.");
                     }
 
                     var dumpSuccess = ExecuteDump(metadata, il2Cpp, config, outputDir, out var dumpError, out counts, out manifestWarnings, out var execWrittenFiles, Path.GetFileName(request.ExecutablePath));
                     writtenFiles.AddRange(execWrittenFiles);
                     WriteRunManifest(dumpSuccess);
-                    PopulateOutputs(outputDir, outputs);
 
-                    return new DumpResult(
-                        dumpSuccess,
-                        dumpSuccess ? null : dumpError ?? "ERROR: An error occurred while processing.",
-                        warnings,
-                        outputs,
-                        writtenFiles.Where(File.Exists).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
-                    );
+                    return CreateResult(dumpSuccess, dumpError);
                 }
                 catch (Exception e)
                 {
                     CoreLogger.WriteLine(e);
                     WriteRunManifest(false);
-                    PopulateOutputs(outputDir, outputs);
-                    return new DumpResult(false, e.ToString(), warnings, outputs);
+                    return CreateResult(false, e.ToString());
                 }
                 finally
                 {
@@ -597,6 +598,7 @@ namespace Il2CppDumper.Core
                 try
                 {
                     DummyAssemblyExporter.Export(executor, outputDir, config.DummyDllAddToken, writtenFiles);
+                    writtenFiles.Add(Path.Combine(outputDir, "DummyDll"));
 
                     CoreLogger.WriteLine("Done!");
                 }
@@ -719,12 +721,21 @@ namespace Il2CppDumper.Core
             return ExecuteDump(metadata, il2Cpp, config, outputDir, out _);
         }
 
-        private static void PopulateOutputs(string outputDir, Dictionary<string, string> outputs)
+        private static void PopulateOutputs(string outputDir, IEnumerable<string> writtenFiles, Dictionary<string, string> outputs)
         {
+            outputs.Clear();
+            var fullOutputDir = Path.GetFullPath(outputDir);
+            var writtenSet = new HashSet<string>(
+                writtenFiles
+                    .Where(f => !string.IsNullOrWhiteSpace(f))
+                    .Select(f => Path.GetFullPath(Path.IsPathRooted(f) ? f : Path.Combine(fullOutputDir, f))),
+                StringComparer.OrdinalIgnoreCase);
+
             var candidates = new[]
             {
                 DumpMetadataWriter.FileName,
                 ProtectionReportWriter.FileName,
+                RunManifestWriter.FileName,
                 "dump.cs",
                 "dump.json",
                 "script.json",
@@ -740,10 +751,21 @@ namespace Il2CppDumper.Core
 
             foreach (var name in candidates)
             {
-                var fullPath = Path.Combine(outputDir, name);
-                if (name == "DummyDll" ? Directory.Exists(fullPath) : File.Exists(fullPath))
+                var fullPath = Path.GetFullPath(Path.Combine(fullOutputDir, name));
+                if (name == "DummyDll")
                 {
-                    outputs[name] = fullPath;
+                    var prefix = fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                    if (Directory.Exists(fullPath) && (writtenSet.Contains(fullPath) || writtenSet.Any(w => w.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))))
+                    {
+                        outputs[name] = fullPath;
+                    }
+                }
+                else
+                {
+                    if (writtenSet.Contains(fullPath) && File.Exists(fullPath))
+                    {
+                        outputs[name] = fullPath;
+                    }
                 }
             }
         }
