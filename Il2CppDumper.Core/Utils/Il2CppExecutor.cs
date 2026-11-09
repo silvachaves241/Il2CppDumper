@@ -306,7 +306,7 @@ namespace Il2CppDumper
             }
 
             var combinedState = new Dictionary<Il2CppTypeDefinition, byte>();
-            var fallbackCyclePruned = new Dictionary<Il2CppTypeDefinition, Il2CppTypeDefinition>();
+            var fallbackCyclePruned = new Dictionary<Il2CppTypeDefinition, (Il2CppTypeDefinition parent, bool purelyFallbacks)>();
 
             foreach (var def in allDefs)
             {
@@ -332,6 +332,8 @@ namespace Il2CppDumper
                                 cycleNodes.Add(path[i]);
                             }
 
+                            bool purelyFallbacks = cycleNodes.All(n => !declaredEdges.ContainsKey(n));
+
                             foreach (var node in cycleNodes)
                             {
                                 if (!declaredEdges.ContainsKey(node))
@@ -340,7 +342,7 @@ namespace Il2CppDumper
                                     combinedMap[node] = null;
                                     if (parent != null)
                                     {
-                                        fallbackCyclePruned[node] = parent;
+                                        fallbackCyclePruned[node] = (parent, purelyFallbacks);
                                     }
                                 }
                             }
@@ -407,13 +409,20 @@ namespace Il2CppDumper
                                 CoreLogger.LogWarning($"WARNING: Ambiguous declaring type for nested type '{childName}': multiple candidate parents found ({parentNames}) with no valid declaringTypeIndex.");
                             }
                         }
-                        else if (fallbackCyclePruned.TryGetValue(def, out var prunedParent))
+                        else if (fallbackCyclePruned.TryGetValue(def, out var prunedInfo))
                         {
                             if (warnedDefinitions.Add(def))
                             {
                                 var childName = metadata.GetStringFromIndex(def.nameIndex);
-                                var parentName = metadata.GetStringFromIndex(prunedParent.nameIndex);
-                                CoreLogger.LogWarning($"WARNING: Cyclic fallback parent detected for '{childName}' (candidate parent '{parentName}' forms a cycle of fallback edges). Preserving as unparented root definition.");
+                                var parentName = metadata.GetStringFromIndex(prunedInfo.parent.nameIndex);
+                                if (prunedInfo.purelyFallbacks)
+                                {
+                                    CoreLogger.LogWarning($"WARNING: Cyclic fallback parent detected for '{childName}' (candidate parent '{parentName}' forms a cycle of fallback edges). Preserving as unparented root definition.");
+                                }
+                                else
+                                {
+                                    CoreLogger.LogWarning($"WARNING: Candidate parent '{parentName}' for '{childName}' rejected: creates a cycle with an established declared parent chain.");
+                                }
                             }
                         }
                     }

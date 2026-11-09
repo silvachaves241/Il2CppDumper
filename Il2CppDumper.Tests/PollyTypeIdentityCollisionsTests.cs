@@ -1750,5 +1750,142 @@ namespace Il2CppDumper.Tests
                 Assert.Contains(warnings, w => w.Contains("Cyclic declaring type detected for 'PolicyBuilder' with no unique acyclic parent candidate. Preserving as unparented root definition."));
             }
         }
+
+        [Fact]
+        public void PollyDump_DeclaredEdgeWithTwoFallbacksClosingMixedCycle_PreservesDeclaredEdgeAndEmitsCorrectDiagnostics()
+        {
+            // Reproduces:
+            // A -> B in declaringTypeIndex (declared edge)
+            // B -> C -> A in nestedTypeIndices (two fallback edges closing a mixed cycle)
+            // Parent graph: A -> B -> C -> A
+            // The declared edge A -> B MUST be preserved.
+            // The two fallback edges MUST be discarded, leaving B and C at root.
+            // Diagnostics MUST identify that the candidates were rejected for creating a cycle with an established declared parent chain
+            // (MUST NOT incorrectly claim they form "a cycle of fallback edges").
+            var m = CreateEmptyMetadata();
+            uint strPos = 0;
+            AddString(m, "", ref strPos);
+            var imgName = AddString(m, "MixedAssembly.dll", ref strPos);
+            var asmName = AddString(m, "MixedAssembly", ref strPos);
+            var nsName = AddString(m, "TestNs", ref strPos);
+
+            var typeAName = AddString(m, "TypeA", ref strPos);
+            var typeBName = AddString(m, "TypeB", ref strPos);
+            var typeCName = AddString(m, "TypeC", ref strPos);
+
+            m.assemblyDefs = new[]
+            {
+                new Il2CppAssemblyDefinition { aname = new Il2CppAssemblyNameDefinition { nameIndex = asmName } }
+            };
+            m.imageDefs = new[]
+            {
+                new Il2CppImageDefinition { nameIndex = imgName, assemblyIndex = 0, typeStart = 0, typeCount = 3 }
+            };
+
+            // Index 0: TypeA declares parent TypeB (1)
+            // Index 1: TypeB has declaringTypeIndex = -1, candidate parent TypeC (2) because TypeC lists TypeB
+            // Index 2: TypeC has declaringTypeIndex = -1, candidate parent TypeA (0) because TypeA lists TypeC
+            var typeDefs = new[]
+            {
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = typeAName,
+                    namespaceIndex = nsName,
+                    declaringTypeIndex = 1, // Declared parent TypeB
+                    parentIndex = -1,
+                    genericContainerIndex = -1,
+                    nestedTypesStart = 1,
+                    nested_type_count = 1, // Claims TypeC (2) as nested child
+                    flags = TYPE_ATTRIBUTE_NESTED_PUBLIC
+                },
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = typeBName,
+                    namespaceIndex = nsName,
+                    declaringTypeIndex = -1, // No declared parent
+                    parentIndex = -1,
+                    genericContainerIndex = -1,
+                    nestedTypesStart = 0,
+                    nested_type_count = 0,
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                },
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = typeCName,
+                    namespaceIndex = nsName,
+                    declaringTypeIndex = -1, // No declared parent
+                    parentIndex = -1,
+                    genericContainerIndex = -1,
+                    nestedTypesStart = 0,
+                    nested_type_count = 1, // Claims TypeB (1) as nested child
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                }
+            };
+
+            m.typeDefs = typeDefs;
+            // nestedTypeIndices:
+            // 0: index 1 (TypeB, nested under TypeC)
+            // 1: index 2 (TypeC, nested under TypeA)
+            m.nestedTypeIndices = new[] { 1, 2 };
+            m.genericParameters = Array.Empty<Il2CppGenericParameter>();
+            m.genericContainers = Array.Empty<Il2CppGenericContainer>();
+            m.methodDefs = Array.Empty<Il2CppMethodDefinition>();
+            m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
+            m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
+            m.fieldDefs = Array.Empty<Il2CppFieldDefinition>();
+
+            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[8192]), 0)
+            {
+                Version = 16,
+                methodPointers = Array.Empty<ulong>(),
+                types = new[]
+                {
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 0 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 1 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 2 } }
+                }
+            };
+
+            using (m) using (il2Cpp)
+            {
+                var exec = new Il2CppExecutor(m, il2Cpp);
+                var warnings = new List<string>();
+                JsonDumpModel model;
+                using var sw = new StringWriter();
+                using (CoreLogger.Scope(sw, warnings))
+                {
+                    var parentA = exec.GetParentTypeDefinition(typeDefs[0]);
+                    var parentB = exec.GetParentTypeDefinition(typeDefs[1]);
+                    var parentC = exec.GetParentTypeDefinition(typeDefs[2]);
+
+                    // Declared edge A -> B preserved!
+                    Assert.Same(typeDefs[1], parentA);
+
+                    // Fallbacks discarded, B and C stay at root
+                    Assert.Null(parentB);
+                    Assert.Null(parentC);
+
+                    model = JsonDumpGenerator.Create(exec, new Config());
+                }
+
+                // Final tree: TypeB at root containing TypeA; TypeC at root
+                var typeBModel = model.types.FirstOrDefault(t => t.fullName == "TestNs.TypeB");
+                Assert.NotNull(typeBModel);
+                Assert.Single(typeBModel!.nested);
+                Assert.Contains("TypeA", typeBModel.nested[0].fullName);
+
+                var typeCModel = model.types.FirstOrDefault(t => t.fullName == "TestNs.TypeC");
+                Assert.NotNull(typeCModel);
+                Assert.Empty(typeCModel!.nested);
+
+                // Diagnostics check:
+                // MUST NOT claim "forms a cycle of fallback edges"
+                Assert.DoesNotContain(warnings, w => w.Contains("forms a cycle of fallback edges"));
+
+                // MUST identify that candidate was rejected for creating cycle with declared parent chain
+                Assert.Contains(warnings, w => w.Contains("Candidate parent 'TypeC' for 'TypeB' rejected: creates a cycle with an established declared parent chain."));
+                Assert.Contains(warnings, w => w.Contains("Candidate parent 'TypeA' for 'TypeC' rejected: creates a cycle with an established declared parent chain."));
+            }
+        }
     }
 }
