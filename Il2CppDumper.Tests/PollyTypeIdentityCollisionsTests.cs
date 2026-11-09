@@ -1128,5 +1128,78 @@ namespace Il2CppDumper.Tests
                 Assert.False(diff.HasDifferences);
             }
         }
+
+        [Fact]
+        public void PollyDump_UniqueParentCandidateAppearingAfterChild_ResolvesCorrectlyWithoutDroppingToRoot()
+        {
+            // Case 1: Unique parent candidate appearing after child in metadata (e.g. child index 2, parent index 8).
+            // Child 2 has declaringTypeIndex = -1.
+            // Parent 8 (PolicyBuilder) is listed as candidate parent for child 2 in nestedTypeIndices.
+            // Child 2 must correctly link to parent 8 rather than dropping to root.
+            var (m, il2Cpp, exec, typeDefs) = CreatePollyEnvironment();
+            using (m) using (il2Cpp)
+            {
+                typeDefs[2].declaringTypeIndex = -1; // No declared parent
+
+                m.nestedTypeIndices = new[] { 3, 4, 5, 6, 7, 2, 10, 11 };
+                typeDefs[0].nestedTypesStart = 0;
+                typeDefs[0].nested_type_count = 2; // [3, 4]
+                typeDefs[1].nestedTypesStart = 2;
+                typeDefs[1].nested_type_count = 3; // [5, 6, 7]
+                typeDefs[8].nestedTypesStart = 5;
+                typeDefs[8].nested_type_count = 2; // [2, 10]
+
+                var parent = exec.GetParentTypeDefinition(typeDefs[2]);
+                Assert.Same(typeDefs[8], parent); // Must resolve to parent 8!
+
+                var model = JsonDumpGenerator.Create(exec, new Config());
+                var p8 = model.types.First(t => t.fullName == "Polly.PolicyBuilder");
+                Assert.Contains(p8.nested, n => n.fullName.Contains("<>c__DisplayClass14_0"));
+            }
+        }
+
+        [Fact]
+        public void PollyDump_TwoCandidateParentsOnOppositeSidesOfChild_IdentifiesAmbiguityAndPreservesAsRoot()
+        {
+            // Case 2: Two candidate parents on opposite sides of child in metadata:
+            // Child index 2, candidate parent A index 1 (1 < 2), candidate parent B index 8 (8 > 2).
+            // Child 2 has declaringTypeIndex = -1.
+            // Both parent 1 and parent 8 list child 2 in nestedTypeIndices.
+            // Must detect ambiguity, emit diagnostic warning identifying both candidates, and preserve child 2 as root.
+            var (m, il2Cpp, exec, typeDefs) = CreatePollyEnvironment();
+            using (m) using (il2Cpp)
+            {
+                typeDefs[2].declaringTypeIndex = -1; // No declared parent
+                typeDefs[0].nestedTypesStart = 0;
+                typeDefs[0].nested_type_count = 2; // [3, 4]
+
+                // Link child 2 under parent 1 (AsyncPolicy`1, index 1 < 2) AND parent 8 (PolicyBuilder, index 8 > 2)
+                m.nestedTypeIndices = new[] { 3, 4, 2, 5, 6, 7, 2, 10, 11 };
+                typeDefs[1].nestedTypesStart = 2;
+                typeDefs[1].nested_type_count = 4; // [2, 5, 6, 7]
+                typeDefs[8].nestedTypesStart = 6;
+                typeDefs[8].nested_type_count = 2; // [2, 10]
+
+                var warnings = new List<string>();
+                using var sw = new StringWriter();
+                JsonDumpModel model;
+                using (CoreLogger.Scope(sw, warnings))
+                {
+                    var parent = exec.GetParentTypeDefinition(typeDefs[2]);
+                    Assert.Null(parent); // Must NOT pick candidate 1 by index order! Must be preserved as root!
+
+                    model = JsonDumpGenerator.Create(exec, new Config());
+                }
+
+                // Child 2 is preserved at root
+                Assert.Contains(model.types, t => t.fullName.Contains("<>c__DisplayClass14_0"));
+
+                // Ambiguity warning emitted identifying child 2 and both candidate parents
+                Assert.Single(warnings);
+                Assert.Contains("Ambiguous declaring type for nested type '<>c__DisplayClass14_0", warnings[0]);
+                Assert.Contains("AsyncPolicy`1", warnings[0]);
+                Assert.Contains("PolicyBuilder", warnings[0]);
+            }
+        }
     }
 }

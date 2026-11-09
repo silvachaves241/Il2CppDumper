@@ -136,17 +136,34 @@ namespace Il2CppDumper
             return null;
         }
 
-        private static bool IsAcyclicCandidate(
+        private bool DeclaredChainHasCycle(
+            Il2CppTypeDefinition start,
+            Il2CppTypeDefinition targetChild,
+            Dictionary<Il2CppTypeDefinition, byte> resolvingState)
+        {
+            var visited = new HashSet<Il2CppTypeDefinition> { targetChild };
+            var curr = start;
+            while (curr != null)
+            {
+                if (resolvingState.TryGetValue(curr, out var st) && st == 1)
+                {
+                    return true;
+                }
+                if (!visited.Add(curr))
+                {
+                    return true;
+                }
+                curr = GetRawDeclaredParent(curr);
+            }
+            return false;
+        }
+
+        private static bool CandidateLeadsToRoot(
             Il2CppTypeDefinition candidate,
-            Il2CppTypeDefinition child,
+            Il2CppTypeDefinition targetChild,
             Dictionary<Il2CppTypeDefinition, Il2CppTypeDefinition?> currentMap)
         {
-            if (ReferenceEquals(candidate, child))
-            {
-                return false;
-            }
-
-            var visited = new HashSet<Il2CppTypeDefinition> { child };
+            var visited = new HashSet<Il2CppTypeDefinition> { targetChild };
             var curr = candidate;
             while (curr != null)
             {
@@ -154,18 +171,114 @@ namespace Il2CppDumper
                 {
                     return false;
                 }
+                currentMap.TryGetValue(curr, out curr);
+            }
+            return true;
+        }
 
-                if (currentMap.TryGetValue(curr, out var next))
+        private Il2CppTypeDefinition? ResolveTypeParent(
+            Il2CppTypeDefinition typeDef,
+            Dictionary<Il2CppTypeDefinition, Il2CppTypeDefinition?> map,
+            Dictionary<Il2CppTypeDefinition, byte> resolvingState)
+        {
+            if (resolvingState.TryGetValue(typeDef, out var state))
+            {
+                if (state == 2)
                 {
-                    curr = next;
+                    return map.TryGetValue(typeDef, out var p) ? p : null;
                 }
-                else
+                if (state == 1)
                 {
-                    return false;
+                    return null;
                 }
             }
 
-            return true;
+            resolvingState[typeDef] = 1;
+
+            var declared = GetRawDeclaredParent(typeDef);
+            if (declared != null && !DeclaredChainHasCycle(declared, typeDef, resolvingState))
+            {
+                ResolveTypeParent(declared, map, resolvingState);
+                map[typeDef] = declared;
+                resolvingState[typeDef] = 2;
+                return declared;
+            }
+
+            var candidateMap = GetNestedTypeCandidatesMap();
+            var validCandidates = new List<Il2CppTypeDefinition>();
+            if (candidateMap.TryGetValue(typeDef, out var candidates))
+            {
+                foreach (var c in candidates)
+                {
+                    if (ReferenceEquals(c, typeDef))
+                    {
+                        continue;
+                    }
+
+                    if (resolvingState.TryGetValue(c, out var cState) && cState == 1)
+                    {
+                        continue;
+                    }
+
+                    ResolveTypeParent(c, map, resolvingState);
+
+                    if (CandidateLeadsToRoot(c, typeDef, map))
+                    {
+                        validCandidates.Add(c);
+                    }
+                }
+            }
+
+            if (declared != null)
+            {
+                if (validCandidates.Count == 1)
+                {
+                    var fallback = validCandidates[0];
+                    if (warnedDefinitions.Add(typeDef))
+                    {
+                        var childName = metadata.GetStringFromIndex(typeDef.nameIndex);
+                        var fallbackName = metadata.GetStringFromIndex(fallback.nameIndex);
+                        CoreLogger.LogWarning($"WARNING: Cyclic declaring type detected for '{childName}' (declaringTypeIndex points to self or creates a cycle). Falling back to candidate parent '{fallbackName}'.");
+                    }
+                    map[typeDef] = fallback;
+                    resolvingState[typeDef] = 2;
+                    return fallback;
+                }
+
+                if (warnedDefinitions.Add(typeDef))
+                {
+                    var childName = metadata.GetStringFromIndex(typeDef.nameIndex);
+                    CoreLogger.LogWarning($"WARNING: Cyclic declaring type detected for '{childName}' with no unique acyclic parent candidate. Preserving as unparented root definition.");
+                }
+                map[typeDef] = null;
+                resolvingState[typeDef] = 2;
+                return null;
+            }
+
+            if (validCandidates.Count == 1)
+            {
+                var parent = validCandidates[0];
+                map[typeDef] = parent;
+                resolvingState[typeDef] = 2;
+                return parent;
+            }
+
+            if (validCandidates.Count > 1)
+            {
+                if (warnedDefinitions.Add(typeDef))
+                {
+                    var childName = metadata.GetStringFromIndex(typeDef.nameIndex);
+                    var parentNames = string.Join(", ", validCandidates.Select(c => metadata.GetStringFromIndex(c.nameIndex)));
+                    CoreLogger.LogWarning($"WARNING: Ambiguous declaring type for nested type '{childName}': multiple candidate parents found ({parentNames}) with no valid declaringTypeIndex.");
+                }
+                map[typeDef] = null;
+                resolvingState[typeDef] = 2;
+                return null;
+            }
+
+            map[typeDef] = null;
+            resolvingState[typeDef] = 2;
+            return null;
         }
 
         private Dictionary<Il2CppTypeDefinition, Il2CppTypeDefinition?> EnsureParentMapResolved()
@@ -176,146 +289,12 @@ namespace Il2CppDumper
             }
 
             var map = new Dictionary<Il2CppTypeDefinition, Il2CppTypeDefinition?>();
+            var resolvingState = new Dictionary<Il2CppTypeDefinition, byte>();
             var allDefs = metadata.typeDefs ?? Array.Empty<Il2CppTypeDefinition>();
 
-            var rawDeclared = new Dictionary<Il2CppTypeDefinition, Il2CppTypeDefinition?>();
             foreach (var def in allDefs)
             {
-                rawDeclared[def] = GetRawDeclaredParent(def);
-            }
-
-            // Cycle detection on raw declared parent graph.
-            // Status: 2 = acyclic (leads to null), 3 = cyclic (leads into or forms a cycle)
-            var status = new Dictionary<Il2CppTypeDefinition, byte>();
-
-            void EvaluateDeclaredAcyclic(Il2CppTypeDefinition startDef)
-            {
-                if (status.ContainsKey(startDef))
-                {
-                    return;
-                }
-
-                var path = new List<Il2CppTypeDefinition>();
-                var pathSet = new HashSet<Il2CppTypeDefinition>();
-                var curr = startDef;
-
-                while (curr != null)
-                {
-                    if (status.TryGetValue(curr, out var st))
-                    {
-                        var target = (st == 2) ? (byte)2 : (byte)3;
-                        foreach (var node in path)
-                        {
-                            status[node] = target;
-                        }
-                        return;
-                    }
-
-                    if (pathSet.Contains(curr))
-                    {
-                        // Cycle detected! All nodes along this path are cyclic
-                        foreach (var node in path)
-                        {
-                            status[node] = 3;
-                        }
-                        return;
-                    }
-
-                    path.Add(curr);
-                    pathSet.Add(curr);
-
-                    if (!rawDeclared.TryGetValue(curr, out var next))
-                    {
-                        next = GetRawDeclaredParent(curr);
-                    }
-                    curr = next;
-                }
-
-                // Path terminated at null: all nodes are acyclic
-                foreach (var node in path)
-                {
-                    status[node] = 2;
-                }
-            }
-
-            foreach (var def in allDefs)
-            {
-                EvaluateDeclaredAcyclic(def);
-            }
-
-            // Step 1: Assign valid acyclic declared parents
-            foreach (var def in allDefs)
-            {
-                if (rawDeclared[def] != null && status.TryGetValue(def, out var st) && st == 2)
-                {
-                    map[def] = rawDeclared[def];
-                }
-            }
-
-            // Step 2: Resolve definitions with cyclic declared parents or no declared parent
-            var candidateMap = GetNestedTypeCandidatesMap();
-            foreach (var def in allDefs)
-            {
-                if (map.ContainsKey(def))
-                {
-                    continue;
-                }
-
-                rawDeclared.TryGetValue(def, out var declared);
-                var validCandidates = new List<Il2CppTypeDefinition>();
-                if (candidateMap.TryGetValue(def, out var candidates))
-                {
-                    foreach (var c in candidates)
-                    {
-                        if (IsAcyclicCandidate(c, def, map))
-                        {
-                            validCandidates.Add(c);
-                        }
-                    }
-                }
-
-                if (declared != null)
-                {
-                    // Declared parent was rejected due to a cycle
-                    if (validCandidates.Count == 1)
-                    {
-                        var fallback = validCandidates[0];
-                        if (warnedDefinitions.Add(def))
-                        {
-                            var childName = metadata.GetStringFromIndex(def.nameIndex);
-                            var fallbackName = metadata.GetStringFromIndex(fallback.nameIndex);
-                            CoreLogger.LogWarning($"WARNING: Cyclic declaring type detected for '{childName}' (declaringTypeIndex points to self or creates a cycle). Falling back to candidate parent '{fallbackName}'.");
-                        }
-                        map[def] = fallback;
-                    }
-                    else
-                    {
-                        if (warnedDefinitions.Add(def))
-                        {
-                            var childName = metadata.GetStringFromIndex(def.nameIndex);
-                            CoreLogger.LogWarning($"WARNING: Cyclic declaring type detected for '{childName}' with no unique acyclic parent candidate. Preserving as unparented root definition.");
-                        }
-                        map[def] = null;
-                    }
-                }
-                else
-                {
-                    // declaringTypeIndex == -1
-                    if (validCandidates.Count == 1)
-                    {
-                        map[def] = validCandidates[0];
-                    }
-                    else
-                    {
-                        if (validCandidates.Count > 1 && warnedDefinitions.Add(def))
-                        {
-                            var childName = metadata.GetStringFromIndex(def.nameIndex);
-                            var parentNames = string.Join(", ", validCandidates.Select(c => metadata.GetStringFromIndex(c.nameIndex)));
-                            CoreLogger.LogWarning($"WARNING: Ambiguous declaring type for nested type '{childName}': multiple candidate parents found ({parentNames}) with no valid declaringTypeIndex.");
-                        }
-                        map[def] = null;
-                    }
-                }
+                ResolveTypeParent(def, map, resolvingState);
             }
 
             resolvedParentsMap = map;
@@ -330,47 +309,8 @@ namespace Il2CppDumper
                 return parent;
             }
 
-            // Fallback for ad-hoc typeDef not present in metadata.typeDefs
-            var declared = GetRawDeclaredParent(typeDef);
-            if (declared != null && IsAcyclicCandidate(declared, typeDef, map))
-            {
-                map[typeDef] = declared;
-                return declared;
-            }
-
-            var candidateMap = GetNestedTypeCandidatesMap();
-            if (candidateMap.TryGetValue(typeDef, out var candidates))
-            {
-                var valid = candidates.Where(c => IsAcyclicCandidate(c, typeDef, map)).ToList();
-                if (valid.Count == 1)
-                {
-                    var fallback = valid[0];
-                    if (declared != null && warnedDefinitions.Add(typeDef))
-                    {
-                        var childName = metadata.GetStringFromIndex(typeDef.nameIndex);
-                        var fallbackName = metadata.GetStringFromIndex(fallback.nameIndex);
-                        CoreLogger.LogWarning($"WARNING: Cyclic declaring type detected for '{childName}' (declaringTypeIndex points to self or creates a cycle). Falling back to candidate parent '{fallbackName}'.");
-                    }
-                    map[typeDef] = fallback;
-                    return fallback;
-                }
-
-                if (declared == null && valid.Count > 1 && warnedDefinitions.Add(typeDef))
-                {
-                    var childName = metadata.GetStringFromIndex(typeDef.nameIndex);
-                    var parentNames = string.Join(", ", valid.Select(c => metadata.GetStringFromIndex(c.nameIndex)));
-                    CoreLogger.LogWarning($"WARNING: Ambiguous declaring type for nested type '{childName}': multiple candidate parents found ({parentNames}) with no valid declaringTypeIndex.");
-                }
-            }
-
-            if (declared != null && warnedDefinitions.Add(typeDef))
-            {
-                var childName = metadata.GetStringFromIndex(typeDef.nameIndex);
-                CoreLogger.LogWarning($"WARNING: Cyclic declaring type detected for '{childName}' with no unique acyclic parent candidate. Preserving as unparented root definition.");
-            }
-
-            map[typeDef] = null;
-            return null;
+            var resolvingState = new Dictionary<Il2CppTypeDefinition, byte>();
+            return ResolveTypeParent(typeDef, map, resolvingState);
         }
 
         private sealed class TypeHierarchyLevel
