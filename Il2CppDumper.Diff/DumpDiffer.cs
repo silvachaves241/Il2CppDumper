@@ -224,16 +224,28 @@ namespace Il2CppDumper.Diff
                 var addressChanges = new List<DumpDiffAddressChange>();
                 var ambiguityNotes = new List<string>();
 
-                var leftGrouped = leftArtifacts.ScriptMethods
-                    .GroupBy(m => (m.TypeName, m.MethodName))
+                var leftResolved = leftArtifacts.ScriptMethods.Select(m => new
+                {
+                    Entry = m,
+                    Identity = ResolveMethodTypeIdentity(m, reconciled, isLeft: true)
+                }).ToList();
+
+                var rightResolved = rightArtifacts.ScriptMethods.Select(m => new
+                {
+                    Entry = m,
+                    Identity = ResolveMethodTypeIdentity(m, reconciled, isLeft: false)
+                }).ToList();
+
+                var leftGrouped = leftResolved
+                    .GroupBy(m => (m.Identity.TypeKey, m.Entry.MethodName))
                     .ToDictionary(g => g.Key, g => g.ToList());
 
-                var rightGrouped = rightArtifacts.ScriptMethods
-                    .GroupBy(m => (m.TypeName, m.MethodName))
+                var rightGrouped = rightResolved
+                    .GroupBy(m => (m.Identity.TypeKey, m.Entry.MethodName))
                     .ToDictionary(g => g.Key, g => g.ToList());
 
                 var commonKeys = leftGrouped.Keys.Intersect(rightGrouped.Keys)
-                    .OrderBy(k => k.TypeName, StringComparer.Ordinal)
+                    .OrderBy(k => k.TypeKey, StringComparer.Ordinal)
                     .ThenBy(k => k.MethodName, StringComparer.Ordinal);
 
                 foreach (var key in commonKeys)
@@ -245,14 +257,18 @@ namespace Il2CppDumper.Diff
                     {
                         var lm = leftEntries[0];
                         var rm = rightEntries[0];
-                        if (lm.Address != rm.Address)
+                        if (lm.Entry.Address != rm.Entry.Address)
                         {
+                            var displayImage = rm.Identity.Image ?? lm.Identity.Image;
+                            var displayAssembly = rm.Identity.Assembly ?? lm.Identity.Assembly;
                             addressChanges.Add(new DumpDiffAddressChange
                             {
-                                type = key.TypeName,
+                                type = key.TypeKey,
+                                image = displayImage,
+                                assembly = displayAssembly,
                                 method = key.MethodName,
-                                left = $"0x{lm.Address:X}",
-                                right = $"0x{rm.Address:X}"
+                                left = $"0x{lm.Entry.Address:X}",
+                                right = $"0x{rm.Entry.Address:X}"
                             });
                         }
                     }
@@ -260,11 +276,11 @@ namespace Il2CppDumper.Diff
                     {
                         // Overloads: group by Signature order-independently
                         var leftBySig = leftEntries
-                            .GroupBy(m => m.Signature ?? "")
+                            .GroupBy(m => m.Entry.Signature ?? "")
                             .ToDictionary(g => g.Key, g => g.ToList());
 
                         var rightBySig = rightEntries
-                            .GroupBy(m => m.Signature ?? "")
+                            .GroupBy(m => m.Entry.Signature ?? "")
                             .ToDictionary(g => g.Key, g => g.ToList());
 
                         var commonSigs = leftBySig.Keys.Intersect(rightBySig.Keys)
@@ -275,8 +291,8 @@ namespace Il2CppDumper.Diff
                             var leftSigEntries = leftBySig[sig];
                             var rightSigEntries = rightBySig[sig];
 
-                            var sortedLeft = leftSigEntries.Select(e => e.Address).OrderBy(a => a).ToList();
-                            var sortedRight = rightSigEntries.Select(e => e.Address).OrderBy(a => a).ToList();
+                            var sortedLeft = leftSigEntries.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+                            var sortedRight = rightSigEntries.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
 
                             var unmatchedLeft = new List<ulong>();
                             var remainingRight = new List<ulong>(sortedRight);
@@ -295,23 +311,39 @@ namespace Il2CppDumper.Diff
                             }
                             var unmatchedRight = remainingRight;
 
+                            var displayMethod = !string.IsNullOrEmpty(sig) ? sig : key.MethodName;
+                            var displayImage = leftSigEntries.FirstOrDefault(e => e.Identity.Image != null)?.Identity.Image
+                                ?? rightSigEntries.FirstOrDefault(e => e.Identity.Image != null)?.Identity.Image;
+                            var displayAssembly = leftSigEntries.FirstOrDefault(e => e.Identity.Assembly != null)?.Identity.Assembly
+                                ?? rightSigEntries.FirstOrDefault(e => e.Identity.Assembly != null)?.Identity.Assembly;
+
                             if (unmatchedLeft.Count == 1 && unmatchedRight.Count == 1)
                             {
-                                var displayMethod = !string.IsNullOrEmpty(sig) ? sig : key.MethodName;
                                 addressChanges.Add(new DumpDiffAddressChange
                                 {
-                                    type = key.TypeName,
+                                    type = key.TypeKey,
+                                    image = displayImage,
+                                    assembly = displayAssembly,
                                     method = displayMethod,
                                     left = $"0x{unmatchedLeft[0]:X}",
                                     right = $"0x{unmatchedRight[0]:X}"
                                 });
                             }
-                            else if (unmatchedLeft.Count > 0 && unmatchedRight.Count > 0)
+                            else if (unmatchedLeft.Count > 0 || unmatchedRight.Count > 0)
                             {
                                 result.hasAmbiguousMethodAddresses = true;
                                 var desc = !string.IsNullOrEmpty(sig)
                                     ? sig
-                                    : (!string.IsNullOrEmpty(key.TypeName) ? $"{key.TypeName}.{key.MethodName}" : key.MethodName);
+                                    : (!string.IsNullOrEmpty(key.TypeKey) ? $"{key.TypeKey}.{key.MethodName}" : key.MethodName);
+                                ambiguityNotes.Add(desc);
+                            }
+                            else if (leftSigEntries.Count > 1 && sortedLeft.Distinct().Count() > 1 &&
+                                     (!leftSigEntries[0].Identity.HasAttribution || !rightSigEntries[0].Identity.HasAttribution))
+                            {
+                                result.hasAmbiguousMethodAddresses = true;
+                                var desc = !string.IsNullOrEmpty(sig)
+                                    ? sig
+                                    : (!string.IsNullOrEmpty(key.TypeKey) ? $"{key.TypeKey}.{key.MethodName}" : key.MethodName);
                                 ambiguityNotes.Add(desc);
                             }
                         }
@@ -429,6 +461,59 @@ namespace Il2CppDumper.Diff
             public string MethodName { get; set; } = string.Empty;
             public string Signature { get; set; } = string.Empty;
             public ulong Address { get; set; }
+            public string? Image { get; set; }
+            public string? Assembly { get; set; }
+
+            public string? PreferredScope => !string.IsNullOrEmpty(Image) ? Image : Assembly;
+            public string FormatTypeKey() => JsonDumpType.FormatKey(Image, Assembly, TypeName);
+        }
+
+        private static (string TypeKey, string? Image, string? Assembly, bool HasAttribution) ResolveMethodTypeIdentity(
+            ScriptMethodEntry entry,
+            List<ReconciledType> reconciled,
+            bool isLeft)
+        {
+            if (!string.IsNullOrEmpty(entry.Image) || !string.IsNullOrEmpty(entry.Assembly))
+            {
+                var match = reconciled.FirstOrDefault(r =>
+                {
+                    var target = isLeft ? r.Left : r.Right;
+                    if (target == null || !string.Equals(r.FullName, entry.TypeName, StringComparison.Ordinal))
+                        return false;
+
+                    if (!string.IsNullOrEmpty(entry.Image))
+                        return string.Equals(target.image, entry.Image, StringComparison.Ordinal);
+
+                    return string.Equals(target.assembly, entry.Assembly, StringComparison.Ordinal);
+                });
+
+                if (match != null)
+                {
+                    var img = match.Image ?? (isLeft ? match.Left?.image : match.Right?.image) ?? entry.Image;
+                    var asm = match.Assembly ?? (isLeft ? match.Left?.assembly : match.Right?.assembly) ?? entry.Assembly;
+                    return (match.Key, img, asm, true);
+                }
+
+                var ownKey = JsonDumpType.FormatKey(entry.Image, entry.Assembly, entry.TypeName);
+                return (ownKey, entry.Image, entry.Assembly, true);
+            }
+
+            var matchingTypes = reconciled.Where(r =>
+            {
+                var target = isLeft ? r.Left : r.Right;
+                return target != null && string.Equals(r.FullName, entry.TypeName, StringComparison.Ordinal);
+            }).ToList();
+
+            if (matchingTypes.Count == 1)
+            {
+                var r = matchingTypes[0];
+                var img = r.Image ?? (isLeft ? r.Left?.image : r.Right?.image);
+                var asm = r.Assembly ?? (isLeft ? r.Left?.assembly : r.Right?.assembly);
+                bool hasAttr = !string.IsNullOrEmpty(img) || !string.IsNullOrEmpty(asm);
+                return (r.Key, img, asm, hasAttr);
+            }
+
+            return (entry.TypeName, null, null, false);
         }
 
         private class ParsedArtifacts
@@ -616,7 +701,9 @@ namespace Il2CppDumper.Diff
                             TypeName = typeName,
                             MethodName = methodName,
                             Signature = sig,
-                            Address = addr
+                            Address = addr,
+                            Image = item.TryGetProperty("Image", out var imgEl) && imgEl.ValueKind == JsonValueKind.String ? imgEl.GetString() : (item.TryGetProperty("image", out imgEl) && imgEl.ValueKind == JsonValueKind.String ? imgEl.GetString() : null),
+                            Assembly = item.TryGetProperty("Assembly", out var asmEl) && asmEl.ValueKind == JsonValueKind.String ? asmEl.GetString() : (item.TryGetProperty("assembly", out asmEl) && asmEl.ValueKind == JsonValueKind.String ? asmEl.GetString() : null)
                         });
                     }
                     artifacts.ScriptMethods = list;

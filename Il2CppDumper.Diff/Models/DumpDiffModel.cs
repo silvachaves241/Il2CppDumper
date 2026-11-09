@@ -14,7 +14,7 @@ namespace Il2CppDumper.Diff
         public DumpDiffLiterals literals { get; set; } = new();
         public DumpDiffSummary summary { get; set; } = new();
 
-        [JsonIgnore]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public bool hasAmbiguousMethodAddresses { get; set; }
 
         [JsonIgnore]
@@ -108,6 +108,13 @@ namespace Il2CppDumper.Diff
     public class DumpDiffAddressChange
     {
         public string type { get; set; } = string.Empty;
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? image { get; set; }
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? assembly { get; set; }
+
         public string method { get; set; } = string.Empty;
         public string left { get; set; } = string.Empty;
         public string right { get; set; } = string.Empty;

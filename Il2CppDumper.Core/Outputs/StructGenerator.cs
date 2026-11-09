@@ -1,3 +1,4 @@
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -84,6 +85,18 @@ namespace Il2CppDumper
             foreach (var imageDef in metadata.imageDefs)
             {
                 var imageName = metadata.GetStringFromIndex(imageDef.nameIndex);
+                string? assemblyName = null;
+                if (imageDef.assemblyIndex >= 0 && metadata.assemblyDefs != null && imageDef.assemblyIndex < metadata.assemblyDefs.Length)
+                {
+                    var assemblyDef = metadata.assemblyDefs[imageDef.assemblyIndex];
+                    assemblyName = metadata.GetStringFromIndex(assemblyDef.aname.nameIndex);
+                }
+                if (string.IsNullOrEmpty(assemblyName) && !string.IsNullOrEmpty(imageName))
+                {
+                    assemblyName = imageName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+                        ? imageName.Substring(0, imageName.Length - 4)
+                        : imageName;
+                }
                 var typeEnd = imageDef.typeStart + imageDef.typeCount;
                 for (int typeIndex = imageDef.typeStart; typeIndex < typeEnd; typeIndex++)
                 {
@@ -104,6 +117,8 @@ namespace Il2CppDumper
                             scriptMethod.Address = il2Cpp.GetRVA(methodPointer);
                             var methodFullName = typeName + "$$" + methodName;
                             scriptMethod.Name = methodFullName;
+                            scriptMethod.Image = imageName;
+                            scriptMethod.Assembly = assemblyName;
 
                                 var methodReturnType = il2Cpp.types[methodDef.returnType];
                                 var returnType = ParseType(methodReturnType);
@@ -169,6 +184,8 @@ namespace Il2CppDumper
                                             GenerateMethodInfo(methodInfoName, structTypeName, rgctxs);
                                         }
                                         scriptMethod.Name = methodFullName;
+                                        scriptMethod.Image = imageName;
+                                        scriptMethod.Assembly = assemblyName;
 
                                         var genericContext = executor.GetMethodSpecGenericContext(methodSpec);
                                         var methodReturnType = il2Cpp.types[methodDef.returnType];

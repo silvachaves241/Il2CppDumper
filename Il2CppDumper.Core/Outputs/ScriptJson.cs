@@ -1,3 +1,4 @@
+#nullable enable
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
@@ -18,6 +19,10 @@ namespace Il2CppDumper
         public string Name;
         public string Signature;
         public string TypeSignature;
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? Image;
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? Assembly;
     }
 
     public class ScriptString
