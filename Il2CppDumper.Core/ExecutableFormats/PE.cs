@@ -93,12 +93,22 @@ namespace Il2CppDumper
             }
             var backedLen = Math.Min(section.VirtualSize, section.SizeOfRawData);
             var sectionEndRva = section.VirtualAddress + backedLen;
-            if (addr + byteSize > sectionEndRva)
+            if (addr >= sectionEndRva)
+            {
+                return false;
+            }
+            var remainingSectionBytes = sectionEndRva - addr;
+            if (byteSize > remainingSectionBytes)
             {
                 return false;
             }
             var rawOffset = addr - section.VirtualAddress + section.PointerToRawData;
-            if (rawOffset + byteSize > Length)
+            if (rawOffset > (ulong)Length)
+            {
+                return false;
+            }
+            var remainingStreamBytes = (ulong)Length - rawOffset;
+            if (byteSize > remainingStreamBytes)
             {
                 return false;
             }

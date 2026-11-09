@@ -252,30 +252,41 @@ namespace Il2CppDumper
                     codeGenModules[moduleName] = codeGenModule;
                     AddNormalizedModule(normalizedCodeGenModules, moduleName, codeGenModule);
                     ulong[] methodPointers;
-                    if (codeGenModule.methodPointerCount > 0 && codeGenModule.methodPointers != 0)
+                    var pointerCount = codeGenModule.methodPointerCount;
+                    if (pointerCount > 0 && pointerCount <= Array.MaxLength &&
+                        (ulong)pointerCount <= ulong.MaxValue / PointerSize)
                     {
-                        var byteSize = (ulong)codeGenModule.methodPointerCount * PointerSize;
-                        if (TryMapContiguousRange(codeGenModule.methodPointers, byteSize, out var methodPointersOffset))
+                        var byteSize = (ulong)pointerCount * PointerSize;
+                        if (codeGenModule.methodPointers != 0 && TryMapContiguousRange(codeGenModule.methodPointers, byteSize, out var methodPointersOffset))
                         {
                             try
                             {
-                                methodPointers = ReadClassArray<ulong>(methodPointersOffset, codeGenModule.methodPointerCount);
+                                methodPointers = ReadClassArray<ulong>(methodPointersOffset, pointerCount);
                             }
                             catch
                             {
-                                methodPointers = new ulong[codeGenModule.methodPointerCount];
+                                methodPointers = new ulong[pointerCount];
                                 RecordMappingFailure("MethodPointersTable", codeGenModule.methodPointers, "table range could not be read from stream", member: moduleName);
                             }
                         }
-                        else
+                        else if (codeGenModule.methodPointers != 0)
                         {
-                            methodPointers = new ulong[codeGenModule.methodPointerCount];
+                            methodPointers = new ulong[pointerCount];
                             RecordMappingFailure("MethodPointersTable", codeGenModule.methodPointers, "table range crosses section boundary or exceeds stream bounds", member: moduleName);
                         }
+                        else
+                        {
+                            methodPointers = new ulong[pointerCount];
+                        }
+                    }
+                    else if (pointerCount > 0)
+                    {
+                        methodPointers = Array.Empty<ulong>();
+                        RecordMappingFailure("MethodPointersTable", codeGenModule.methodPointers, "table count is invalid or exceeds addressable bounds", member: moduleName);
                     }
                     else
                     {
-                        methodPointers = new ulong[Math.Max(0, codeGenModule.methodPointerCount)];
+                        methodPointers = Array.Empty<ulong>();
                     }
                     codeGenModuleMethodPointers[moduleName] = methodPointers;
                     AddNormalizedModule(normalizedCodeGenModuleMethodPointers, moduleName, methodPointers);
@@ -332,30 +343,42 @@ namespace Il2CppDumper
             }
             else
             {
-                if (pCodeRegistration.methodPointersCount > 0 && pCodeRegistration.methodPointers != 0)
+                ulong[] methodPointers;
+                var pointerCount = pCodeRegistration.methodPointersCount;
+                if (pointerCount > 0 && pointerCount <= (ulong)Array.MaxLength &&
+                    pointerCount <= ulong.MaxValue / PointerSize)
                 {
-                    var byteSize = pCodeRegistration.methodPointersCount * PointerSize;
-                    if (TryMapContiguousRange(pCodeRegistration.methodPointers, byteSize, out var methodPointersOffset))
+                    var byteSize = pointerCount * PointerSize;
+                    if (pCodeRegistration.methodPointers != 0 && TryMapContiguousRange(pCodeRegistration.methodPointers, byteSize, out var methodPointersOffset))
                     {
                         try
                         {
-                            methodPointers = ReadClassArray<ulong>(methodPointersOffset, pCodeRegistration.methodPointersCount);
+                            methodPointers = ReadClassArray<ulong>(methodPointersOffset, pointerCount);
                         }
                         catch
                         {
-                            methodPointers = new ulong[pCodeRegistration.methodPointersCount];
+                            methodPointers = new ulong[pointerCount];
                             RecordMappingFailure("MethodPointersTable", pCodeRegistration.methodPointers, "table range could not be read from stream", member: "global");
                         }
                     }
-                    else
+                    else if (pCodeRegistration.methodPointers != 0)
                     {
-                        methodPointers = new ulong[pCodeRegistration.methodPointersCount];
+                        methodPointers = new ulong[pointerCount];
                         RecordMappingFailure("MethodPointersTable", pCodeRegistration.methodPointers, "table range crosses section boundary or exceeds stream bounds", member: "global");
                     }
+                    else
+                    {
+                        methodPointers = new ulong[pointerCount];
+                    }
+                }
+                else if (pointerCount > 0)
+                {
+                    methodPointers = Array.Empty<ulong>();
+                    RecordMappingFailure("MethodPointersTable", pCodeRegistration.methodPointers, "table count is invalid or exceeds addressable bounds", member: "global");
                 }
                 else
                 {
-                    methodPointers = new ulong[pCodeRegistration.methodPointersCount];
+                    methodPointers = Array.Empty<ulong>();
                 }
             }
             if (Version >= 108 && metadata != null)

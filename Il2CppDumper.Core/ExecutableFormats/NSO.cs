@@ -237,12 +237,23 @@ namespace Il2CppDumper
             {
                 return false;
             }
-            if (addr + byteSize > segment.MemoryOffset + segment.DecompressedSize)
+            var segmentEndVa = (ulong)segment.MemoryOffset + segment.DecompressedSize;
+            if (addr >= segmentEndVa)
+            {
+                return false;
+            }
+            var remainingSegmentBytes = segmentEndVa - addr;
+            if (byteSize > remainingSegmentBytes)
             {
                 return false;
             }
             var rawOffset = addr - segment.MemoryOffset + segment.FileOffset;
-            if (rawOffset + byteSize > (ulong)Length)
+            if (rawOffset > (ulong)Length)
+            {
+                return false;
+            }
+            var remainingStreamBytes = (ulong)Length - rawOffset;
+            if (byteSize > remainingStreamBytes)
             {
                 return false;
             }

@@ -66,10 +66,21 @@ namespace Il2CppDumper
             }
         }
 
+        private const uint SECTION_TYPE = 0x000000FF;
+        private const uint S_ZEROFILL = 0x1;
+        private const uint S_GB_ZEROFILL = 0xC;
+        private const uint S_THREAD_LOCAL_ZEROFILL = 0x12;
+
+        public static bool IsZeroFillSection(uint flags)
+        {
+            var secType = flags & SECTION_TYPE;
+            return secType == S_ZEROFILL || secType == S_GB_ZEROFILL || secType == S_THREAD_LOCAL_ZEROFILL;
+        }
+
         public override ulong MapVATR(ulong addr)
         {
             var section = sections.First(x => addr >= x.addr && addr < x.addr + x.size);
-            if (section.sectname == "__bss")
+            if (section.sectname == "__bss" || IsZeroFillSection(section.flags))
             {
                 throw new Exception();
             }
@@ -80,16 +91,27 @@ namespace Il2CppDumper
         {
             offset = 0;
             var sec = sections.FirstOrDefault(x => addr >= x.addr && addr < x.addr + x.size);
-            if (sec == null || sec.sectname == "__bss")
+            if (sec == null || sec.sectname == "__bss" || IsZeroFillSection(sec.flags))
             {
                 return false;
             }
-            if (addr + byteSize > sec.addr + sec.size)
+            var secEndVa = sec.addr + sec.size;
+            if (addr >= secEndVa)
+            {
+                return false;
+            }
+            var remainingSectionBytes = secEndVa - addr;
+            if (byteSize > remainingSectionBytes)
             {
                 return false;
             }
             var rawOffset = addr - sec.addr + sec.offset;
-            if (rawOffset + byteSize > Length)
+            if (rawOffset > (ulong)Length)
+            {
+                return false;
+            }
+            var remainingStreamBytes = (ulong)Length - rawOffset;
+            if (byteSize > remainingStreamBytes)
             {
                 return false;
             }
@@ -100,13 +122,9 @@ namespace Il2CppDumper
         public override ulong MapRTVA(ulong addr)
         {
             var section = sections.FirstOrDefault(x => addr >= x.offset && addr <= x.offset + x.size);
-            if (section == null)
+            if (section == null || section.sectname == "__bss" || IsZeroFillSection(section.flags))
             {
                 return 0;
-            }
-            if (section.sectname == "__bss")
-            {
-                throw new Exception();
             }
             return addr - section.offset + section.addr;
         }
@@ -277,7 +295,7 @@ namespace Il2CppDumper
                 return false;
             }
             var sec = sections.FirstOrDefault(x => pointer >= x.addr && pointer < x.addr + x.size);
-            if (sec == null || sec.sectname == "__bss")
+            if (sec == null || sec.sectname == "__bss" || IsZeroFillSection(sec.flags))
             {
                 return false;
             }

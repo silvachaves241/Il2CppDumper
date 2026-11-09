@@ -1153,5 +1153,219 @@ namespace Il2CppDumper.Tests
                 }
             }
         }
+        private static byte[] CreateSyntheticMacho64Custom(
+            (string segName, string secName, ulong vmaddr, ulong vmsize, uint fileoff, ulong filesize, uint secFlags)[] items)
+        {
+            uint maxFileEnd = 0x400;
+            foreach (var item in items)
+            {
+                var end = item.fileoff + (uint)item.filesize;
+                if (end > maxFileEnd) maxFileEnd = end;
+            }
+            var bytes = new byte[maxFileEnd + 0x400];
+            using var ms = new MemoryStream(bytes);
+            using var w = new BinaryWriter(ms);
+
+            w.Write((uint)0xFEEDFACF); // magic
+            w.Write((uint)0x01000007); // cputype (x86_64)
+            w.Write((uint)0x03);       // cpusubtype
+            w.Write((uint)0x02);       // filetype (MH_EXECUTE)
+            w.Write((uint)items.Length); // ncmds
+            uint cmdSize = 72 + 80;    // 152 bytes per segment with 1 section
+            w.Write((uint)(cmdSize * items.Length)); // sizeofcmds
+            w.Write((uint)0);          // flags
+            w.Write((uint)0);          // reserved
+
+            foreach (var item in items)
+            {
+                w.Write((uint)0x19);   // LC_SEGMENT_64
+                w.Write(cmdSize);
+                var segBytes = new byte[16];
+                Encoding.ASCII.GetBytes(item.segName).CopyTo(segBytes, 0);
+                w.Write(segBytes);
+                w.Write(item.vmaddr);
+                w.Write(item.vmsize);
+                w.Write((ulong)item.fileoff);
+                w.Write(item.filesize);
+                w.Write((uint)7);      // maxprot
+                w.Write((uint)5);      // initprot
+                w.Write((uint)1);      // nsects = 1
+                w.Write((uint)0);      // flags
+
+                var sectBytes = new byte[16];
+                Encoding.ASCII.GetBytes(item.secName).CopyTo(sectBytes, 0);
+                w.Write(sectBytes);
+                w.Write(segBytes);
+                w.Write(item.vmaddr);
+                w.Write(item.vmsize);
+                w.Write(item.fileoff);
+                w.Write((uint)3);      // align
+                w.Write((uint)0);      // reloff
+                w.Write((uint)0);      // nreloc
+                w.Write(item.secFlags);// flags
+                w.Write((uint)0);
+                w.Write((uint)0);
+                w.Write((uint)0);
+            }
+
+            return bytes;
+        }
+
+        [Fact]
+        public void Macho_ZeroFillSection_WithNonBssName_IsRejected_WhileRegularSectionSucceeds()
+        {
+            // P2 Point 1: Mach-O section with S_ZEROFILL (1) and name '__common' (different from '__bss'), segment filesize = 0.
+            // Both candidate pointer validation (IsValidMethodPointer) and table validation (TryMapContiguousRange)
+            // must reject addresses in this zero-fill section, while a regular section succeeds.
+            var machoBytes = CreateSyntheticMacho64Custom(new[]
+            {
+                ("__TEXT", "__text", 0x1000ul, 0x1000ul, 0x600u, 0x1000ul, 0x80000400u), // regular code
+                ("__DATA", "__common", 0x2000ul, 0x1000ul, 0x0u, 0ul, 0x1u)              // S_ZEROFILL (1) with name '__common'
+            });
+
+            using var macho = new Macho64(new MemoryStream(machoBytes));
+
+            // Candidate pointers in zero-fill section must be rejected
+            var zeroFillVa = 0x2600ul;
+            Assert.False(macho.IsValidMethodPointer(zeroFillVa));
+            Assert.False(macho.TryMapContiguousRange(zeroFillVa, 16, out _));
+            Assert.Throws<Exception>(() => macho.MapVATR(zeroFillVa));
+
+            // Regular section control
+            var regularVa = 0x1500ul;
+            Assert.True(macho.IsValidMethodPointer(regularVa));
+            Assert.True(macho.TryMapContiguousRange(regularVa, 16, out var regOffset));
+            Assert.Equal(0xB00ul, regOffset); // 0x600 + (0x1500 - 0x1000)
+            Assert.Equal(0xB00ul, macho.MapVATR(regularVa));
+
+            // S_GB_ZEROFILL (0xC) and S_THREAD_LOCAL_ZEROFILL (0x12) must also be recognized as zero-fill
+            Assert.True(Macho64.IsZeroFillSection(0x1));
+            Assert.True(Macho64.IsZeroFillSection(0xC));
+            Assert.True(Macho64.IsZeroFillSection(0x12));
+            Assert.True(Macho64.IsZeroFillSection(0x80000001u));
+            Assert.False(Macho64.IsZeroFillSection(0x0));
+            Assert.False(Macho64.IsZeroFillSection(0x80000400u));
+        }
+
+        [Fact]
+        public void TryMapContiguousRange_BoundaryArithmetic_RejectsOverflow_AndAcceptsExactEnd()
+        {
+            // P2 Point 2: byteSize = ulong.MaxValue must NOT overflow and must return false.
+            // Exact end of section (byteSize = remainingBytes) must return true.
+            // Exceeding section by 1 byte (byteSize = remainingBytes + 1) must return false.
+
+            // 1. PE Format
+            var (peBytes, _, _) = CreateTestPe(textVirtualSize: 0x1000, textRawSize: 0x1000);
+            using var pe = new PE(new MemoryStream(peBytes));
+            var peStartVa = 0x180001000ul; // Start of .text, remaining = 0x1000
+            var peEndSlotVa = 0x180001FF8ul; // Last 8 bytes of .text, remaining = 8
+
+            // Overflow protection
+            Assert.False(pe.TryMapContiguousRange(peStartVa, ulong.MaxValue, out _));
+            Assert.False(pe.TryMapContiguousRange(peEndSlotVa, ulong.MaxValue, out _));
+
+            // Exact end
+            Assert.True(pe.TryMapContiguousRange(peStartVa, 0x1000, out var peOffset));
+            Assert.Equal(0x400ul, peOffset);
+            Assert.True(pe.TryMapContiguousRange(peEndSlotVa, 8, out var peEndOffset));
+            Assert.Equal(0x13F8ul, peEndOffset);
+
+            // Exceed by 1 byte
+            Assert.False(pe.TryMapContiguousRange(peStartVa, 0x1001, out _));
+            Assert.False(pe.TryMapContiguousRange(peEndSlotVa, 9, out _));
+
+            // 2. ELF64 Format
+            var elfBytes = CreateSyntheticElf64WithSegment(p_vaddr: 0x1000, p_offset: 0x600, p_memsz: 0x1000, p_filesz: 0x1000);
+            using var elf = new Elf64(new MemoryStream(elfBytes));
+            var elfStartVa = 0x1000ul;
+            var elfEndSlotVa = 0x1FF8ul;
+
+            // Overflow protection
+            Assert.False(elf.TryMapContiguousRange(elfStartVa, ulong.MaxValue, out _));
+            Assert.False(elf.TryMapContiguousRange(elfEndSlotVa, ulong.MaxValue, out _));
+
+            // Exact end
+            Assert.True(elf.TryMapContiguousRange(elfStartVa, 0x1000, out var elfOffset));
+            Assert.Equal(0x600ul, elfOffset);
+            Assert.True(elf.TryMapContiguousRange(elfEndSlotVa, 8, out var elfEndOffset));
+            Assert.Equal(0x15F8ul, elfEndOffset);
+
+            // Exceed by 1 byte
+            Assert.False(elf.TryMapContiguousRange(elfStartVa, 0x1001, out _));
+            Assert.False(elf.TryMapContiguousRange(elfEndSlotVa, 9, out _));
+
+            // 3. Mach-O 64 Format
+            var machoBytes = CreateSyntheticMacho64Custom(new[]
+            {
+                ("__TEXT", "__text", 0x1000ul, 0x1000ul, 0x600u, 0x1000ul, 0x80000400u)
+            });
+            using var macho = new Macho64(new MemoryStream(machoBytes));
+            var machoStartVa = 0x1000ul;
+            var machoEndSlotVa = 0x1FF8ul;
+
+            // Overflow protection
+            Assert.False(macho.TryMapContiguousRange(machoStartVa, ulong.MaxValue, out _));
+            Assert.False(macho.TryMapContiguousRange(machoEndSlotVa, ulong.MaxValue, out _));
+
+            // Exact end
+            Assert.True(macho.TryMapContiguousRange(machoStartVa, 0x1000, out var machoOffset));
+            Assert.Equal(0x600ul, machoOffset);
+            Assert.True(macho.TryMapContiguousRange(machoEndSlotVa, 8, out var machoEndOffset));
+            Assert.Equal(0x15F8ul, machoEndOffset);
+
+            // Exceed by 1 byte
+            Assert.False(macho.TryMapContiguousRange(machoStartVa, 0x1001, out _));
+            Assert.False(macho.TryMapContiguousRange(machoEndSlotVa, 9, out _));
+        }
+
+        [Fact]
+        public void PE_Init_MethodPointerCountOverflow_DoesNotThrowAndRecordsStructuredWarning()
+        {
+            // P2 Point 2: Protect multiplication of count by pointer size before reading or allocating.
+            // When methodPointerCount is invalid/astronomical (e.g. long.MaxValue), Init must fall back
+            // to empty table and record structured diagnostic without crashing.
+            var (peBytes, _, _) = CreateTestPe(textVirtualSize: 0x1000, textRawSize: 0x1000);
+
+            using (var ms = new MemoryStream(peBytes))
+            using (var w = new BinaryWriter(ms))
+            {
+                // pCodeRegistration at RVA 0x1000 -> raw offset 0x400
+                ms.Position = 0x400;
+                for (int i = 0; i < 13; i++) w.Write((ulong)0);
+                w.Write((ulong)1);          // codeGenModulesCount = 1
+                w.Write(0x180001200ul);     // codeGenModules -> RVA 0x1200 (raw offset 0x600)
+
+                // pCodeGenModules array at RVA 0x1200 -> raw offset 0x600
+                ms.Position = 0x600;
+                w.Write(0x180001220ul);     // pointer to Il2CppCodeGenModule at RVA 0x1220 (raw offset 0x620)
+
+                // Il2CppCodeGenModule at RVA 0x1220 -> raw offset 0x620
+                ms.Position = 0x620;
+                w.Write(0x180001280ul);     // moduleName -> RVA 0x1280
+                w.Write(long.MaxValue);     // astronomical count: long.MaxValue!
+                w.Write(0x180001000ul);     // methodPointers VA
+                for (int i = 0; i < 10; i++) w.Write((ulong)0);
+
+                ms.Position = 0x680;
+                w.Write(Encoding.ASCII.GetBytes("OverflowModule.dll\0"));
+
+                ms.Position = 0x700;
+                for (int i = 0; i < 20; i++) w.Write((ulong)0);
+            }
+
+            using var pe = new PE(new MemoryStream(peBytes));
+            pe.Version = 29;
+
+            // Must NOT throw OverflowException or OutOfMemoryException
+            pe.Init(codeRegistration: 0x180001000ul, metadataRegistration: 0x180001300ul);
+
+            Assert.True(pe.codeGenModuleMethodPointers.TryGetValue("OverflowModule.dll", out var pointers));
+            Assert.Empty(pointers);
+            Assert.Equal(1, pe.MethodMappingFailuresCount);
+            var failure = Assert.Single(pe.MethodMappingFailures);
+            Assert.Equal("methodMapping", failure.Category);
+            Assert.Equal("OverflowModule.dll", failure.Member);
+            Assert.Contains("invalid or exceeds addressable bounds", failure.Detail);
+        }
     }
 }

@@ -106,12 +106,22 @@ namespace Il2CppDumper
             }
             var backedLen = Math.Min(phdr.p_memsz, phdr.p_filesz);
             var segmentEndVa = phdr.p_vaddr + backedLen;
-            if (addr + byteSize > segmentEndVa)
+            if (addr >= segmentEndVa)
+            {
+                return false;
+            }
+            var remainingSegmentBytes = segmentEndVa - addr;
+            if (byteSize > remainingSegmentBytes)
             {
                 return false;
             }
             var rawOffset = addr - phdr.p_vaddr + phdr.p_offset;
-            if (rawOffset + byteSize > Length)
+            if (rawOffset > (ulong)Length)
+            {
+                return false;
+            }
+            var remainingStreamBytes = (ulong)Length - rawOffset;
+            if (byteSize > remainingStreamBytes)
             {
                 return false;
             }
