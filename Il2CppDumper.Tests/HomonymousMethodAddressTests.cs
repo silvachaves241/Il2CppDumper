@@ -121,12 +121,15 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
-        public void Issue90_ControlScenario_LegacyScript_OneAddressChange_Exits1()
+        public void Issue90_ControlScenario_LegacyScript_AddressChangeInAmbiguousGroup_PreservesAmbiguityWithoutFabricatedTransition()
         {
-            // Control scenario from Issue #90:
-            // Left: [4096 (0x1000), 8192 (0x2000)]
-            // Control: [4096 (0x1000), 12288 (0x3000)]
-            // One address matches, one changes (0x2000 -> 0x3000)
+            // Reviewer Point 3: Canceling equal addresses in an ambiguous group must not fabricate a transition.
+            // With homonymous methods in A and B:
+            // Left: [0x1000, 0x2000]
+            // Right: [0x1000, 0x3000] (or [0x3000, 0x1000])
+            // In an unresolved group, address 0x1000 may belong to different methods across builds.
+            // The tool must detect the set change, preserve ambiguity (hasAmbiguousMethodAddresses = true),
+            // and reserve addressChanged for demonstrable pairs rather than fabricating 0x2000 -> 0x3000.
             var tempDir = Path.Combine(Path.GetTempPath(), "issue90-control-" + Guid.NewGuid());
             Directory.CreateDirectory(tempDir);
             try
@@ -162,11 +165,10 @@ namespace Il2CppDumper.Tests
                 var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
 
                 Assert.True(diff.HasDifferences);
-                Assert.Equal(1, diff.summary.addressChanges);
-                Assert.NotNull(diff.methods.addressChanged);
-                Assert.Single(diff.methods.addressChanged);
-                Assert.Equal("0x2000", diff.methods.addressChanged[0].left);
-                Assert.Equal("0x3000", diff.methods.addressChanged[0].right);
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.NotNull(diff.methods.note);
+                Assert.Contains("Address comparison has unresolved ambiguous overloads: unable to correlate", diff.methods.note);
+                Assert.Empty(diff.methods.addressChanged!);
             }
             finally
             {
@@ -185,6 +187,7 @@ namespace Il2CppDumper.Tests
             // A.dll!Ns.Player.Run: 0x1000 -> 0x2000
             // B.dll!Ns.Player.Run: 0x2000 -> 0x1000
             // Must report BOTH changes independently with image and assembly attribution, exit 1, and no false ambiguity!
+            // Also verifies Reviewer Point 5: public 'type' field emits simple type name "Ns.Player".
             var tempDir = Path.Combine(Path.GetTempPath(), "issue90-qualified-swap-" + Guid.NewGuid());
             Directory.CreateDirectory(tempDir);
             try
@@ -226,21 +229,300 @@ namespace Il2CppDumper.Tests
                 Assert.NotNull(diff.methods.addressChanged);
                 Assert.Equal(2, diff.methods.addressChanged.Count);
 
-                var changeA = diff.methods.addressChanged.FirstOrDefault(c => c.type == "A.dll!Ns.Player");
+                var changeA = diff.methods.addressChanged.FirstOrDefault(c => c.image == "A.dll");
                 Assert.NotNull(changeA);
-                Assert.Equal("A.dll", changeA!.image);
+                Assert.Equal("Ns.Player", changeA!.type); // Reviewer Point 5: Simple type name!
+                Assert.Equal("A.dll", changeA.image);
                 Assert.Equal("A", changeA.assembly);
                 Assert.Equal("Run", changeA.method);
                 Assert.Equal("0x1000", changeA.left);
                 Assert.Equal("0x2000", changeA.right);
 
-                var changeB = diff.methods.addressChanged.FirstOrDefault(c => c.type == "B.dll!Ns.Player");
+                var changeB = diff.methods.addressChanged.FirstOrDefault(c => c.image == "B.dll");
                 Assert.NotNull(changeB);
-                Assert.Equal("B.dll", changeB!.image);
+                Assert.Equal("Ns.Player", changeB!.type); // Reviewer Point 5: Simple type name!
+                Assert.Equal("B.dll", changeB.image);
                 Assert.Equal("B", changeB.assembly);
                 Assert.Equal("Run", changeB.method);
                 Assert.Equal("0x2000", changeB.left);
                 Assert.Equal("0x1000", changeB.right);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerP2_LegacyVsQualified_AddressDiff_BothOrders_DetectsAmbiguityAndExits1()
+        {
+            // Reviewer Point 1: Key intersection must not drop methods when comparing legacy with qualified map.
+            // Left: [0x1000, 0x2000] without owners.
+            // Right: A=0x1000, B=0x3000 with owners.
+            // Both orders must return exit code 1, ambiguity true.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer-legacy-vs-qualified-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = CreateTwoImagesModel();
+                var legacyScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000 },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x2000 }
+                    }
+                };
+                var qualifiedScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000, Image = "A.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x3000, Image = "B.dll", Assembly = "B" }
+                    }
+                };
+
+                // Order 1: Legacy left, Qualified right
+                var dir1 = Path.Combine(tempDir, "run1");
+                var left1 = Path.Combine(dir1, "left");
+                var right1 = Path.Combine(dir1, "right");
+                var out1 = Path.Combine(dir1, "diff.json");
+                CreateFixtures(left1, model, legacyScript);
+                CreateFixtures(right1, model, qualifiedScript);
+
+                var exit1 = DumpDiffer.Execute(left1, right1, out1);
+                Assert.Equal(1, exit1);
+                var diff1 = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(out1))!;
+                Assert.True(diff1.HasDifferences);
+                Assert.True(diff1.hasAmbiguousMethodAddresses);
+
+                // Order 2: Qualified left, Legacy right
+                var dir2 = Path.Combine(tempDir, "run2");
+                var left2 = Path.Combine(dir2, "left");
+                var right2 = Path.Combine(dir2, "right");
+                var out2 = Path.Combine(dir2, "diff.json");
+                CreateFixtures(left2, model, qualifiedScript);
+                CreateFixtures(right2, model, legacyScript);
+
+                var exit2 = DumpDiffer.Execute(left2, right2, out2);
+                Assert.Equal(1, exit2);
+                var diff2 = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(out2))!;
+                Assert.True(diff2.HasDifferences);
+                Assert.True(diff2.hasAmbiguousMethodAddresses);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerP2_GenericInstance_BoxInt_WithGenericDefinitionBoxT_BothOrders_ReportsAddressChange()
+        {
+            // Reviewer Point 1: Single generic Ns.Box<int>$$Run going from 0x1000 to 0x2000,
+            // with Ns.Box<T> in dump.json. Both orders must succeed and report the address change.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer-generic-box-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "A",
+                            fullName = "Ns.Box<T>",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter>() }
+                            }
+                        }
+                    }
+                };
+
+                var script1 = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Box<int>$$Run", Signature = "void Run()", Address = 0x1000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+
+                // Legacy script lacking Image/Assembly on right
+                var script2 = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Box<int>$$Run", Signature = "void Run()", Address = 0x2000 }
+                    }
+                };
+
+                // Order 1: Qualified left, Legacy right
+                var dir1 = Path.Combine(tempDir, "run1");
+                var left1 = Path.Combine(dir1, "left");
+                var right1 = Path.Combine(dir1, "right");
+                var out1 = Path.Combine(dir1, "diff.json");
+                CreateFixtures(left1, model, script1);
+                CreateFixtures(right1, model, script2);
+
+                var exit1 = DumpDiffer.Execute(left1, right1, out1);
+                Assert.Equal(1, exit1);
+                var diff1 = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(out1))!;
+                Assert.NotNull(diff1.methods.addressChanged);
+                Assert.Single(diff1.methods.addressChanged);
+                Assert.Equal("Ns.Box<int>", diff1.methods.addressChanged[0].type);
+                Assert.Equal("0x1000", diff1.methods.addressChanged[0].left);
+                Assert.Equal("0x2000", diff1.methods.addressChanged[0].right);
+
+                // Order 2: Legacy left, Qualified right
+                var dir2 = Path.Combine(tempDir, "run2");
+                var left2 = Path.Combine(dir2, "left");
+                var right2 = Path.Combine(dir2, "right");
+                var out2 = Path.Combine(dir2, "diff.json");
+                CreateFixtures(left2, model, script2);
+                CreateFixtures(right2, model, script1);
+
+                var exit2 = DumpDiffer.Execute(left2, right2, out2);
+                Assert.Equal(1, exit2);
+                var diff2 = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(out2))!;
+                Assert.NotNull(diff2.methods.addressChanged);
+                Assert.Single(diff2.methods.addressChanged);
+                Assert.Equal("Ns.Box<int>", diff2.methods.addressChanged[0].type);
+                Assert.Equal("0x2000", diff2.methods.addressChanged[0].left);
+                Assert.Equal("0x1000", diff2.methods.addressChanged[0].right);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerP2_ExplicitIncompatibleOwners_DoNotPairAsAddressChange()
+        {
+            // Reviewer Point 1: Explicit incompatible owners (e.g. Left in A.dll, Right in B.dll)
+            // must NOT be paired as an address change.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer-incompatible-owners-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = CreateTwoImagesModel();
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x2000, Image = "B.dll", Assembly = "B" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+
+                // Since left belongs to A.dll and right belongs to B.dll, they are incompatible owners.
+                // No addressChanged should pair them together!
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerP2_OnlyAssembly_MultipleCandidates_PreservesAmbiguityWithoutFalseAttribution()
+        {
+            // Reviewer Point 2: When A.dll and B.dll share the same Assembly "Shared",
+            // exporting only Assembly: "Shared" must NOT falsely attribute changes to an arbitrary image.
+            // Multiple candidates must require ambiguity handling.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer-only-assembly-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "Shared",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter>() }
+                            }
+                        },
+                        new()
+                        {
+                            image = "B.dll",
+                            assembly = "Shared",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter>() }
+                            }
+                        }
+                    }
+                };
+
+                // Moving A from 0x1000 to 0x3000 while B stays at 0x2000, with ONLY Assembly: "Shared"
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000, Assembly = "Shared" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x2000, Assembly = "Shared" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x3000, Assembly = "Shared" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x2000, Assembly = "Shared" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                // Must NOT attribute falsely to B.dll without ambiguity
+                Assert.Empty(diff.methods.addressChanged!);
             }
             finally
             {
@@ -362,6 +644,7 @@ namespace Il2CppDumper.Tests
         {
             // If a type name is unique across all images in dump.json, legacy script entries for that type
             // are safely attributed to that unique type's image/assembly without causing ambiguity.
+            // Reviewer Point 5: Emits simple type name in 'type', with additive image and assembly.
             var tempDir = Path.Combine(Path.GetTempPath(), "unique-type-attr-" + Guid.NewGuid());
             Directory.CreateDirectory(tempDir);
             try
@@ -418,7 +701,7 @@ namespace Il2CppDumper.Tests
                 Assert.NotNull(diff.methods.addressChanged);
                 Assert.Single(diff.methods.addressChanged);
                 var change = diff.methods.addressChanged[0];
-                Assert.Equal("GameAssembly.dll!Game.UniquePlayer", change.type);
+                Assert.Equal("Game.UniquePlayer", change.type); // Reviewer Point 5: Simple type name!
                 Assert.Equal("GameAssembly.dll", change.image);
                 Assert.Equal("GameAssembly", change.assembly);
                 Assert.Equal("Run", change.method);

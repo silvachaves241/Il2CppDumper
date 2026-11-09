@@ -224,34 +224,43 @@ namespace Il2CppDumper.Diff
                 var addressChanges = new List<DumpDiffAddressChange>();
                 var ambiguityNotes = new List<string>();
 
-                var leftResolved = leftArtifacts.ScriptMethods.Select(m => new
+                var leftIndex = TypeLookupIndex.Build(reconciled, isLeft: true);
+                var rightIndex = TypeLookupIndex.Build(reconciled, isLeft: false);
+
+                var leftItems = leftArtifacts.ScriptMethods.Select(m => new MethodDiffItem
                 {
                     Entry = m,
-                    Identity = ResolveMethodTypeIdentity(m, reconciled, isLeft: true)
+                    Identity = leftIndex.Resolve(m, isLeft: true)
                 }).ToList();
 
-                var rightResolved = rightArtifacts.ScriptMethods.Select(m => new
+                var rightItems = rightArtifacts.ScriptMethods.Select(m => new MethodDiffItem
                 {
                     Entry = m,
-                    Identity = ResolveMethodTypeIdentity(m, reconciled, isLeft: false)
+                    Identity = rightIndex.Resolve(m, isLeft: false)
                 }).ToList();
 
-                var leftGrouped = leftResolved
-                    .GroupBy(m => (m.Identity.TypeKey, m.Entry.MethodName))
+                // Phase 1: Correlate qualified pairs (demonstrably unique by qualified key)
+                var leftQualified = leftItems
+                    .Where(x => x.Identity.QualifiedKey != null)
+                    .GroupBy(x => (QualifiedKey: x.Identity.QualifiedKey!, MethodName: x.Entry.MethodName))
                     .ToDictionary(g => g.Key, g => g.ToList());
 
-                var rightGrouped = rightResolved
-                    .GroupBy(m => (m.Identity.TypeKey, m.Entry.MethodName))
+                var rightQualified = rightItems
+                    .Where(x => x.Identity.QualifiedKey != null)
+                    .GroupBy(x => (QualifiedKey: x.Identity.QualifiedKey!, MethodName: x.Entry.MethodName))
                     .ToDictionary(g => g.Key, g => g.ToList());
 
-                var commonKeys = leftGrouped.Keys.Intersect(rightGrouped.Keys)
-                    .OrderBy(k => k.TypeKey, StringComparer.Ordinal)
+                var commonQualifiedKeys = leftQualified.Keys.Intersect(rightQualified.Keys)
+                    .OrderBy(k => k.QualifiedKey, StringComparer.Ordinal)
                     .ThenBy(k => k.MethodName, StringComparer.Ordinal);
 
-                foreach (var key in commonKeys)
+                foreach (var qKey in commonQualifiedKeys)
                 {
-                    var leftEntries = leftGrouped[key];
-                    var rightEntries = rightGrouped[key];
+                    var leftEntries = leftQualified[qKey];
+                    var rightEntries = rightQualified[qKey];
+
+                    foreach (var e in leftEntries) e.Handled = true;
+                    foreach (var e in rightEntries) e.Handled = true;
 
                     if (leftEntries.Count == 1 && rightEntries.Count == 1)
                     {
@@ -259,14 +268,14 @@ namespace Il2CppDumper.Diff
                         var rm = rightEntries[0];
                         if (lm.Entry.Address != rm.Entry.Address)
                         {
-                            var displayImage = rm.Identity.Image ?? lm.Identity.Image;
-                            var displayAssembly = rm.Identity.Assembly ?? lm.Identity.Assembly;
+                            var displayImage = rm.Identity.Image ?? lm.Identity.Image ?? rm.Entry.Image ?? lm.Entry.Image;
+                            var displayAssembly = rm.Identity.Assembly ?? lm.Identity.Assembly ?? rm.Entry.Assembly ?? lm.Entry.Assembly;
                             addressChanges.Add(new DumpDiffAddressChange
                             {
-                                type = key.TypeKey,
+                                type = lm.Entry.TypeName, // simple type name
                                 image = displayImage,
                                 assembly = displayAssembly,
-                                method = key.MethodName,
+                                method = qKey.MethodName,
                                 left = $"0x{lm.Entry.Address:X}",
                                 right = $"0x{rm.Entry.Address:X}"
                             });
@@ -274,7 +283,7 @@ namespace Il2CppDumper.Diff
                     }
                     else
                     {
-                        // Overloads: group by Signature order-independently
+                        // Overloads within the same qualified type
                         var leftBySig = leftEntries
                             .GroupBy(m => m.Entry.Signature ?? "")
                             .ToDictionary(g => g.Key, g => g.ToList());
@@ -288,62 +297,168 @@ namespace Il2CppDumper.Diff
 
                         foreach (var sig in commonSigs)
                         {
-                            var leftSigEntries = leftBySig[sig];
-                            var rightSigEntries = rightBySig[sig];
+                            var leftSig = leftBySig[sig];
+                            var rightSig = rightBySig[sig];
 
-                            var sortedLeft = leftSigEntries.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
-                            var sortedRight = rightSigEntries.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
-
-                            var unmatchedLeft = new List<ulong>();
-                            var remainingRight = new List<ulong>(sortedRight);
-
-                            foreach (var lAddr in sortedLeft)
+                            if (leftSig.Count == 1 && rightSig.Count == 1)
                             {
-                                var rIndex = remainingRight.IndexOf(lAddr);
-                                if (rIndex >= 0)
+                                var lm = leftSig[0];
+                                var rm = rightSig[0];
+                                if (lm.Entry.Address != rm.Entry.Address)
                                 {
-                                    remainingRight.RemoveAt(rIndex);
+                                    var displayMethod = !string.IsNullOrEmpty(sig) ? sig : qKey.MethodName;
+                                    var displayImage = rm.Identity.Image ?? lm.Identity.Image ?? rm.Entry.Image ?? lm.Entry.Image;
+                                    var displayAssembly = rm.Identity.Assembly ?? lm.Identity.Assembly ?? rm.Entry.Assembly ?? lm.Entry.Assembly;
+                                    addressChanges.Add(new DumpDiffAddressChange
+                                    {
+                                        type = lm.Entry.TypeName,
+                                        image = displayImage,
+                                        assembly = displayAssembly,
+                                        method = displayMethod,
+                                        left = $"0x{lm.Entry.Address:X}",
+                                        right = $"0x{rm.Entry.Address:X}"
+                                    });
+                                }
+                            }
+                            else
+                            {
+                                var sortedLeft = leftSig.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+                                var sortedRight = rightSig.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+
+                                if (sortedLeft.Count == sortedRight.Count &&
+                                    sortedLeft.Distinct().Count() <= 1 &&
+                                    sortedLeft.SequenceEqual(sortedRight))
+                                {
+                                    // Shared native implementation across all entries: unchanged
                                 }
                                 else
                                 {
-                                    unmatchedLeft.Add(lAddr);
+                                    var unmatchedLeft = new List<ulong>();
+                                    var remainingRight = new List<ulong>(sortedRight);
+                                    foreach (var lAddr in sortedLeft)
+                                    {
+                                        var rIndex = remainingRight.IndexOf(lAddr);
+                                        if (rIndex >= 0) remainingRight.RemoveAt(rIndex);
+                                        else unmatchedLeft.Add(lAddr);
+                                    }
+                                    var unmatchedRight = remainingRight;
+
+                                    if (unmatchedLeft.Count == 1 && unmatchedRight.Count == 1)
+                                    {
+                                        var displayMethod = !string.IsNullOrEmpty(sig) ? sig : qKey.MethodName;
+                                        var displayImage = leftSig.FirstOrDefault(e => e.Identity.Image != null)?.Identity.Image
+                                            ?? rightSig.FirstOrDefault(e => e.Identity.Image != null)?.Identity.Image
+                                            ?? leftSig.FirstOrDefault(e => e.Entry.Image != null)?.Entry.Image
+                                            ?? rightSig.FirstOrDefault(e => e.Entry.Image != null)?.Entry.Image;
+                                        var displayAssembly = leftSig.FirstOrDefault(e => e.Identity.Assembly != null)?.Identity.Assembly
+                                            ?? rightSig.FirstOrDefault(e => e.Identity.Assembly != null)?.Identity.Assembly
+                                            ?? leftSig.FirstOrDefault(e => e.Entry.Assembly != null)?.Entry.Assembly
+                                            ?? rightSig.FirstOrDefault(e => e.Entry.Assembly != null)?.Entry.Assembly;
+
+                                        addressChanges.Add(new DumpDiffAddressChange
+                                        {
+                                            type = leftSig[0].Entry.TypeName,
+                                            image = displayImage,
+                                            assembly = displayAssembly,
+                                            method = displayMethod,
+                                            left = $"0x{unmatchedLeft[0]:X}",
+                                            right = $"0x{unmatchedRight[0]:X}"
+                                        });
+                                    }
+                                    else
+                                    {
+                                        result.hasAmbiguousMethodAddresses = true;
+                                        var desc = !string.IsNullOrEmpty(sig) ? sig : $"{leftSig[0].Entry.TypeName}.{qKey.MethodName}";
+                                        ambiguityNotes.Add(desc);
+                                    }
                                 }
                             }
-                            var unmatchedRight = remainingRight;
+                        }
+                    }
+                }
 
-                            var displayMethod = !string.IsNullOrEmpty(sig) ? sig : key.MethodName;
-                            var displayImage = leftSigEntries.FirstOrDefault(e => e.Identity.Image != null)?.Identity.Image
-                                ?? rightSigEntries.FirstOrDefault(e => e.Identity.Image != null)?.Identity.Image;
-                            var displayAssembly = leftSigEntries.FirstOrDefault(e => e.Identity.Assembly != null)?.Identity.Assembly
-                                ?? rightSigEntries.FirstOrDefault(e => e.Identity.Assembly != null)?.Identity.Assembly;
+                // Phase 2: Reconcile remaining entries by legacy (TypeName, MethodName)
+                var leftRemaining = leftItems.Where(x => !x.Handled).ToList();
+                var rightRemaining = rightItems.Where(x => !x.Handled).ToList();
 
-                            if (unmatchedLeft.Count == 1 && unmatchedRight.Count == 1)
+                var leftRemainingGroups = leftRemaining
+                    .GroupBy(x => (TypeName: x.Entry.TypeName, MethodName: x.Entry.MethodName))
+                    .ToDictionary(g => g.Key, g => g.ToList());
+
+                var rightRemainingGroups = rightRemaining
+                    .GroupBy(x => (TypeName: x.Entry.TypeName, MethodName: x.Entry.MethodName))
+                    .ToDictionary(g => g.Key, g => g.ToList());
+
+                var commonRemainingKeys = leftRemainingGroups.Keys.Intersect(rightRemainingGroups.Keys)
+                    .OrderBy(k => k.TypeName, StringComparer.Ordinal)
+                    .ThenBy(k => k.MethodName, StringComparer.Ordinal);
+
+                foreach (var remKey in commonRemainingKeys)
+                {
+                    var leftEntries = leftRemainingGroups[remKey];
+                    var rightEntries = rightRemainingGroups[remKey];
+
+                    var leftBySig = leftEntries
+                        .GroupBy(m => m.Entry.Signature ?? "")
+                        .ToDictionary(g => g.Key, g => g.ToList());
+
+                    var rightBySig = rightEntries
+                        .GroupBy(m => m.Entry.Signature ?? "")
+                        .ToDictionary(g => g.Key, g => g.ToList());
+
+                    var commonSigs = leftBySig.Keys.Intersect(rightBySig.Keys)
+                        .OrderBy(s => s, StringComparer.Ordinal);
+
+                    foreach (var sig in commonSigs)
+                    {
+                        var leftSig = leftBySig[sig];
+                        var rightSig = rightBySig[sig];
+
+                        if (leftSig.Count == 1 && rightSig.Count == 1)
+                        {
+                            var l = leftSig[0];
+                            var r = rightSig[0];
+
+                            if (AreOwnersCompatible(l, r))
                             {
-                                addressChanges.Add(new DumpDiffAddressChange
+                                if (l.Entry.Address != r.Entry.Address)
                                 {
-                                    type = key.TypeKey,
-                                    image = displayImage,
-                                    assembly = displayAssembly,
-                                    method = displayMethod,
-                                    left = $"0x{unmatchedLeft[0]:X}",
-                                    right = $"0x{unmatchedRight[0]:X}"
-                                });
+                                    var displayMethod = !string.IsNullOrEmpty(sig) ? sig : remKey.MethodName;
+                                    var displayImage = r.Identity.Image ?? l.Identity.Image ?? r.Entry.Image ?? l.Entry.Image;
+                                    var displayAssembly = r.Identity.Assembly ?? l.Identity.Assembly ?? r.Entry.Assembly ?? l.Entry.Assembly;
+                                    addressChanges.Add(new DumpDiffAddressChange
+                                    {
+                                        type = remKey.TypeName,
+                                        image = displayImage,
+                                        assembly = displayAssembly,
+                                        method = displayMethod,
+                                        left = $"0x{l.Entry.Address:X}",
+                                        right = $"0x{r.Entry.Address:X}"
+                                    });
+                                }
                             }
-                            else if (unmatchedLeft.Count > 0 || unmatchedRight.Count > 0)
+                            // Incompatible explicit owners: do not pair
+                        }
+                        else
+                        {
+                            // Multiple candidates / overloads in an unresolved group
+                            var sortedLeft = leftSig.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+                            var sortedRight = rightSig.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+
+                            if (sortedLeft.Count == sortedRight.Count &&
+                                sortedLeft.Distinct().Count() <= 1 &&
+                                sortedLeft.SequenceEqual(sortedRight))
                             {
+                                // Shared identical implementation across all entries: unchanged
+                            }
+                            else
+                            {
+                                // In an unresolved group with multiple candidates, signal ambiguity
+                                // and reserve addressChanged for demonstrable pairs
                                 result.hasAmbiguousMethodAddresses = true;
                                 var desc = !string.IsNullOrEmpty(sig)
                                     ? sig
-                                    : (!string.IsNullOrEmpty(key.TypeKey) ? $"{key.TypeKey}.{key.MethodName}" : key.MethodName);
-                                ambiguityNotes.Add(desc);
-                            }
-                            else if (leftSigEntries.Count > 1 && sortedLeft.Distinct().Count() > 1 &&
-                                     (!leftSigEntries[0].Identity.HasAttribution || !rightSigEntries[0].Identity.HasAttribution))
-                            {
-                                result.hasAmbiguousMethodAddresses = true;
-                                var desc = !string.IsNullOrEmpty(sig)
-                                    ? sig
-                                    : (!string.IsNullOrEmpty(key.TypeKey) ? $"{key.TypeKey}.{key.MethodName}" : key.MethodName);
+                                    : (!string.IsNullOrEmpty(remKey.TypeName) ? $"{remKey.TypeName}.{remKey.MethodName}" : remKey.MethodName);
                                 ambiguityNotes.Add(desc);
                             }
                         }
@@ -468,52 +583,210 @@ namespace Il2CppDumper.Diff
             public string FormatTypeKey() => JsonDumpType.FormatKey(Image, Assembly, TypeName);
         }
 
-        private static (string TypeKey, string? Image, string? Assembly, bool HasAttribution) ResolveMethodTypeIdentity(
-            ScriptMethodEntry entry,
-            List<ReconciledType> reconciled,
-            bool isLeft)
+        private class ResolvedMethodIdentity
         {
-            if (!string.IsNullOrEmpty(entry.Image) || !string.IsNullOrEmpty(entry.Assembly))
+            public string? QualifiedKey { get; set; }
+            public string? Image { get; set; }
+            public string? Assembly { get; set; }
+            public bool IsAttributed { get; set; }
+        }
+
+        private class MethodDiffItem
+        {
+            public ScriptMethodEntry Entry { get; set; } = null!;
+            public ResolvedMethodIdentity Identity { get; set; } = null!;
+            public bool Handled { get; set; }
+        }
+
+        private static bool AreOwnersCompatible(MethodDiffItem left, MethodDiffItem right)
+        {
+            var leftImg = left.Identity.Image ?? left.Entry.Image;
+            var rightImg = right.Identity.Image ?? right.Entry.Image;
+            if (!string.IsNullOrEmpty(leftImg) && !string.IsNullOrEmpty(rightImg))
             {
-                var match = reconciled.FirstOrDefault(r =>
+                return string.Equals(leftImg, rightImg, StringComparison.Ordinal);
+            }
+
+            var leftAsm = left.Identity.Assembly ?? left.Entry.Assembly;
+            var rightAsm = right.Identity.Assembly ?? right.Entry.Assembly;
+            if (!string.IsNullOrEmpty(leftAsm) && !string.IsNullOrEmpty(rightAsm))
+            {
+                return string.Equals(leftAsm, rightAsm, StringComparison.Ordinal);
+            }
+
+            return true;
+        }
+
+        private class TypeLookupIndex
+        {
+            private readonly Dictionary<(string Image, string FullName), List<ReconciledType>> _byImageAndName = new();
+            private readonly Dictionary<(string Assembly, string FullName), List<ReconciledType>> _byAssemblyAndName = new();
+            private readonly Dictionary<string, List<ReconciledType>> _byFullName = new();
+
+            private readonly Dictionary<(string Image, string BaseName, int Arity), List<ReconciledType>> _byImageBaseGeneric = new();
+            private readonly Dictionary<(string Assembly, string BaseName, int Arity), List<ReconciledType>> _byAssemblyBaseGeneric = new();
+            private readonly Dictionary<(string BaseName, int Arity), List<ReconciledType>> _byBaseGeneric = new();
+
+            public static TypeLookupIndex Build(List<ReconciledType> reconciled, bool isLeft)
+            {
+                var index = new TypeLookupIndex();
+                foreach (var r in reconciled)
                 {
                     var target = isLeft ? r.Left : r.Right;
-                    if (target == null || !string.Equals(r.FullName, entry.TypeName, StringComparison.Ordinal))
-                        return false;
+                    if (target == null) continue;
 
-                    if (!string.IsNullOrEmpty(entry.Image))
-                        return string.Equals(target.image, entry.Image, StringComparison.Ordinal);
+                    var fullName = r.FullName;
+                    var image = target.image ?? r.Image;
+                    var assembly = target.assembly ?? r.Assembly;
 
-                    return string.Equals(target.assembly, entry.Assembly, StringComparison.Ordinal);
-                });
+                    AddToList(index._byFullName, fullName, r);
 
-                if (match != null)
+                    if (!string.IsNullOrEmpty(image))
+                    {
+                        AddToList(index._byImageAndName, (image, fullName), r);
+                    }
+
+                    if (!string.IsNullOrEmpty(assembly))
+                    {
+                        AddToList(index._byAssemblyAndName, (assembly, fullName), r);
+                    }
+
+                    if (TryExtractGenericBase(fullName, out var baseName, out var arity))
+                    {
+                        AddToList(index._byBaseGeneric, (baseName, arity), r);
+                        if (!string.IsNullOrEmpty(image))
+                        {
+                            AddToList(index._byImageBaseGeneric, (image, baseName, arity), r);
+                        }
+                        if (!string.IsNullOrEmpty(assembly))
+                        {
+                            AddToList(index._byAssemblyBaseGeneric, (assembly, baseName, arity), r);
+                        }
+                    }
+                }
+                return index;
+            }
+
+            private static void AddToList<TKey>(Dictionary<TKey, List<ReconciledType>> dict, TKey key, ReconciledType item) where TKey : notnull
+            {
+                if (!dict.TryGetValue(key, out var list))
                 {
-                    var img = match.Image ?? (isLeft ? match.Left?.image : match.Right?.image) ?? entry.Image;
-                    var asm = match.Assembly ?? (isLeft ? match.Left?.assembly : match.Right?.assembly) ?? entry.Assembly;
-                    return (match.Key, img, asm, true);
+                    list = new List<ReconciledType>();
+                    dict[key] = list;
+                }
+                list.Add(item);
+            }
+
+            private static bool TryExtractGenericBase(string typeName, out string baseName, out int arity)
+            {
+                baseName = string.Empty;
+                arity = 0;
+                var openBracket = typeName.IndexOf('<');
+                var closeBracket = typeName.LastIndexOf('>');
+                if (openBracket <= 0 || closeBracket <= openBracket)
+                    return false;
+
+                baseName = typeName.Substring(0, openBracket);
+                int commas = 0;
+                int depth = 0;
+                for (int i = openBracket; i <= closeBracket; i++)
+                {
+                    if (typeName[i] == '<') depth++;
+                    else if (typeName[i] == '>') depth--;
+                    else if (typeName[i] == ',' && depth == 1) commas++;
+                }
+                arity = commas + 1;
+                return true;
+            }
+
+            public ResolvedMethodIdentity Resolve(ScriptMethodEntry entry, bool isLeft)
+            {
+                var identity = new ResolvedMethodIdentity();
+                bool hasGeneric = TryExtractGenericBase(entry.TypeName, out var baseName, out var arity);
+
+                if (!string.IsNullOrEmpty(entry.Image))
+                {
+                    List<ReconciledType>? matches = null;
+                    if (!_byImageAndName.TryGetValue((entry.Image, entry.TypeName), out matches) && hasGeneric)
+                    {
+                        _byImageBaseGeneric.TryGetValue((entry.Image, baseName, arity), out matches);
+                    }
+
+                    if (matches != null && matches.Count == 1)
+                    {
+                        var m = matches[0];
+                        identity.Image = m.Image ?? (isLeft ? m.Left?.image : m.Right?.image) ?? entry.Image;
+                        identity.Assembly = m.Assembly ?? (isLeft ? m.Left?.assembly : m.Right?.assembly) ?? entry.Assembly;
+                        identity.QualifiedKey = m.Key;
+                        identity.IsAttributed = true;
+                        return identity;
+                    }
+
+                    if (matches == null || matches.Count == 0)
+                    {
+                        identity.Image = entry.Image;
+                        identity.Assembly = entry.Assembly;
+                        identity.QualifiedKey = JsonDumpType.FormatKey(entry.Image, entry.Assembly, entry.TypeName);
+                        identity.IsAttributed = true;
+                        return identity;
+                    }
+
+                    identity.Image = entry.Image;
+                    identity.Assembly = entry.Assembly;
+                    identity.QualifiedKey = null;
+                    identity.IsAttributed = false;
+                    return identity;
                 }
 
-                var ownKey = JsonDumpType.FormatKey(entry.Image, entry.Assembly, entry.TypeName);
-                return (ownKey, entry.Image, entry.Assembly, true);
+                if (!string.IsNullOrEmpty(entry.Assembly))
+                {
+                    List<ReconciledType>? matches = null;
+                    if (!_byAssemblyAndName.TryGetValue((entry.Assembly, entry.TypeName), out matches) && hasGeneric)
+                    {
+                        _byAssemblyBaseGeneric.TryGetValue((entry.Assembly, baseName, arity), out matches);
+                    }
+
+                    if (matches != null && matches.Count == 1)
+                    {
+                        var m = matches[0];
+                        identity.Image = m.Image ?? (isLeft ? m.Left?.image : m.Right?.image);
+                        identity.Assembly = m.Assembly ?? (isLeft ? m.Left?.assembly : m.Right?.assembly) ?? entry.Assembly;
+                        identity.QualifiedKey = m.Key;
+                        identity.IsAttributed = true;
+                        return identity;
+                    }
+
+                    // Ambiguous candidates in this assembly
+                    identity.Image = null;
+                    identity.Assembly = entry.Assembly;
+                    identity.QualifiedKey = null;
+                    identity.IsAttributed = false;
+                    return identity;
+                }
+
+                // Legacy: no Image or Assembly
+                List<ReconciledType>? nameMatches = null;
+                if (!_byFullName.TryGetValue(entry.TypeName, out nameMatches) && hasGeneric)
+                {
+                    _byBaseGeneric.TryGetValue((baseName, arity), out nameMatches);
+                }
+
+                if (nameMatches != null && nameMatches.Count == 1)
+                {
+                    var m = nameMatches[0];
+                    identity.Image = m.Image ?? (isLeft ? m.Left?.image : m.Right?.image);
+                    identity.Assembly = m.Assembly ?? (isLeft ? m.Left?.assembly : m.Right?.assembly);
+                    identity.QualifiedKey = m.Key;
+                    identity.IsAttributed = true;
+                    return identity;
+                }
+
+                identity.Image = null;
+                identity.Assembly = null;
+                identity.QualifiedKey = null;
+                identity.IsAttributed = false;
+                return identity;
             }
-
-            var matchingTypes = reconciled.Where(r =>
-            {
-                var target = isLeft ? r.Left : r.Right;
-                return target != null && string.Equals(r.FullName, entry.TypeName, StringComparison.Ordinal);
-            }).ToList();
-
-            if (matchingTypes.Count == 1)
-            {
-                var r = matchingTypes[0];
-                var img = r.Image ?? (isLeft ? r.Left?.image : r.Right?.image);
-                var asm = r.Assembly ?? (isLeft ? r.Left?.assembly : r.Right?.assembly);
-                bool hasAttr = !string.IsNullOrEmpty(img) || !string.IsNullOrEmpty(asm);
-                return (r.Key, img, asm, hasAttr);
-            }
-
-            return (entry.TypeName, null, null, false);
         }
 
         private class ParsedArtifacts
