@@ -84,7 +84,16 @@ namespace Il2CppDumper
             {
                 throw new Exception();
             }
-            return addr - section.addr + section.offset;
+            if ((ulong)section.offset >= (ulong)Length)
+            {
+                throw new Exception();
+            }
+            var delta = addr - section.addr;
+            if (delta >= (ulong)Length - (ulong)section.offset)
+            {
+                throw new Exception();
+            }
+            return (ulong)section.offset + delta;
         }
 
         public override bool TryMapContiguousRange(ulong addr, ulong byteSize, out ulong offset)
@@ -105,11 +114,16 @@ namespace Il2CppDumper
             {
                 return false;
             }
-            var rawOffset = addr - sec.addr + sec.offset;
-            if (rawOffset > (ulong)Length)
+            if ((ulong)sec.offset >= (ulong)Length)
             {
                 return false;
             }
+            var delta = addr - sec.addr;
+            if (delta >= (ulong)Length - (ulong)sec.offset)
+            {
+                return false;
+            }
+            var rawOffset = (ulong)sec.offset + delta;
             var remainingStreamBytes = (ulong)Length - rawOffset;
             if (byteSize > remainingStreamBytes)
             {
@@ -304,8 +318,12 @@ namespace Il2CppDumper
             {
                 return false;
             }
-            var offset = pointer - sec.addr + sec.offset;
-            if (offset >= Length)
+            if ((ulong)sec.offset >= (ulong)Length)
+            {
+                return false;
+            }
+            var delta = pointer - sec.addr;
+            if (delta >= (ulong)Length - (ulong)sec.offset)
             {
                 return false;
             }

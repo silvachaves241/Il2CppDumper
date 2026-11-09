@@ -343,7 +343,6 @@ namespace Il2CppDumper
             }
             else
             {
-                ulong[] methodPointers;
                 var pointerCount = pCodeRegistration.methodPointersCount;
                 if (pointerCount > 0 && pointerCount <= (ulong)Array.MaxLength &&
                     pointerCount <= ulong.MaxValue / PointerSize)

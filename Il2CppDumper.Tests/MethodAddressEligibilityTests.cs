@@ -224,6 +224,8 @@ namespace Il2CppDumper.Tests
             m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
             m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
             m.fieldDefs = Array.Empty<Il2CppFieldDefinition>();
+            m.metadataUsageDic = new Dictionary<Il2CppMetadataUsage, SortedDictionary<uint, uint>>();
+            for (uint i = 1; i <= 6; i++) { m.metadataUsageDic[(Il2CppMetadataUsage)i] = new SortedDictionary<uint, uint>(); }
             return m;
         }
 
@@ -1366,6 +1368,176 @@ namespace Il2CppDumper.Tests
             Assert.Equal("methodMapping", failure.Category);
             Assert.Equal("OverflowModule.dll", failure.Member);
             Assert.Contains("invalid or exceeds addressable bounds", failure.Detail);
+        }
+
+        private static byte[] CreateSyntheticElf64WithCustomSegment(ulong p_vaddr, ulong p_offset, ulong p_memsz, ulong p_filesz, int streamSize = 0x2000, uint p_flags = 7)
+        {
+            var data = new byte[streamSize];
+            using var ms = new MemoryStream(data);
+            using var w = new BinaryWriter(ms);
+
+            w.Write(new byte[] { 0x7F, (byte)'E', (byte)'L', (byte)'F' }); // e_ident[0..3]
+            w.Write((byte)2); // EI_CLASS: ELFCLASS64
+            w.Write((byte)1); // EI_DATA: ELFDATA2LSB
+            w.Write((byte)1); // EI_VERSION: EV_CURRENT
+            w.Write(new byte[9]); // padding
+
+            w.Write((ushort)3); // e_type: ET_DYN
+            w.Write((ushort)183); // e_machine: EM_AARCH64
+            w.Write((uint)1); // e_version: EV_CURRENT
+            w.Write((ulong)0); // e_entry
+            w.Write((ulong)64); // e_phoff = 64
+            w.Write((ulong)0x1000); // e_shoff = 0x1000 (non-zero so IsDumped is false)
+            w.Write((uint)0); // e_flags
+            w.Write((ushort)64); // e_ehsize = 64
+            w.Write((ushort)56); // e_phentsize = 56
+            w.Write((ushort)2); // e_phnum = 2 (PT_LOAD and PT_DYNAMIC)
+            w.Write((ushort)64); // e_shentsize = 64
+            w.Write((ushort)0); // e_shnum = 0
+            w.Write((ushort)0); // e_shstrndx = 0
+
+            // Program header 0: PT_LOAD
+            w.Write((uint)1); // p_type: PT_LOAD
+            w.Write(p_flags); // p_flags: PF_X | PF_W | PF_R
+            w.Write(p_offset); // p_offset
+            w.Write(p_vaddr); // p_vaddr
+            w.Write(p_vaddr); // p_paddr
+            w.Write(p_filesz); // p_filesz
+            w.Write(p_memsz); // p_memsz
+            w.Write((ulong)4096); // p_align
+
+            // Program header 1: PT_DYNAMIC
+            var dynamicOffset = 0x200ul;
+            var dynamicVaddr = 0x5000ul;
+            w.Write((uint)2); // p_type: PT_DYNAMIC
+            w.Write((uint)6); // p_flags: PF_R | PF_W
+            w.Write(dynamicOffset); // p_offset
+            w.Write(dynamicVaddr); // p_vaddr
+            w.Write(dynamicVaddr); // p_paddr
+            w.Write((ulong)16); // p_filesz (1 entry = 16 bytes)
+            w.Write((ulong)16); // p_memsz
+            w.Write((ulong)8); // p_align
+
+            // Dynamic table entry: DT_NULL
+            ms.Position = (long)dynamicOffset;
+            w.Write((long)0); // d_tag = DT_NULL
+            w.Write((ulong)0); // d_un = 0
+
+            return data;
+        }
+
+        [Fact]
+        public void PE_Init_LegacyIl2Cpp241_MethodPointersPopulated_AndPublishedInScriptJson()
+        {
+            // P1: In IL2CPP <= 24.1, methodPointers was shadowed by a local variable in Il2Cpp.Init,
+            // leaving this.methodPointers null and dropping all ScriptMethod / Addresses entries.
+            // Verify this.methodPointers is properly populated and exported into script.json.
+            var (peBytes, validCodeVa, _) = CreateTestPe(textVirtualSize: 0x1000, textRawSize: 0x1000);
+
+            using (var ms = new MemoryStream(peBytes))
+            using (var w = new BinaryWriter(ms))
+            {
+                // Il2CppCodeRegistration at RVA 0x1100 -> raw offset 0x500
+                ms.Position = 0x500;
+                w.Write((ulong)1);             // methodPointersCount = 1
+                w.Write(0x180001200ul);        // methodPointers -> RVA 0x1200 (raw offset 0x600)
+                for (int i = 0; i < 20; i++) w.Write((ulong)0);
+
+                // methodPointers table at RVA 0x1200 -> raw offset 0x600
+                ms.Position = 0x600;
+                w.Write(validCodeVa);          // slot 0 points to valid code VA (0x180001000)
+
+                // Il2CppMetadataRegistration at RVA 0x1300 -> raw offset 0x700
+                ms.Position = 0x700;
+                for (int i = 0; i < 20; i++) w.Write((ulong)0);
+            }
+
+            using var pe = new PE(new MemoryStream(peBytes));
+            pe.Version = 24.1;
+            pe.Init(codeRegistration: 0x180001100ul, metadataRegistration: 0x180001300ul);
+            pe.types = new[] { new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VOID } };
+
+            Assert.NotNull(pe.methodPointers);
+            Assert.Single(pe.methodPointers);
+            Assert.Equal(validCodeVa, pe.methodPointers[0]);
+
+            using var metadata = CreateTestMetadata(
+                "LegacyModule.dll",
+                "LegacyNamespace.LegacyClass",
+                isInterface: false,
+                new[] { ("LegacyExecute", false, 0x06000001u) });
+
+            pe.SetProperties(24.1, 0, metadata);
+            var executor = new Il2CppExecutor(metadata, pe);
+
+            var ptr = pe.GetMethodPointer("LegacyModule.dll", metadata.methodDefs[0]);
+            Assert.Equal(validCodeVa, ptr);
+
+            var tempDir = Path.Combine(Path.GetTempPath(), "issue88_legacy241_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var structGenerator = new StructGenerator(executor);
+                structGenerator.WriteScript(tempDir + Path.DirectorySeparatorChar);
+
+                var scriptJsonPath = Path.Combine(tempDir, "script.json");
+                Assert.True(File.Exists(scriptJsonPath));
+                using var doc = JsonDocument.Parse(File.ReadAllText(scriptJsonPath));
+                var scriptMethods = doc.RootElement.GetProperty("ScriptMethod");
+                var matching = scriptMethods.EnumerateArray()
+                    .Where(x => x.GetProperty("Name").GetString()!.Contains("LegacyExecute"))
+                    .ToList();
+                Assert.Single(matching);
+                Assert.Equal(0x1000ul, matching[0].GetProperty("Address").GetUInt64());
+
+                var addresses = doc.RootElement.GetProperty("Addresses").EnumerateArray().Select(x => x.GetUInt64()).ToHashSet();
+                Assert.Contains(0x1000ul, addresses);
+            }
+            finally
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+
+        [Fact]
+        public void Elf64_InitialOffsetWrapAround_RejectsOutOfStreamSegment_AndAcceptsRealOffsetZero()
+        {
+            // P2: Wrap-around attack where p_offset = 0xFFFFFFFFFFFFFF00 and delta = 0x100 wraps to 0x0.
+            // Out-of-stream segment must be rejected in TryMapContiguousRange, IsValidMethodPointer, and MapVATR.
+            // Conversely, a valid segment with real offset 0 (p_offset = 0) must succeed and resolve offset 0x100.
+
+            // 1. Wrap-around segment (p_offset = 0xFFFFFFFFFFFFFF00, p_vaddr = 0x1400)
+            var malformedElfBytes = CreateSyntheticElf64WithCustomSegment(
+                p_vaddr: 0x1400,
+                p_offset: 0xFFFFFFFFFFFFFF00ul,
+                p_memsz: 0x400,
+                p_filesz: 0x400,
+                streamSize: 0x2000);
+
+            using (var malformedElf = new Elf64(new MemoryStream(malformedElfBytes)))
+            {
+                var candidateVa = 0x1500ul; // delta = 0x100 -> p_offset + delta wraps to 0x0!
+                Assert.False(malformedElf.IsValidMethodPointer(candidateVa));
+                Assert.False(malformedElf.TryMapContiguousRange(candidateVa, 8, out _));
+                Assert.Throws<InvalidOperationException>(() => malformedElf.MapVATR(candidateVa));
+            }
+
+            // 2. Control segment with real offset 0 (p_offset = 0, p_vaddr = 0x1000)
+            var validElfBytes = CreateSyntheticElf64WithCustomSegment(
+                p_vaddr: 0x1000,
+                p_offset: 0ul,
+                p_memsz: 0x400,
+                p_filesz: 0x400,
+                streamSize: 0x2000);
+
+            using (var validElf = new Elf64(new MemoryStream(validElfBytes)))
+            {
+                var candidateVa = 0x1100ul; // delta = 0x100 -> rawOffset = 0x100
+                Assert.True(validElf.IsValidMethodPointer(candidateVa));
+                Assert.True(validElf.TryMapContiguousRange(candidateVa, 8, out var resolvedOffset));
+                Assert.Equal(0x100ul, resolvedOffset);
+                Assert.Equal(0x100ul, validElf.MapVATR(candidateVa));
+            }
         }
     }
 }

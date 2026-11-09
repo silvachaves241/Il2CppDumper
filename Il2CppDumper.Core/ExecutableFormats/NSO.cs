@@ -215,8 +215,12 @@ namespace Il2CppDumper
             {
                 return false;
             }
-            var offset = pointer - segment.MemoryOffset + segment.FileOffset;
-            if (offset >= Length)
+            if ((ulong)segment.FileOffset >= (ulong)Length)
+            {
+                return false;
+            }
+            var delta = pointer - segment.MemoryOffset;
+            if (delta >= (ulong)Length - (ulong)segment.FileOffset)
             {
                 return false;
             }
@@ -226,7 +230,16 @@ namespace Il2CppDumper
         public override ulong MapVATR(ulong addr)
         {
             var segment = segments.First(x => addr >= x.MemoryOffset && addr <= x.MemoryOffset + x.DecompressedSize);
-            return addr - segment.MemoryOffset + segment.FileOffset;
+            if ((ulong)segment.FileOffset >= (ulong)Length)
+            {
+                throw new InvalidOperationException();
+            }
+            var delta = addr - segment.MemoryOffset;
+            if (delta >= (ulong)Length - (ulong)segment.FileOffset)
+            {
+                throw new InvalidOperationException();
+            }
+            return (ulong)segment.FileOffset + delta;
         }
 
         public override bool TryMapContiguousRange(ulong addr, ulong byteSize, out ulong offset)
@@ -247,11 +260,16 @@ namespace Il2CppDumper
             {
                 return false;
             }
-            var rawOffset = addr - segment.MemoryOffset + segment.FileOffset;
-            if (rawOffset > (ulong)Length)
+            if ((ulong)segment.FileOffset >= (ulong)Length)
             {
                 return false;
             }
+            var delta = addr - segment.MemoryOffset;
+            if (delta >= (ulong)Length - (ulong)segment.FileOffset)
+            {
+                return false;
+            }
+            var rawOffset = (ulong)segment.FileOffset + delta;
             var remainingStreamBytes = (ulong)Length - rawOffset;
             if (byteSize > remainingStreamBytes)
             {

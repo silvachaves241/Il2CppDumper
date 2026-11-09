@@ -66,12 +66,16 @@ namespace Il2CppDumper
             {
                 return 0ul;
             }
-            var offset = addr - section.VirtualAddress + section.PointerToRawData;
-            if (offset >= Length)
+            if ((ulong)section.PointerToRawData >= (ulong)Length)
             {
                 return 0ul;
             }
-            return offset;
+            var delta = addr - section.VirtualAddress;
+            if (delta >= (ulong)Length - (ulong)section.PointerToRawData)
+            {
+                return 0ul;
+            }
+            return (ulong)section.PointerToRawData + delta;
         }
 
         public override bool TryMapContiguousRange(ulong absAddr, ulong byteSize, out ulong offset)
@@ -102,11 +106,16 @@ namespace Il2CppDumper
             {
                 return false;
             }
-            var rawOffset = addr - section.VirtualAddress + section.PointerToRawData;
-            if (rawOffset > (ulong)Length)
+            if ((ulong)section.PointerToRawData >= (ulong)Length)
             {
                 return false;
             }
+            var delta = addr - section.VirtualAddress;
+            if (delta >= (ulong)Length - (ulong)section.PointerToRawData)
+            {
+                return false;
+            }
+            var rawOffset = (ulong)section.PointerToRawData + delta;
             var remainingStreamBytes = (ulong)Length - rawOffset;
             if (byteSize > remainingStreamBytes)
             {
@@ -165,8 +174,12 @@ namespace Il2CppDumper
             {
                 return false;
             }
-            var rawOffset = addr - section.VirtualAddress + section.PointerToRawData;
-            if (rawOffset >= Length)
+            if ((ulong)section.PointerToRawData >= (ulong)Length)
+            {
+                return false;
+            }
+            var delta = addr - section.VirtualAddress;
+            if (delta >= (ulong)Length - (ulong)section.PointerToRawData)
             {
                 return false;
             }

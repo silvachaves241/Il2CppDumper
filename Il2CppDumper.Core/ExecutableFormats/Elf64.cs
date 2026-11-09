@@ -75,12 +75,16 @@ namespace Il2CppDumper
                 var maxLen = Math.Min(x.p_memsz, x.p_filesz);
                 return addr >= x.p_vaddr && addr < x.p_vaddr + maxLen;
             });
-            var offset = addr - phdr.p_vaddr + phdr.p_offset;
-            if (offset >= Length)
+            if (phdr.p_offset >= (ulong)Length)
             {
                 throw new InvalidOperationException();
             }
-            return offset;
+            var delta = addr - phdr.p_vaddr;
+            if (delta >= (ulong)Length - phdr.p_offset)
+            {
+                throw new InvalidOperationException();
+            }
+            return phdr.p_offset + delta;
         }
 
         public override bool TryMapContiguousRange(ulong addr, ulong byteSize, out ulong offset)
@@ -106,11 +110,16 @@ namespace Il2CppDumper
             {
                 return false;
             }
-            var rawOffset = addr - phdr.p_vaddr + phdr.p_offset;
-            if (rawOffset > (ulong)Length)
+            if (phdr.p_offset >= (ulong)Length)
             {
                 return false;
             }
+            var delta = addr - phdr.p_vaddr;
+            if (delta >= (ulong)Length - phdr.p_offset)
+            {
+                return false;
+            }
+            var rawOffset = phdr.p_offset + delta;
             var remainingStreamBytes = (ulong)Length - rawOffset;
             if (byteSize > remainingStreamBytes)
             {
@@ -316,8 +325,12 @@ namespace Il2CppDumper
             {
                 return false;
             }
-            var offset = pointer - phdr.p_vaddr + phdr.p_offset;
-            if (offset >= Length)
+            if (phdr.p_offset >= (ulong)Length)
+            {
+                return false;
+            }
+            var delta = pointer - phdr.p_vaddr;
+            if (delta >= (ulong)Length - phdr.p_offset)
             {
                 return false;
             }
