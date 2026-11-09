@@ -261,23 +261,35 @@ namespace Il2CppDumper.Diff
 
                     if (leftEntries.Count == 1 && rightEntries.Count == 1)
                     {
-                        leftEntries[0].Handled = true;
-                        rightEntries[0].Handled = true;
                         var lm = leftEntries[0];
                         var rm = rightEntries[0];
-                        if (lm.Entry.Address != rm.Entry.Address)
+                        var leftHasSig = !string.IsNullOrEmpty(lm.Entry.Signature);
+                        var rightHasSig = !string.IsNullOrEmpty(rm.Entry.Signature);
+
+                        if (leftHasSig && rightHasSig && !string.Equals(lm.Entry.Signature, rm.Entry.Signature, StringComparison.Ordinal))
                         {
-                            var displayImage = rm.Identity.Image ?? lm.Identity.Image ?? rm.Entry.Image ?? lm.Entry.Image;
-                            var displayAssembly = rm.Identity.Assembly ?? lm.Identity.Assembly ?? rm.Entry.Assembly ?? lm.Entry.Assembly;
-                            addressChanges.Add(new DumpDiffAddressChange
+                            // Distinct overloads with different signatures: do not pair
+                            lm.Handled = true;
+                            rm.Handled = true;
+                        }
+                        else
+                        {
+                            lm.Handled = true;
+                            rm.Handled = true;
+                            if (lm.Entry.Address != rm.Entry.Address)
                             {
-                                type = lm.Entry.TypeName, // simple type name
-                                image = displayImage,
-                                assembly = displayAssembly,
-                                method = qKey.MethodName,
-                                left = $"0x{lm.Entry.Address:X}",
-                                right = $"0x{rm.Entry.Address:X}"
-                            });
+                                var displayImage = rm.Identity.Image ?? lm.Identity.Image ?? rm.Entry.Image ?? lm.Entry.Image;
+                                var displayAssembly = rm.Identity.Assembly ?? lm.Identity.Assembly ?? rm.Entry.Assembly ?? lm.Entry.Assembly;
+                                addressChanges.Add(new DumpDiffAddressChange
+                                {
+                                    type = lm.Entry.TypeName, // simple type name
+                                    image = displayImage,
+                                    assembly = displayAssembly,
+                                    method = qKey.MethodName,
+                                    left = $"0x{lm.Entry.Address:X}",
+                                    right = $"0x{rm.Entry.Address:X}"
+                                });
+                            }
                         }
                     }
                     else
@@ -365,39 +377,30 @@ namespace Il2CppDumper.Diff
                     var leftEntries = leftRemainingGroups[remKey];
                     var rightEntries = rightRemainingGroups[remKey];
 
-                    var leftBySig = leftEntries
-                        .GroupBy(m => m.Entry.Signature ?? "")
-                        .ToDictionary(g => g.Key, g => g.ToList());
-
-                    var rightBySig = rightEntries
-                        .GroupBy(m => m.Entry.Signature ?? "")
-                        .ToDictionary(g => g.Key, g => g.ToList());
-
-                    var commonSigs = leftBySig.Keys.Intersect(rightBySig.Keys)
-                        .OrderBy(s => s, StringComparer.Ordinal);
-
-                    foreach (var sig in commonSigs)
+                    if (leftEntries.Count == 1 && rightEntries.Count == 1)
                     {
-                        var leftSig = leftBySig[sig];
-                        var rightSig = rightBySig[sig];
+                        var l = leftEntries[0];
+                        var r = rightEntries[0];
+                        var leftHasSig = !string.IsNullOrEmpty(l.Entry.Signature);
+                        var rightHasSig = !string.IsNullOrEmpty(r.Entry.Signature);
 
-                        if (leftSig.Count == 1 && rightSig.Count == 1)
+                        if (leftHasSig && rightHasSig && !string.Equals(l.Entry.Signature, r.Entry.Signature, StringComparison.Ordinal))
                         {
-                            var l = leftSig[0];
-                            var r = rightSig[0];
-
+                            // Distinct overloads with different signatures: do not pair
+                        }
+                        else
+                        {
                             if (l.Identity.IsIndeterminate || r.Identity.IsIndeterminate)
                             {
-                                // Owner is indeterminate because multiple candidate declarations exist in dump.json
                                 result.hasAmbiguousMethodAddresses = true;
-                                var desc = !string.IsNullOrEmpty(sig) ? sig : remKey.MethodName;
+                                var desc = rightHasSig ? r.Entry.Signature! : (leftHasSig ? l.Entry.Signature! : remKey.MethodName);
                                 ambiguityNotes.Add(desc);
                             }
                             else if (AreOwnersCompatible(l, r))
                             {
                                 if (l.Entry.Address != r.Entry.Address)
                                 {
-                                    var displayMethod = !string.IsNullOrEmpty(sig) ? sig : remKey.MethodName;
+                                    var displayMethod = rightHasSig ? r.Entry.Signature! : (leftHasSig ? l.Entry.Signature! : remKey.MethodName);
                                     var displayImage = r.Identity.Image ?? l.Identity.Image ?? r.Entry.Image ?? l.Entry.Image;
                                     var displayAssembly = r.Identity.Assembly ?? l.Identity.Assembly ?? r.Entry.Assembly ?? l.Entry.Assembly;
                                     addressChanges.Add(new DumpDiffAddressChange
@@ -411,29 +414,115 @@ namespace Il2CppDumper.Diff
                                     });
                                 }
                             }
-                            // Incompatible explicit owners: do not pair
                         }
-                        else
-                        {
-                            // Multiple candidates / overloads in an unresolved group
-                            var sortedLeft = leftSig.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
-                            var sortedRight = rightSig.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+                    }
+                    else
+                    {
+                        var leftBySig = leftEntries
+                            .GroupBy(m => m.Entry.Signature ?? "")
+                            .ToDictionary(g => g.Key, g => g.ToList());
 
-                            if (sortedLeft.Count == sortedRight.Count &&
-                                sortedLeft.Distinct().Count() <= 1 &&
-                                sortedLeft.SequenceEqual(sortedRight))
+                        var rightBySig = rightEntries
+                            .GroupBy(m => m.Entry.Signature ?? "")
+                            .ToDictionary(g => g.Key, g => g.ToList());
+
+                        var commonSigs = leftBySig.Keys.Intersect(rightBySig.Keys)
+                            .OrderBy(s => s, StringComparer.Ordinal);
+
+                        foreach (var sig in commonSigs)
+                        {
+                            var leftSig = leftBySig[sig];
+                            var rightSig = rightBySig[sig];
+
+                            if (leftSig.Count == 1 && rightSig.Count == 1)
                             {
-                                // Shared identical implementation across all entries: unchanged
+                                var l = leftSig[0];
+                                var r = rightSig[0];
+
+                                if (l.Identity.IsIndeterminate || r.Identity.IsIndeterminate)
+                                {
+                                    // Owner is indeterminate because multiple candidate declarations exist in dump.json
+                                    result.hasAmbiguousMethodAddresses = true;
+                                    var desc = !string.IsNullOrEmpty(sig) ? sig : remKey.MethodName;
+                                    ambiguityNotes.Add(desc);
+                                }
+                                else if (AreOwnersCompatible(l, r))
+                                {
+                                    if (l.Entry.Address != r.Entry.Address)
+                                    {
+                                        var displayMethod = !string.IsNullOrEmpty(sig) ? sig : remKey.MethodName;
+                                        var displayImage = r.Identity.Image ?? l.Identity.Image ?? r.Entry.Image ?? l.Entry.Image;
+                                        var displayAssembly = r.Identity.Assembly ?? l.Identity.Assembly ?? r.Entry.Assembly ?? l.Entry.Assembly;
+                                        addressChanges.Add(new DumpDiffAddressChange
+                                        {
+                                            type = remKey.TypeName,
+                                            image = displayImage,
+                                            assembly = displayAssembly,
+                                            method = displayMethod,
+                                            left = $"0x{l.Entry.Address:X}",
+                                            right = $"0x{r.Entry.Address:X}"
+                                        });
+                                    }
+                                }
+                                // Incompatible explicit owners: do not pair
                             }
                             else
                             {
-                                // In an unresolved group with multiple candidates, signal ambiguity
-                                // and reserve addressChanged for demonstrable pairs
-                                result.hasAmbiguousMethodAddresses = true;
-                                var desc = !string.IsNullOrEmpty(sig)
-                                    ? sig
-                                    : (!string.IsNullOrEmpty(remKey.TypeName) ? $"{remKey.TypeName}.{remKey.MethodName}" : remKey.MethodName);
-                                ambiguityNotes.Add(desc);
+                                // Multiple candidates / overloads in an unresolved group
+                                bool anyIndeterminate = leftSig.Any(e => e.Identity.IsIndeterminate) || rightSig.Any(e => e.Identity.IsIndeterminate);
+
+                                bool allOwnersKnown = true;
+                                foreach (var l in leftSig)
+                                {
+                                    var lOwner = l.Identity.Image ?? l.Entry.Image ?? l.Identity.Assembly ?? l.Entry.Assembly;
+                                    if (string.IsNullOrEmpty(lOwner)) allOwnersKnown = false;
+                                }
+                                foreach (var r in rightSig)
+                                {
+                                    var rOwner = r.Identity.Image ?? r.Entry.Image ?? r.Identity.Assembly ?? r.Entry.Assembly;
+                                    if (string.IsNullOrEmpty(rOwner)) allOwnersKnown = false;
+                                }
+
+                                bool hasCompatiblePair = false;
+                                foreach (var l in leftSig)
+                                {
+                                    foreach (var r in rightSig)
+                                    {
+                                        if (AreOwnersCompatible(l, r))
+                                        {
+                                            hasCompatiblePair = true;
+                                            break;
+                                        }
+                                    }
+                                    if (hasCompatiblePair) break;
+                                }
+
+                                if (!anyIndeterminate && allOwnersKnown && !hasCompatiblePair)
+                                {
+                                    // All owners are known and disjoint: zero compatible pairings exist.
+                                    // They remain unmatched without triggering false ambiguity.
+                                    continue;
+                                }
+
+                                var sortedLeft = leftSig.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+                                var sortedRight = rightSig.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+
+                                if (sortedLeft.Count == sortedRight.Count &&
+                                    sortedLeft.Distinct().Count() <= 1 &&
+                                    sortedLeft.SequenceEqual(sortedRight))
+                                {
+                                    // Shared identical implementation across all entries: unchanged
+                                }
+                                else
+                                {
+                                    // In an unresolved group with multiple candidates, signal ambiguity
+                                    // and reserve addressChanged for demonstrable pairs
+                                    result.hasAmbiguousMethodAddresses = true;
+                                    var desc = !string.IsNullOrEmpty(sig)
+                                        ? sig
+                                        : (!string.IsNullOrEmpty(remKey.TypeName) ? $"{remKey.TypeName}.{remKey.MethodName}" : remKey.MethodName);
+                                    ambiguityNotes.Add(desc);
+                                }
                             }
                         }
                     }
@@ -602,6 +691,9 @@ namespace Il2CppDumper.Diff
             private readonly Dictionary<(string Assembly, string BaseName, int Arity), List<ReconciledType>> _byAssemblyBaseGeneric = new();
             private readonly Dictionary<(string BaseName, int Arity), List<ReconciledType>> _byBaseGeneric = new();
 
+            private readonly HashSet<string> _images = new(StringComparer.Ordinal);
+            private readonly HashSet<string> _assemblies = new(StringComparer.Ordinal);
+
             public static TypeLookupIndex Build(List<ReconciledType> reconciled, bool isLeft)
             {
                 var index = new TypeLookupIndex();
@@ -618,11 +710,13 @@ namespace Il2CppDumper.Diff
 
                     if (!string.IsNullOrEmpty(image))
                     {
+                        index._images.Add(image);
                         AddToList(index._byImageAndName, (image, fullName), r);
                     }
 
                     if (!string.IsNullOrEmpty(assembly))
                     {
+                        index._assemblies.Add(assembly);
                         AddToList(index._byAssemblyAndName, (assembly, fullName), r);
                     }
 
@@ -656,21 +750,55 @@ namespace Il2CppDumper.Diff
             {
                 baseName = string.Empty;
                 arity = 0;
-                var openBracket = typeName.IndexOf('<');
-                var closeBracket = typeName.LastIndexOf('>');
-                if (openBracket <= 0 || closeBracket <= openBracket)
+                if (string.IsNullOrEmpty(typeName) || !typeName.Contains('<'))
                     return false;
 
-                baseName = typeName.Substring(0, openBracket);
-                int commas = 0;
+                var sb = new StringBuilder();
+                int totalArity = 0;
                 int depth = 0;
-                for (int i = openBracket; i <= closeBracket; i++)
+                int blockCommas = 0;
+                bool inBlock = false;
+
+                for (int i = 0; i < typeName.Length; i++)
                 {
-                    if (typeName[i] == '<') depth++;
-                    else if (typeName[i] == '>') depth--;
-                    else if (typeName[i] == ',' && depth == 1) commas++;
+                    char c = typeName[i];
+                    if (c == '<')
+                    {
+                        if (depth == 0)
+                        {
+                            inBlock = true;
+                            blockCommas = 0;
+                        }
+                        depth++;
+                    }
+                    else if (c == '>')
+                    {
+                        depth--;
+                        if (depth == 0 && inBlock)
+                        {
+                            totalArity += blockCommas + 1;
+                            inBlock = false;
+                        }
+                        else if (depth < 0)
+                        {
+                            depth = 0;
+                        }
+                    }
+                    else if (c == ',' && depth == 1)
+                    {
+                        blockCommas++;
+                    }
+                    else if (depth == 0)
+                    {
+                        sb.Append(c);
+                    }
                 }
-                arity = commas + 1;
+
+                if (depth != 0 || totalArity == 0)
+                    return false;
+
+                baseName = sb.ToString();
+                arity = totalArity;
                 return true;
             }
 
@@ -711,6 +839,7 @@ namespace Il2CppDumper.Diff
                     identity.Assembly = entry.Assembly;
                     identity.QualifiedKey = null;
                     identity.IsAttributed = false;
+                    identity.IsIndeterminate = matches != null && matches.Count > 1;
                     return identity;
                 }
 
@@ -762,7 +891,8 @@ namespace Il2CppDumper.Diff
                 identity.Assembly = null;
                 identity.QualifiedKey = null;
                 identity.IsAttributed = false;
-                identity.IsIndeterminate = nameMatches != null && nameMatches.Count > 1;
+                identity.IsIndeterminate = (nameMatches != null && nameMatches.Count > 1) ||
+                                           (hasGeneric && (_images.Count > 1 || _assemblies.Count > 1));
                 return identity;
             }
         }
