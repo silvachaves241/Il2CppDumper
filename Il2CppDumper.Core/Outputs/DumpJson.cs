@@ -169,7 +169,7 @@ namespace Il2CppDumper
                 var parentTypeDef = executor.GetParentTypeDefinition(childTypeDef);
                 if (parentTypeDef != null && typeModelMap.TryGetValue(parentTypeDef, out var parentModel))
                 {
-                    if (!nestedChildren.Contains(childTypeDef) && !parentModel.nested.Contains(childModel))
+                    if (!ReferenceEquals(parentTypeDef, childTypeDef) && !nestedChildren.Contains(childTypeDef) && !parentModel.nested.Contains(childModel))
                     {
                         if (string.IsNullOrEmpty(childModel.image)) childModel.image = parentModel.image;
                         if (string.IsNullOrEmpty(childModel.assembly)) childModel.assembly = parentModel.assembly;

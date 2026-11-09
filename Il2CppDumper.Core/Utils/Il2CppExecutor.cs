@@ -75,6 +75,8 @@ namespace Il2CppDumper
         }
 
         private Dictionary<Il2CppTypeDefinition, List<Il2CppTypeDefinition>>? nestedTypeCandidatesMap;
+        private readonly Dictionary<Il2CppTypeDefinition, Il2CppTypeDefinition?> resolvedParents = new();
+        private readonly HashSet<Il2CppTypeDefinition> warnedDefinitions = new();
 
         private Dictionary<Il2CppTypeDefinition, List<Il2CppTypeDefinition>> GetNestedTypeCandidatesMap()
         {
@@ -116,43 +118,131 @@ namespace Il2CppDumper
             return nestedTypeCandidatesMap;
         }
 
-        public Il2CppTypeDefinition? GetParentTypeDefinition(Il2CppTypeDefinition typeDef)
+        private Il2CppTypeDefinition? GetRawDeclaredParent(Il2CppTypeDefinition typeDef)
         {
             if (typeDef.declaringTypeIndex >= 0 && typeDef.declaringTypeIndex < il2Cpp.types.Length)
             {
                 var parentType = il2Cpp.types[typeDef.declaringTypeIndex];
-                Il2CppTypeDefinition? def = null;
                 if (parentType.type == Il2CppTypeEnum.IL2CPP_TYPE_GENERICINST)
                 {
                     var genericClass = il2Cpp.MapVATR<Il2CppGenericClass>(parentType.data.generic_class);
-                    def = GetGenericClassTypeDefinition(genericClass);
+                    return GetGenericClassTypeDefinition(genericClass);
                 }
                 else
                 {
-                    def = GetTypeDefinitionFromIl2CppType(parentType);
-                }
-                if (def != null)
-                {
-                    return def;
+                    return GetTypeDefinitionFromIl2CppType(parentType);
                 }
             }
+            return null;
+        }
 
+        private bool WouldCreateCycle(Il2CppTypeDefinition child, Il2CppTypeDefinition candidateParent)
+        {
+            if (ReferenceEquals(child, candidateParent))
+            {
+                return true;
+            }
+
+            var visited = new HashSet<Il2CppTypeDefinition> { child };
+            var current = candidateParent;
+            int depth = 0;
+
+            while (current != null && depth < 256)
+            {
+                if (!visited.Add(current))
+                {
+                    return true;
+                }
+
+                if (resolvedParents.TryGetValue(current, out var nextParent))
+                {
+                    current = nextParent;
+                }
+                else
+                {
+                    current = GetRawDeclaredParent(current);
+                }
+                depth++;
+            }
+
+            return false;
+        }
+
+        public Il2CppTypeDefinition? GetParentTypeDefinition(Il2CppTypeDefinition typeDef)
+        {
+            if (resolvedParents.TryGetValue(typeDef, out var cachedParent))
+            {
+                return cachedParent;
+            }
+
+            var declaredParent = GetRawDeclaredParent(typeDef);
+            if (declaredParent != null && !WouldCreateCycle(typeDef, declaredParent))
+            {
+                resolvedParents[typeDef] = declaredParent;
+                return declaredParent;
+            }
+
+            // Declared parent is either missing or rejected due to a cycle.
+            // Search for acyclic candidate parents in metadata.nestedTypeIndices.
             var map = GetNestedTypeCandidatesMap();
+            var acyclicCandidates = new List<Il2CppTypeDefinition>();
             if (map.TryGetValue(typeDef, out var candidates))
             {
-                if (candidates.Count == 1)
+                foreach (var c in candidates)
                 {
-                    return candidates[0];
-                }
-                if (candidates.Count > 1)
-                {
-                    var childName = metadata.GetStringFromIndex(typeDef.nameIndex);
-                    var parentNames = string.Join(", ", candidates.Select(c => metadata.GetStringFromIndex(c.nameIndex)));
-                    Console.Error.WriteLine($"[Diagnostic] Ambiguous declaring type for nested type '{childName}': multiple candidates found ({parentNames}) with no valid declaringTypeIndex.");
-                    return null;
+                    if (!WouldCreateCycle(typeDef, c))
+                    {
+                        acyclicCandidates.Add(c);
+                    }
                 }
             }
 
+            if (declaredParent != null)
+            {
+                // Declared parent was rejected due to a cycle
+                if (acyclicCandidates.Count == 1)
+                {
+                    var fallback = acyclicCandidates[0];
+                    if (warnedDefinitions.Add(typeDef))
+                    {
+                        var childName = metadata.GetStringFromIndex(typeDef.nameIndex);
+                        var fallbackName = metadata.GetStringFromIndex(fallback.nameIndex);
+                        CoreLogger.LogWarning($"WARNING: Cyclic declaring type detected for '{childName}' (declaringTypeIndex points to self or creates a cycle). Falling back to candidate parent '{fallbackName}'.");
+                    }
+                    resolvedParents[typeDef] = fallback;
+                    return fallback;
+                }
+
+                if (warnedDefinitions.Add(typeDef))
+                {
+                    var childName = metadata.GetStringFromIndex(typeDef.nameIndex);
+                    CoreLogger.LogWarning($"WARNING: Cyclic declaring type detected for '{childName}' with no unique acyclic parent candidate. Preserving as unparented root definition.");
+                }
+                resolvedParents[typeDef] = null;
+                return null;
+            }
+
+            // No declared parent (declaringTypeIndex == -1)
+            if (acyclicCandidates.Count == 1)
+            {
+                var parent = acyclicCandidates[0];
+                resolvedParents[typeDef] = parent;
+                return parent;
+            }
+
+            if (acyclicCandidates.Count > 1)
+            {
+                if (warnedDefinitions.Add(typeDef))
+                {
+                    var childName = metadata.GetStringFromIndex(typeDef.nameIndex);
+                    var parentNames = string.Join(", ", acyclicCandidates.Select(c => metadata.GetStringFromIndex(c.nameIndex)));
+                    CoreLogger.LogWarning($"WARNING: Ambiguous declaring type for nested type '{childName}': multiple candidate parents found ({parentNames}) with no valid declaringTypeIndex.");
+                }
+                resolvedParents[typeDef] = null;
+                return null;
+            }
+
+            resolvedParents[typeDef] = null;
             return null;
         }
 

@@ -569,10 +569,6 @@ namespace Il2CppDumper.Tests
             var (mA, il2CppA, execA, typeDefsA) = CreatePollyEnvironment();
             using (mA) using (il2CppA)
             {
-                // Child 5 (<>c__DisplayClass14_0) has declaringTypeIndex = 1 (AsyncPolicy<TResult>)
-                // Add child 5 ALSO into parent 0's (AsyncPolicy) nestedTypeIndices:
-                // Parent 0 originally has indices [2, 3, 4] (nestedTypesStart = 0, nested_type_count = 3)
-                // We expand parent 0 to count 4, pointing to [2, 3, 4, 5]
                 typeDefsA[0].nested_type_count = 4;
                 mA.nestedTypeIndices = new[] { 2, 3, 4, 5, 5, 6, 7, 10, 11 };
                 typeDefsA[1].nestedTypesStart = 4; // points to [5, 6, 7]
@@ -590,7 +586,7 @@ namespace Il2CppDumper.Tests
             }
 
             // Case B: declaringTypeIndex == -1 and multiple candidate parents exist (unresolved conflict)
-            // Explicit diagnostic is emitted and parent returns null (does not arbitrate by read order)
+            // Emits structured warning via CoreLogger (captured by API consumer) and returns null
             var (mB, il2CppB, execB, typeDefsB) = CreatePollyEnvironment();
             using (mB) using (il2CppB)
             {
@@ -599,21 +595,126 @@ namespace Il2CppDumper.Tests
                 mB.nestedTypeIndices = new[] { 2, 3, 4, 5, 5, 6, 7, 10, 11 };
                 typeDefsB[1].nestedTypesStart = 4;
 
-                var parent = execB.GetParentTypeDefinition(typeDefsB[5]);
-                Assert.Null(parent); // Ambiguous conflict without declared parent -> returns null!
+                var warnings = new List<string>();
+                using var sw = new StringWriter();
+                JsonDumpModel model;
+                using (CoreLogger.Scope(sw, warnings))
+                {
+                    var parent = execB.GetParentTypeDefinition(typeDefsB[5]);
+                    Assert.Null(parent); // Ambiguous conflict without declared parent -> returns null!
 
-                var model = JsonDumpGenerator.Create(execB, new Config());
+                    model = JsonDumpGenerator.Create(execB, new Config());
+                }
+
                 // Child 5 becomes root type, not adopted by arbitrary order
                 var p0 = model.types.First(t => t.fullName == "Polly.AsyncPolicy");
                 var p1 = model.types.First(t => t.fullName == "Polly.AsyncPolicy<TResult>");
-                // p1 (AsyncPolicy<TResult>) does not adopt child 5 because parent was ambiguous
                 Assert.DoesNotContain(p1.nested, n => n.fullName.Contains("DisplayClass14_0"));
-                // Child 5 becomes an unparented root type
                 Assert.Contains(model.types, t => t.fullName == "<>c__DisplayClass14_0<TResult>");
+
+                // Warning must be captured in CoreLogger and API writer exactly once for this definition
+                Assert.Single(warnings);
+                Assert.Contains("WARNING: Ambiguous declaring type for nested type '<>c__DisplayClass14_0'", warnings[0]);
+                Assert.Contains("AsyncPolicy", warnings[0]);
+                Assert.Contains("AsyncPolicy`1", warnings[0]);
+                Assert.Contains(warnings[0], sw.ToString());
             }
         }
 
         [Fact]
+        public void PollyDump_ParentCycle_RejectsCycleAndFallsBackToAcyclicCandidate_PreservingDefinitionCount()
+        {
+            // Point 1: When declaringTypeIndex of def 5 points to itself (def 5),
+            // but nestedTypeIndices table indicates def 1 (AsyncPolicy<TResult>) as parent:
+            // The shared resolver rejects the cycle, falls back to the unique acyclic candidate (def 1),
+            // emits a warning on CoreLogger, and the recursive definition count is preserved at 12 (does NOT drop to 11).
+            var (m, il2Cpp, exec, typeDefs) = CreatePollyEnvironment();
+            using (m) using (il2Cpp)
+            {
+                typeDefs[5].declaringTypeIndex = 5; // Mutate to point to itself!
+
+                var warnings = new List<string>();
+                using var sw = new StringWriter();
+                JsonDumpModel model;
+                using (CoreLogger.Scope(sw, warnings))
+                {
+                    var parent = exec.GetParentTypeDefinition(typeDefs[5]);
+                    Assert.Same(typeDefs[1], parent); // Must reject self-cycle and fall back to def 1!
+
+                    model = JsonDumpGenerator.Create(exec, new Config());
+                }
+
+                static int CountTypes(IEnumerable<JsonDumpType> types)
+                {
+                    int count = 0;
+                    foreach (var t in types)
+                    {
+                        count += 1 + CountTypes(t.nested);
+                    }
+                    return count;
+                }
+
+                Assert.Equal(12, CountTypes(model.types)); // Must NOT drop to 11!
+
+                var p1 = model.types.First(t => t.fullName == "Polly.AsyncPolicy<TResult>");
+                Assert.Contains(p1.nested, n => n.fullName == "Polly.AsyncPolicy<TResult>.<>c__DisplayClass14_0");
+
+                // Warning logged via CoreLogger
+                Assert.Single(warnings);
+                Assert.Contains("WARNING: Cyclic declaring type detected for '<>c__DisplayClass14_0'", warnings[0]);
+                Assert.Contains("Falling back to candidate parent 'AsyncPolicy`1'", warnings[0]);
+                Assert.Contains(warnings[0], sw.ToString());
+
+                // Self-diff succeeds with 0 differences
+                var diff = DumpDiffer.Compare(model, model);
+                Assert.False(diff.HasDifferences);
+            }
+        }
+
+        [Fact]
+        public void PollyDump_ParentCycle_WithNoAcyclicCandidate_PreservesDefinitionAsRootWithDiagnostic()
+        {
+            // Point 1: If def 5 points to itself and has NO candidate in nestedTypeIndices:
+            // It is preserved as an unparented root definition with a warning, and total count is still 12.
+            var (m, il2Cpp, exec, typeDefs) = CreatePollyEnvironment();
+            using (m) using (il2Cpp)
+            {
+                typeDefs[5].declaringTypeIndex = 5; // self-cycle
+                typeDefs[1].nestedTypesStart = 4;
+                typeDefs[1].nested_type_count = 2; // only [6, 7], removed 5
+
+                var warnings = new List<string>();
+                using var sw = new StringWriter();
+                JsonDumpModel model;
+                using (CoreLogger.Scope(sw, warnings))
+                {
+                    var parent = exec.GetParentTypeDefinition(typeDefs[5]);
+                    Assert.Null(parent);
+
+                    model = JsonDumpGenerator.Create(exec, new Config());
+                }
+
+                static int CountTypes(IEnumerable<JsonDumpType> types)
+                {
+                    int count = 0;
+                    foreach (var t in types)
+                    {
+                        count += 1 + CountTypes(t.nested);
+                    }
+                    return count;
+                }
+
+                Assert.Equal(12, CountTypes(model.types)); // Definition 5 is preserved as root, count is 12!
+                Assert.Contains(model.types, t => t.fullName.Contains("<>c__DisplayClass14_0"));
+
+                Assert.Single(warnings);
+                Assert.Contains("WARNING: Cyclic declaring type detected for '<>c__DisplayClass14_0'", warnings[0]);
+                Assert.Contains("Preserving as unparented root definition", warnings[0]);
+                Assert.Contains(warnings[0], sw.ToString());
+            }
+        }
+
+                [Fact]
         public void PollyDump_NonGenericTypeWithBacktickInName_PreservesLiteralName_WithoutCollision()
         {
             // Point 3: A non-generic definition named AsyncPolicy`Literal (genericContainerIndex = -1)
