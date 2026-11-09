@@ -72,9 +72,7 @@ namespace Il2CppDumper
         {
             var phdr = programSegment.First(x =>
             {
-                var maxLen = (x.p_filesz > 0 && x.p_memsz > 0)
-                    ? Math.Min(x.p_memsz, x.p_filesz)
-                    : (x.p_memsz > 0 ? x.p_memsz : x.p_filesz);
+                var maxLen = Math.Min(x.p_memsz, x.p_filesz);
                 return addr >= x.p_vaddr && addr < x.p_vaddr + maxLen;
             });
             var offset = addr - phdr.p_vaddr + phdr.p_offset;
@@ -269,9 +267,7 @@ namespace Il2CppDumper
             }
             var phdr = programSegment.FirstOrDefault(x =>
             {
-                var maxLen = (x.p_filesz > 0 && x.p_memsz > 0)
-                    ? Math.Min(x.p_memsz, x.p_filesz)
-                    : (x.p_memsz > 0 ? x.p_memsz : x.p_filesz);
+                var maxLen = Math.Min(x.p_memsz, x.p_filesz);
                 return pointer >= x.p_vaddr && pointer < x.p_vaddr + maxLen;
             });
             if (phdr == null)

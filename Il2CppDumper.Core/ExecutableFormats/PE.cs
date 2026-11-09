@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -59,9 +59,7 @@ namespace Il2CppDumper
             var addr = absAddr - ImageBase;
             var section = sections.FirstOrDefault(x =>
             {
-                var maxLen = (x.SizeOfRawData > 0 && x.VirtualSize > 0)
-                    ? Math.Min(x.VirtualSize, x.SizeOfRawData)
-                    : (x.VirtualSize > 0 ? x.VirtualSize : x.SizeOfRawData);
+                var maxLen = Math.Min(x.VirtualSize, x.SizeOfRawData);
                 return addr >= x.VirtualAddress && addr < x.VirtualAddress + maxLen;
             });
             if (section == null)
@@ -113,9 +111,7 @@ namespace Il2CppDumper
             var addr = pointer - ImageBase;
             var section = sections.FirstOrDefault(x =>
             {
-                var maxLen = (x.SizeOfRawData > 0 && x.VirtualSize > 0)
-                    ? Math.Min(x.VirtualSize, x.SizeOfRawData)
-                    : (x.VirtualSize > 0 ? x.VirtualSize : x.SizeOfRawData);
+                var maxLen = Math.Min(x.VirtualSize, x.SizeOfRawData);
                 return addr >= x.VirtualAddress && addr < x.VirtualAddress + maxLen;
             });
             if (section == null)

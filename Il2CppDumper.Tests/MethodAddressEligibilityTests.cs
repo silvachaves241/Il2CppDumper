@@ -778,5 +778,188 @@ namespace Il2CppDumper.Tests
                 }
             }
         }
+        [Fact]
+        public void PE_Disk_PhysicalRawSizeZero_IsRejected_AndMapVATRReturnsZero_WhileDumpedMemorySucceeds()
+        {
+            // P2: .text with VirtualSize=0x100 and SizeOfRawData=0 (physical raw data size is zero)
+            var sections = new (string, byte[], uint, uint)[]
+            {
+                (".text", Array.Empty<byte>(), 0x100, 0x60000020), // RVA 0x1000, VirtualSize 0x100, RawSize 0
+                (".data", new byte[512], 512, 0xC0000040)
+            };
+            var peBytes = ProtectionReportTests.CreateSyntheticPe(sections);
+
+            // 1. On disk: candidate RVA 0x1040 must be rejected and MapVATR returns 0
+            using (var pe = new PE(new MemoryStream(peBytes)))
+            {
+                var candidateVa = 0x180001040ul; // RVA 0x1040
+                Assert.False(pe.IsValidMethodPointer(candidateVa));
+                Assert.Equal(0ul, pe.MapVATR(candidateVa));
+            }
+
+            // 2. Dumped memory positive control: bytes present at RVA 0x1000 up to VirtualSize 0x100
+            var dumpedBytes = new byte[0x2000];
+            Array.Copy(peBytes, dumpedBytes, peBytes.Length);
+            dumpedBytes[0x1040] = 0x90; // valid byte in memory at offset 0x1040
+
+            using (var dumpedPe = new PE(new MemoryStream(dumpedBytes)))
+            {
+                dumpedPe.LoadFromMemory(0x180000000ul);
+                var candidateVa = 0x180001040ul;
+                Assert.True(dumpedPe.IsValidMethodPointer(candidateVa));
+                Assert.Equal(0x1040ul, dumpedPe.MapVATR(candidateVa));
+            }
+        }
+
+        [Fact]
+        public void ELF64_PhysicalFileszZero_IsRejected_AndMapVATRThrows_WhileDumpedMemorySucceeds()
+        {
+            // P2: PT_LOAD executable segment with p_vaddr=0x1400, p_offset=0x400, p_memsz=0x400, p_filesz=0
+            var elfBytes = CreateSyntheticElf64WithSegment(p_vaddr: 0x1400, p_offset: 0x400, p_memsz: 0x400, p_filesz: 0);
+
+            // 1. On disk: candidate VA 0x1600 must be rejected and MapVATR throws InvalidOperationException
+            using (var elf = new Elf64(new MemoryStream(elfBytes)))
+            {
+                var candidateVa = 0x1600ul;
+                Assert.False(elf.IsValidMethodPointer(candidateVa));
+                Assert.Throws<InvalidOperationException>(() => elf.MapVATR(candidateVa));
+            }
+
+            // 2. Dumped memory positive control: segment with p_filesz = p_memsz = 0x400
+            var dumpedElfBytes = CreateSyntheticElf64WithSegment(p_vaddr: 0x1400, p_offset: 0x400, p_memsz: 0x400, p_filesz: 0x400);
+            using (var dumpedElf = new Elf64(new MemoryStream(dumpedElfBytes)))
+            {
+                var candidateVa = 0x1500ul;
+                Assert.True(dumpedElf.IsValidMethodPointer(candidateVa));
+                Assert.Equal(0x500ul, dumpedElf.MapVATR(candidateVa));
+            }
+        }
+
+        [Fact]
+        public void PE_Init_UnbackedCodeGenModuleMethodPointersTable_FallsBackToZeroTable_WithoutReadingHeaderBytes()
+        {
+            // P1: When codeGenModule.methodPointers points to unbacked virtual tail (like Dofus 0x18712FA60),
+            // MapVATR returns 0. TryMapVATR must treat 0 in PE as mapping failure and fall back to zeroed table,
+            // never reading the PE DOS header bytes (0x300905A4D, etc.) as candidate pointers.
+            var (peBytes, _, _) = CreateTestPe(textVirtualSize: 0x1000, textRawSize: 0x1000);
+
+            using (var ms = new MemoryStream(peBytes))
+            using (var w = new BinaryWriter(ms))
+            {
+                // pCodeRegistration at RVA 0x1000 -> raw offset 0x400 (Version 29 has 15 fields)
+                ms.Position = 0x400;
+                for (int i = 0; i < 13; i++)
+                {
+                    w.Write((ulong)0); // fields 0..12: reversePInvoke, genericMethods, invokers, etc.
+                }
+                w.Write((ulong)1);          // field 13: codeGenModulesCount = 1
+                w.Write(0x180001200ul);     // field 14: codeGenModules -> RVA 0x1200 (raw offset 0x600)
+
+                // pCodeGenModules array at RVA 0x1200 -> raw offset 0x600
+                ms.Position = 0x600;
+                w.Write(0x180001220ul);     // pointer to Il2CppCodeGenModule at RVA 0x1220 (raw offset 0x620)
+
+                // Il2CppCodeGenModule at RVA 0x1220 -> raw offset 0x620
+                ms.Position = 0x620;
+                w.Write(0x180001280ul);     // 0: moduleName -> RVA 0x1280 (raw offset 0x680)
+                w.Write((long)3);           // 1: methodPointerCount = 3
+                w.Write(0x18712FA60ul);     // 2: methodPointers -> unbacked VA in virtual tail!
+                for (int i = 0; i < 10; i++)
+                {
+                    w.Write((ulong)0);     // 3..12: adjustor, invokers, rgctx, etc.
+                }
+
+                // Module name string at RVA 0x1280 -> raw offset 0x680
+                ms.Position = 0x680;
+                w.Write(Encoding.ASCII.GetBytes("UnbackedModule.dll\0"));
+
+                // pMetadataRegistration at RVA 0x1300 -> raw offset 0x700
+                ms.Position = 0x700;
+                for (int i = 0; i < 20; i++)
+                {
+                    w.Write((ulong)0);
+                }
+            }
+
+            using var pe = new PE(new MemoryStream(peBytes));
+            pe.Version = 29;
+
+            pe.Init(codeRegistration: 0x180001000ul, metadataRegistration: 0x180001300ul);
+
+            Assert.True(pe.codeGenModuleMethodPointers.TryGetValue("UnbackedModule.dll", out var pointers));
+            Assert.Equal(3, pointers.Length);
+            Assert.All(pointers, p => Assert.Equal(0ul, p));
+            Assert.Equal(0, pe.MethodMappingFailuresCount);
+        }
+
+        [Fact]
+        public void GenericMethodInstance_WithInvalidPointer_WhenGenerateStructFalse_EmitsStructuredWarningInDumpCs_AndDeduplicatesWhenBothEnabled()
+        {
+            var (peBytes, _, _) = CreateTestPe();
+            using var pe = new PE(new MemoryStream(peBytes));
+            pe.Version = 29;
+            pe.types = new[] { new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VOID } };
+
+            var invalidGenericMethodPointer = 0x180900000ul;
+            var testMethodSpec = new Il2CppMethodSpec { methodDefinitionIndex = 0, classIndexIndex = -1, methodIndexIndex = -1 };
+            pe.methodSpecs = new[] { testMethodSpec };
+            pe.methodSpecGenericMethodPointers = new Dictionary<Il2CppMethodSpec, ulong>
+            {
+                [testMethodSpec] = invalidGenericMethodPointer
+            };
+            pe.methodDefinitionMethodSpecs = new Dictionary<int, List<Il2CppMethodSpec>>
+            {
+                [0] = new List<Il2CppMethodSpec> { testMethodSpec }
+            };
+
+            using var metadata = CreateTestMetadata(
+                "TestModule.dll",
+                "TestNamespace.GenericContainer",
+                isInterface: false,
+                new[] { ("GenericMethod", false, 0x06000001u) });
+
+            pe.SetProperties(29, 0, metadata);
+            var executor = new Il2CppExecutor(metadata, pe);
+
+            var tempDir = Path.Combine(Path.GetTempPath(), "issue88_gen_dump_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                // 1. Case A: GenerateStruct = false, only Il2CppDecompiler runs
+                var decompiler = new Il2CppDecompiler(executor);
+                var warningsA = new List<string>();
+                using (CoreLogger.Scope(null, warningsA))
+                {
+                    decompiler.Decompile(new Config { DumpMethod = true, DumpMethodOffset = true, GenerateStruct = false }, tempDir);
+                }
+
+                var dumpCsPath = Path.Combine(tempDir, "dump.cs");
+                Assert.True(File.Exists(dumpCsPath));
+                var dumpCsText = File.ReadAllText(dumpCsPath);
+                Assert.Contains("|-RVA: -1 Offset: -1", dumpCsText);
+
+                // Warning must be captured in CoreLogger and recorded in MethodMappingFailures
+                Assert.Contains(warningsA, w => w.Contains("0x180900000") && w.Contains("GenericMethodInstance"));
+                Assert.Equal(1, pe.MethodMappingFailuresCount);
+
+                // 2. Case B: StructGenerator also runs on the same instance - must deduplicate (count remains 1)
+                var structGenerator = new StructGenerator(executor);
+                var warningsB = new List<string>();
+                using (CoreLogger.Scope(null, warningsB))
+                {
+                    structGenerator.WriteScript(tempDir + Path.DirectorySeparatorChar);
+                }
+
+                Assert.Equal(1, pe.MethodMappingFailuresCount);
+                Assert.DoesNotContain(warningsB, w => w.Contains("0x180900000") && w.Contains("GenericMethodInstance"));
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
     }
 }

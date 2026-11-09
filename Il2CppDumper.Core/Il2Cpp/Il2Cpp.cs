@@ -322,7 +322,21 @@ namespace Il2CppDumper
             }
             else
             {
-                methodPointers = MapVATR<ulong>(pCodeRegistration.methodPointers, pCodeRegistration.methodPointersCount);
+                if (pCodeRegistration.methodPointers != 0 && TryMapVATR(pCodeRegistration.methodPointers, out var methodPointersOffset) && methodPointersOffset < Length)
+                {
+                    try
+                    {
+                        methodPointers = ReadClassArray<ulong>(methodPointersOffset, pCodeRegistration.methodPointersCount);
+                    }
+                    catch
+                    {
+                        methodPointers = new ulong[pCodeRegistration.methodPointersCount];
+                    }
+                }
+                else
+                {
+                    methodPointers = new ulong[pCodeRegistration.methodPointersCount];
+                }
             }
             if (Version >= 108 && metadata != null)
             {
@@ -601,6 +615,10 @@ namespace Il2CppDumper
             try
             {
                 offset = MapVATR(addr);
+                if (this is PE && offset == 0)
+                {
+                    return false;
+                }
                 return true;
             }
             catch

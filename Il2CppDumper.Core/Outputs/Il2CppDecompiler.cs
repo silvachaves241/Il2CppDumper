@@ -429,6 +429,15 @@ namespace Il2CppDumper
                                         else
                                         {
                                             writer.Write("\t|-RVA: -1 Offset: -1\n");
+                                            if (genericMethodPointer > 0)
+                                            {
+                                                foreach (var methodSpec in group)
+                                                {
+                                                    (var methodSpecTypeName, var methodSpecMethodName) = executor.GetMethodSpecName(methodSpec, true);
+                                                    var methodFullName = methodSpecTypeName + "$$" + methodSpecMethodName;
+                                                    il2Cpp.RecordMappingFailure("GenericMethodInstance", genericMethodPointer, "is outside executable sections or stream bounds", member: methodFullName);
+                                                }
+                                            }
                                         }
                                         foreach (var methodSpec in group)
                                         {
