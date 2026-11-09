@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -74,7 +74,523 @@ namespace Il2CppDumper
             }
         }
 
-        public string GetTypeName(Il2CppType il2CppType, bool addNamespace, bool is_nested)
+        private Dictionary<Il2CppTypeDefinition, List<Il2CppTypeDefinition>>? nestedTypeCandidatesMap;
+        private Dictionary<Il2CppTypeDefinition, Il2CppTypeDefinition?>? resolvedParentsMap;
+        private readonly HashSet<Il2CppTypeDefinition> warnedDefinitions = new();
+        private readonly HashSet<(Il2CppTypeDefinition, Il2CppTypeDefinition)> warnedCandidateCycles = new();
+
+        private Dictionary<Il2CppTypeDefinition, List<Il2CppTypeDefinition>> GetNestedTypeCandidatesMap()
+        {
+            if (nestedTypeCandidatesMap == null)
+            {
+                var map = new Dictionary<Il2CppTypeDefinition, List<Il2CppTypeDefinition>>();
+                if (metadata.nestedTypeIndices != null && metadata.typeDefs != null)
+                {
+                    foreach (var parent in metadata.typeDefs)
+                    {
+                        if (parent.nested_type_count > 0 && parent.nestedTypesStart >= 0)
+                        {
+                            for (int n = 0; n < parent.nested_type_count; n++)
+                            {
+                                var idx = parent.nestedTypesStart + n;
+                                if (idx >= 0 && idx < metadata.nestedTypeIndices.Length)
+                                {
+                                    var childIdx = metadata.nestedTypeIndices[idx];
+                                    if (childIdx >= 0 && childIdx < metadata.typeDefs.Length)
+                                    {
+                                        var child = metadata.typeDefs[childIdx];
+                                        if (!map.TryGetValue(child, out var list))
+                                        {
+                                            list = new List<Il2CppTypeDefinition>();
+                                            map[child] = list;
+                                        }
+                                        if (!list.Contains(parent))
+                                        {
+                                            list.Add(parent);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                nestedTypeCandidatesMap = map;
+            }
+            return nestedTypeCandidatesMap;
+        }
+
+        private Il2CppTypeDefinition? GetRawDeclaredParent(Il2CppTypeDefinition typeDef)
+        {
+            if (typeDef.declaringTypeIndex >= 0 && typeDef.declaringTypeIndex < il2Cpp.types.Length)
+            {
+                var parentType = il2Cpp.types[typeDef.declaringTypeIndex];
+                if (parentType.type == Il2CppTypeEnum.IL2CPP_TYPE_GENERICINST)
+                {
+                    var genericClass = il2Cpp.MapVATR<Il2CppGenericClass>(parentType.data.generic_class);
+                    return GetGenericClassTypeDefinition(genericClass);
+                }
+                else
+                {
+                    return GetTypeDefinitionFromIl2CppType(parentType);
+                }
+            }
+            return null;
+        }
+
+        private static bool CandidateCreatesCycleWithDeclared(
+            Il2CppTypeDefinition candidate,
+            Il2CppTypeDefinition targetChild,
+            Dictionary<Il2CppTypeDefinition, Il2CppTypeDefinition> declaredEdges)
+        {
+            var visited = new HashSet<Il2CppTypeDefinition> { targetChild };
+            var curr = candidate;
+            while (curr != null)
+            {
+                if (!visited.Add(curr))
+                {
+                    return true;
+                }
+                if (!declaredEdges.TryGetValue(curr, out curr!))
+                {
+                    break;
+                }
+            }
+            return false;
+        }
+
+        private Dictionary<Il2CppTypeDefinition, Il2CppTypeDefinition?> EnsureParentMapResolved()
+        {
+            if (resolvedParentsMap != null)
+            {
+                return resolvedParentsMap;
+            }
+
+            var allDefs = metadata.typeDefs ?? Array.Empty<Il2CppTypeDefinition>();
+            var rawDeclared = new Dictionary<Il2CppTypeDefinition, Il2CppTypeDefinition?>();
+            foreach (var def in allDefs)
+            {
+                rawDeclared[def] = GetRawDeclaredParent(def);
+            }
+
+            // Phase 1: Validate declared parent chains iteratively (O(V) time, O(1) stack)
+            // 0: unvisited, 1: visiting, 2: acyclic, 3: cyclic
+            var declaredState = new Dictionary<Il2CppTypeDefinition, byte>();
+            var path = new List<Il2CppTypeDefinition>();
+            var pathIndex = new Dictionary<Il2CppTypeDefinition, int>();
+
+            foreach (var def in allDefs)
+            {
+                if (declaredState.ContainsKey(def))
+                {
+                    continue;
+                }
+
+                path.Clear();
+                pathIndex.Clear();
+                var curr = def;
+
+                while (curr != null)
+                {
+                    if (declaredState.TryGetValue(curr, out var st))
+                    {
+                        if (st == 2 || st == 3)
+                        {
+                            break;
+                        }
+                        if (st == 1)
+                        {
+                            // Cycle detected in current path
+                            for (int i = 0; i < path.Count; i++)
+                            {
+                                declaredState[path[i]] = 3; // All nodes in or leading to cycle are cyclic
+                            }
+                            path.Clear();
+                            break;
+                        }
+                    }
+
+                    declaredState[curr] = 1;
+                    pathIndex[curr] = path.Count;
+                    path.Add(curr);
+
+                    rawDeclared.TryGetValue(curr, out curr);
+                }
+
+                if (path.Count > 0)
+                {
+                    byte finalState = (curr != null && declaredState.TryGetValue(curr, out var endSt) && endSt == 3) ? (byte)3 : (byte)2;
+                    foreach (var node in path)
+                    {
+                        declaredState[node] = finalState;
+                    }
+                }
+            }
+
+            // Lock in all valid acyclic declared edges
+            var declaredEdges = new Dictionary<Il2CppTypeDefinition, Il2CppTypeDefinition>();
+            foreach (var def in allDefs)
+            {
+                if (rawDeclared.TryGetValue(def, out var declared) && declared != null)
+                {
+                    if (declaredState.TryGetValue(def, out var st) && st == 2)
+                    {
+                        declaredEdges[def] = declared;
+                    }
+                }
+            }
+
+            // Phase 2: Mount provisional fallback edges from nestedTypeIndices
+            var candidateMap = GetNestedTypeCandidatesMap();
+            var provisionalFallbackEdges = new Dictionary<Il2CppTypeDefinition, Il2CppTypeDefinition>();
+            var ambiguousDefinitions = new Dictionary<Il2CppTypeDefinition, List<Il2CppTypeDefinition>>();
+
+            foreach (var def in allDefs)
+            {
+                if (declaredEdges.ContainsKey(def))
+                {
+                    continue;
+                }
+
+                var validCandidates = new List<Il2CppTypeDefinition>();
+
+                if (candidateMap.TryGetValue(def, out var candidates))
+                {
+                    foreach (var c in candidates)
+                    {
+                        if (ReferenceEquals(c, def))
+                        {
+                            continue;
+                        }
+
+                        if (CandidateCreatesCycleWithDeclared(c, def, declaredEdges))
+                        {
+                            if (warnedCandidateCycles.Add((def, c)))
+                            {
+                                var childName = metadata.GetStringFromIndex(def.nameIndex);
+                                var candidateName = metadata.GetStringFromIndex(c.nameIndex);
+                                CoreLogger.LogWarning($"WARNING: Candidate parent '{candidateName}' for '{childName}' rejected: creates a cycle with an established declared parent chain.");
+                            }
+                            continue;
+                        }
+
+                        validCandidates.Add(c);
+                    }
+                }
+
+                if (validCandidates.Count == 1)
+                {
+                    provisionalFallbackEdges[def] = validCandidates[0];
+                }
+                else if (validCandidates.Count > 1)
+                {
+                    ambiguousDefinitions[def] = validCandidates;
+                }
+            }
+
+            // Phase 3: Combine edges and detect/remove fallback cycles before publishing
+            var combinedMap = new Dictionary<Il2CppTypeDefinition, Il2CppTypeDefinition?>();
+            foreach (var def in allDefs)
+            {
+                if (declaredEdges.TryGetValue(def, out var declaredParent))
+                {
+                    combinedMap[def] = declaredParent;
+                }
+                else if (provisionalFallbackEdges.TryGetValue(def, out var fallbackParent))
+                {
+                    combinedMap[def] = fallbackParent;
+                }
+                else
+                {
+                    combinedMap[def] = null;
+                }
+            }
+
+            var combinedState = new Dictionary<Il2CppTypeDefinition, byte>();
+            var fallbackCyclePruned = new Dictionary<Il2CppTypeDefinition, (Il2CppTypeDefinition parent, bool purelyFallbacks)>();
+
+            foreach (var def in allDefs)
+            {
+                if (combinedState.ContainsKey(def))
+                {
+                    continue;
+                }
+
+                path.Clear();
+                pathIndex.Clear();
+                var curr = def;
+
+                while (curr != null)
+                {
+                    if (combinedState.TryGetValue(curr, out var st))
+                    {
+                        if (st == 1)
+                        {
+                            int cycleStart = pathIndex[curr];
+                            var cycleNodes = new List<Il2CppTypeDefinition>();
+                            for (int i = cycleStart; i < path.Count; i++)
+                            {
+                                cycleNodes.Add(path[i]);
+                            }
+
+                            bool purelyFallbacks = cycleNodes.All(n => !declaredEdges.ContainsKey(n));
+
+                            foreach (var node in cycleNodes)
+                            {
+                                if (!declaredEdges.ContainsKey(node))
+                                {
+                                    var parent = combinedMap[node];
+                                    combinedMap[node] = null;
+                                    if (parent != null)
+                                    {
+                                        fallbackCyclePruned[node] = (parent, purelyFallbacks);
+                                    }
+                                }
+                            }
+                        }
+                        break;
+                    }
+
+                    combinedState[curr] = 1;
+                    pathIndex[curr] = path.Count;
+                    path.Add(curr);
+
+                    combinedMap.TryGetValue(curr, out curr);
+                }
+
+                foreach (var node in path)
+                {
+                    combinedState[node] = 2;
+                }
+            }
+
+            // Phase 4: Emit recovery diagnostics matching the final exported map
+            foreach (var def in allDefs)
+            {
+                if (declaredEdges.ContainsKey(def))
+                {
+                    continue;
+                }
+
+                rawDeclared.TryGetValue(def, out var declared);
+                var finalParent = combinedMap[def];
+
+                if (declared != null)
+                {
+                    // Definition had a cyclic declared parent
+                    if (finalParent != null)
+                    {
+                        if (warnedDefinitions.Add(def))
+                        {
+                            var childName = metadata.GetStringFromIndex(def.nameIndex);
+                            var fallbackName = metadata.GetStringFromIndex(finalParent.nameIndex);
+                            CoreLogger.LogWarning($"WARNING: Cyclic declaring type detected for '{childName}' (declaringTypeIndex points to self or creates a cycle). Falling back to candidate parent '{fallbackName}'.");
+                        }
+                    }
+                    else
+                    {
+                        if (warnedDefinitions.Add(def))
+                        {
+                            var childName = metadata.GetStringFromIndex(def.nameIndex);
+                            CoreLogger.LogWarning($"WARNING: Cyclic declaring type detected for '{childName}' with no unique acyclic parent candidate. Preserving as unparented root definition.");
+                        }
+                    }
+                }
+                else
+                {
+                    // Definition had no declared parent
+                    if (finalParent == null)
+                    {
+                        if (ambiguousDefinitions.TryGetValue(def, out var validCandidates))
+                        {
+                            if (warnedDefinitions.Add(def))
+                            {
+                                var childName = metadata.GetStringFromIndex(def.nameIndex);
+                                var parentNames = string.Join(", ", validCandidates.Select(c => metadata.GetStringFromIndex(c.nameIndex)));
+                                CoreLogger.LogWarning($"WARNING: Ambiguous declaring type for nested type '{childName}': multiple candidate parents found ({parentNames}) with no valid declaringTypeIndex.");
+                            }
+                        }
+                        else if (fallbackCyclePruned.TryGetValue(def, out var prunedInfo))
+                        {
+                            if (warnedDefinitions.Add(def))
+                            {
+                                var childName = metadata.GetStringFromIndex(def.nameIndex);
+                                var parentName = metadata.GetStringFromIndex(prunedInfo.parent.nameIndex);
+                                if (prunedInfo.purelyFallbacks)
+                                {
+                                    CoreLogger.LogWarning($"WARNING: Cyclic fallback parent detected for '{childName}' (candidate parent '{parentName}' forms a cycle of fallback edges). Preserving as unparented root definition.");
+                                }
+                                else
+                                {
+                                    CoreLogger.LogWarning($"WARNING: Candidate parent '{parentName}' for '{childName}' rejected: creates a cycle with an established declared parent chain.");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            resolvedParentsMap = combinedMap;
+            return resolvedParentsMap;
+        }
+
+        public Il2CppTypeDefinition? GetParentTypeDefinition(Il2CppTypeDefinition typeDef)
+        {
+            var map = EnsureParentMapResolved();
+            if (map.TryGetValue(typeDef, out var parent))
+            {
+                return parent;
+            }
+
+            return GetRawDeclaredParent(typeDef);
+        }
+
+        private sealed class TypeHierarchyLevel
+        {
+            public Il2CppTypeDefinition TypeDef { get; set; } = null!;
+            public string BaseName { get; set; } = string.Empty;
+            public int ParamStart { get; set; }
+            public int ParamCount { get; set; }
+        }
+
+        private List<TypeHierarchyLevel> GetTypeHierarchyLevels(Il2CppTypeDefinition typeDef)
+        {
+            var chain = new List<Il2CppTypeDefinition>();
+            var current = typeDef;
+            int depth = 0;
+            while (current != null && depth < 64)
+            {
+                chain.Add(current);
+                current = GetParentTypeDefinition(current);
+                depth++;
+            }
+            chain.Reverse();
+
+            var levels = new List<TypeHierarchyLevel>(chain.Count);
+            int prevTotal = 0;
+
+            for (int i = 0; i < chain.Count; i++)
+            {
+                var def = chain[i];
+                var rawName = metadata.GetStringFromIndex(def.nameIndex);
+                var tickIndex = rawName.IndexOf('`');
+                int confirmedArity = -1;
+                if (tickIndex != -1 && int.TryParse(rawName[(tickIndex + 1)..], out var arity))
+                {
+                    confirmedArity = arity;
+                }
+
+                bool isGeneric = def.genericContainerIndex >= 0
+                    && metadata.genericContainers != null
+                    && def.genericContainerIndex < metadata.genericContainers.Length;
+
+                string baseName;
+                int paramStart = 0;
+                int paramCount = 0;
+
+                if (isGeneric)
+                {
+                    baseName = confirmedArity >= 0 ? rawName[..tickIndex] : rawName;
+                    var container = metadata.genericContainers![def.genericContainerIndex];
+                    int total = container.type_argc;
+
+                    if (i > 0)
+                    {
+                        if (confirmedArity >= 0)
+                        {
+                            paramCount = confirmedArity;
+                            paramStart = total >= confirmedArity ? total - confirmedArity : prevTotal;
+                        }
+                        else if (total > prevTotal)
+                        {
+                            paramStart = prevTotal;
+                            paramCount = total - prevTotal;
+                        }
+                        else
+                        {
+                            paramCount = 0;
+                            paramStart = prevTotal;
+                        }
+                    }
+                    else
+                    {
+                        paramStart = 0;
+                        paramCount = confirmedArity >= 0 ? confirmedArity : total;
+                    }
+
+                    prevTotal = total;
+                }
+                else
+                {
+                    baseName = rawName;
+                    paramStart = 0;
+                    paramCount = 0;
+                    prevTotal = 0;
+                }
+
+                levels.Add(new TypeHierarchyLevel
+                {
+                    TypeDef = def,
+                    BaseName = baseName,
+                    ParamStart = paramStart,
+                    ParamCount = paramCount
+                });
+            }
+
+            return levels;
+        }
+
+        public string GetTypeDefName(Il2CppTypeDefinition typeDef, bool addNamespace, bool genericParameter)
+        {
+            var levels = GetTypeHierarchyLevels(typeDef);
+            if (levels.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            var sb = new StringBuilder();
+            if (addNamespace)
+            {
+                var rootDef = levels[0].TypeDef;
+                var @namespace = metadata.GetStringFromIndex(rootDef.namespaceIndex);
+                if (!string.IsNullOrEmpty(@namespace))
+                {
+                    sb.Append(@namespace).Append('.');
+                }
+            }
+
+            for (int i = 0; i < levels.Count; i++)
+            {
+                if (i > 0)
+                {
+                    sb.Append('.');
+                }
+                var level = levels[i];
+                sb.Append(level.BaseName);
+
+                if (genericParameter && level.ParamCount > 0 && level.TypeDef.genericContainerIndex >= 0 && metadata.genericParameters != null)
+                {
+                    var genericContainer = metadata.genericContainers[level.TypeDef.genericContainerIndex];
+                    var paramNames = new List<string>();
+                    for (int p = 0; p < level.ParamCount; p++)
+                    {
+                        var paramIndex = genericContainer.genericParameterStart + level.ParamStart + p;
+                        if (paramIndex >= 0 && paramIndex < metadata.genericParameters.Length)
+                        {
+                            var paramDef = metadata.genericParameters[paramIndex];
+                            paramNames.Add(metadata.GetStringFromIndex(paramDef.nameIndex));
+                        }
+                    }
+                    if (paramNames.Count > 0)
+                    {
+                        sb.Append('<').Append(string.Join(", ", paramNames)).Append('>');
+                    }
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        public string GetTypeName(Il2CppType il2CppType, bool addNamespace, bool is_nested = false)
         {
             switch (il2CppType.type)
             {
@@ -104,9 +620,8 @@ namespace Il2CppDumper
                 case Il2CppTypeEnum.IL2CPP_TYPE_VALUETYPE:
                 case Il2CppTypeEnum.IL2CPP_TYPE_GENERICINST:
                     {
-                        string str = string.Empty;
-                        Il2CppTypeDefinition typeDef;
-                        Il2CppGenericClass genericClass = null;
+                        Il2CppTypeDefinition? typeDef;
+                        Il2CppGenericClass? genericClass = null;
                         if (il2CppType.type == Il2CppTypeEnum.IL2CPP_TYPE_GENERICINST)
                         {
                             genericClass = il2Cpp.MapVATR<Il2CppGenericClass>(il2CppType.data.generic_class);
@@ -116,82 +631,95 @@ namespace Il2CppDumper
                         {
                             typeDef = GetTypeDefinitionFromIl2CppType(il2CppType);
                         }
-                        if (typeDef.declaringTypeIndex != -1)
+
+                        if (typeDef == null)
                         {
-                            str += GetTypeName(il2Cpp.types[typeDef.declaringTypeIndex], addNamespace, true);
-                            str += '.';
+                            return TypeString[(int)il2CppType.type];
                         }
-                        else if (addNamespace)
+
+                        var levels = GetTypeHierarchyLevels(typeDef);
+                        if (levels.Count == 0)
                         {
-                            var @namespace = metadata.GetStringFromIndex(typeDef.namespaceIndex);
-                            if (@namespace != "")
+                            return string.Empty;
+                        }
+
+                        var sb = new StringBuilder();
+                        if (addNamespace)
+                        {
+                            var rootDef = levels[0].TypeDef;
+                            var @namespace = metadata.GetStringFromIndex(rootDef.namespaceIndex);
+                            if (!string.IsNullOrEmpty(@namespace))
                             {
-                                str += @namespace + ".";
+                                sb.Append(@namespace).Append('.');
                             }
                         }
 
-                        var typeName = metadata.GetStringFromIndex(typeDef.nameIndex);
-                        var index = typeName.IndexOf("`");
-                        if (index != -1)
-                        {
-                            str += typeName[..index];
-                        }
-                        else
-                        {
-                            str += typeName;
-                        }
-
-                        if (is_nested)
-                            return str;
-
-                        if (genericClass != null)
+                        ulong[]? instPointers = null;
+                        int instArgc = 0;
+                        if (genericClass != null && genericClass.context.class_inst != 0)
                         {
                             var genericInst = il2Cpp.MapVATR<Il2CppGenericInst>(genericClass.context.class_inst);
-                            str += GetGenericInstParams(genericInst);
-                        }
-                        else if (typeDef.genericContainerIndex >= 0)
-                        {
-                            var genericContainer = metadata.genericContainers[typeDef.genericContainerIndex];
-                            str += GetGenericContainerParams(genericContainer);
+                            instArgc = (int)genericInst.type_argc;
+                            if (instArgc > 0 && genericInst.type_argv != 0)
+                            {
+                                instPointers = il2Cpp.MapVATR<ulong>(genericInst.type_argv, instArgc);
+                            }
                         }
 
-                        return str;
+                        for (int i = 0; i < levels.Count; i++)
+                        {
+                            if (i > 0)
+                            {
+                                sb.Append('.');
+                            }
+                            var level = levels[i];
+                            sb.Append(level.BaseName);
+
+                            if (instPointers != null && level.ParamCount > 0)
+                            {
+                                var argNames = new List<string>();
+                                for (int p = 0; p < level.ParamCount; p++)
+                                {
+                                    var argIndex = level.ParamStart + p;
+                                    if (argIndex >= 0 && argIndex < instArgc)
+                                    {
+                                        var argType = il2Cpp.GetIl2CppType(instPointers[argIndex]);
+                                        if (argType != null)
+                                        {
+                                            argNames.Add(GetTypeName(argType, false, false));
+                                        }
+                                    }
+                                }
+                                if (argNames.Count > 0)
+                                {
+                                    sb.Append('<').Append(string.Join(", ", argNames)).Append('>');
+                                }
+                            }
+                            else if (genericClass == null && level.ParamCount > 0 && level.TypeDef.genericContainerIndex >= 0 && metadata.genericParameters != null)
+                            {
+                                var genericContainer = metadata.genericContainers[level.TypeDef.genericContainerIndex];
+                                var paramNames = new List<string>();
+                                for (int p = 0; p < level.ParamCount; p++)
+                                {
+                                    var paramIndex = genericContainer.genericParameterStart + level.ParamStart + p;
+                                    if (paramIndex >= 0 && paramIndex < metadata.genericParameters.Length)
+                                    {
+                                        var paramDef = metadata.genericParameters[paramIndex];
+                                        paramNames.Add(metadata.GetStringFromIndex(paramDef.nameIndex));
+                                    }
+                                }
+                                if (paramNames.Count > 0)
+                                {
+                                    sb.Append('<').Append(string.Join(", ", paramNames)).Append('>');
+                                }
+                            }
+                        }
+
+                        return sb.ToString();
                     }
                 default:
                     return TypeString[(int)il2CppType.type];
             }
-        }
-
-        public string GetTypeDefName(Il2CppTypeDefinition typeDef, bool addNamespace, bool genericParameter)
-        {
-            var prefix = string.Empty;
-            if (typeDef.declaringTypeIndex != -1)
-            {
-                prefix = GetTypeName(il2Cpp.types[typeDef.declaringTypeIndex], addNamespace, true) + ".";
-            }
-            else if (addNamespace)
-            {
-                var @namespace = metadata.GetStringFromIndex(typeDef.namespaceIndex);
-                if (@namespace != "")
-                {
-                    prefix = @namespace + ".";
-                }
-            }
-            var typeName = metadata.GetStringFromIndex(typeDef.nameIndex);
-            if (typeDef.genericContainerIndex >= 0)
-            {
-                var index = typeName.IndexOf("`");
-                if (index != -1)
-                {
-                    typeName = typeName[..index];
-                }
-                if (genericParameter)
-                {
-                    var genericContainer = metadata.genericContainers[typeDef.genericContainerIndex];
-                    typeName += GetGenericContainerParams(genericContainer);
-                }
-            }
-            return prefix + typeName;
         }
 
         public string GetGenericInstParams(Il2CppGenericInst genericInst)

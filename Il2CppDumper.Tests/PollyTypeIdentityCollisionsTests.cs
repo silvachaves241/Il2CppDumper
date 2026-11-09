@@ -1,0 +1,1891 @@
+#nullable enable
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Text;
+using System.Text.Json;
+using Il2CppDumper.Diff;
+using Xunit;
+using static Il2CppDumper.Il2CppConstants;
+
+namespace Il2CppDumper.Tests
+{
+    public class PollyTypeIdentityCollisionsTests
+    {
+        private static Metadata CreateEmptyMetadata()
+        {
+            var bytes = new byte[16384];
+            BitConverter.GetBytes(0xFAB11BAFu).CopyTo(bytes, 0); // magic
+            BitConverter.GetBytes(29).CopyTo(bytes, 4);           // version
+            var m = new Metadata(new MemoryStream(bytes))
+            {
+                Version = 29
+            };
+            m.header.stringOffset = 1024;
+            m.header.stringSize = 4096;
+            m.header.fieldAndParameterDefaultValueDataOffset = 8192;
+            m.header.fieldAndParameterDefaultValueDataSize = 1024;
+            return m;
+        }
+
+        private static uint AddString(Metadata m, string value, ref uint pos)
+        {
+            var result = pos;
+            var bytes = Encoding.UTF8.GetBytes(value + "\0");
+            m.Position = m.header.stringOffset + pos;
+            m.Writer.Write(bytes);
+            pos += (uint)bytes.Length;
+            return result;
+        }
+
+        private static (Metadata metadata, WebAssemblyMemory il2Cpp, Il2CppExecutor executor, Il2CppTypeDefinition[] typeDefs) CreatePollyEnvironment()
+        {
+            var m = CreateEmptyMetadata();
+            uint strPos = 0;
+            AddString(m, "", ref strPos);
+            var imgName = AddString(m, "Polly.dll", ref strPos);
+            var asmName = AddString(m, "Polly", ref strPos);
+            var nsPolly = AddString(m, "Polly", ref strPos);
+
+            var asyncPolicyName = AddString(m, "AsyncPolicy", ref strPos);
+            var asyncPolicyGenericName = AddString(m, "AsyncPolicy`1", ref strPos);
+            var policyBuilderName = AddString(m, "PolicyBuilder", ref strPos);
+            var policyBuilderGenericName = AddString(m, "PolicyBuilder`1", ref strPos);
+
+            var disp14GenericName = AddString(m, "<>c__DisplayClass14_0`1", ref strPos);
+            var disp15GenericName = AddString(m, "<>c__DisplayClass15_0`1", ref strPos);
+            var disp16GenericName = AddString(m, "<>c__DisplayClass16_0`1", ref strPos);
+
+            var disp14Name = AddString(m, "<>c__DisplayClass14_0", ref strPos);
+            var disp15Name = AddString(m, "<>c__DisplayClass15_0", ref strPos);
+            var disp16Name = AddString(m, "<>c__DisplayClass16_0", ref strPos);
+
+            var tresultParamName = AddString(m, "TResult", ref strPos);
+            var fieldActionName = AddString(m, "action", ref strPos);
+
+            m.assemblyDefs = new[]
+            {
+                new Il2CppAssemblyDefinition
+                {
+                    aname = new Il2CppAssemblyNameDefinition { nameIndex = asmName }
+                }
+            };
+
+            m.imageDefs = new[]
+            {
+                new Il2CppImageDefinition
+                {
+                    nameIndex = imgName,
+                    assemblyIndex = 0,
+                    typeStart = 0,
+                    typeCount = 12
+                }
+            };
+
+            // Types:
+            // 0: AsyncPolicy (non-generic), children: 2, 3, 4
+            // 1: AsyncPolicy`1 (generic TResult), children: 5, 6, 7
+            // 2: <>c__DisplayClass14_0`1 (in AsyncPolicy)
+            // 3: <>c__DisplayClass15_0`1 (in AsyncPolicy)
+            // 4: <>c__DisplayClass16_0`1 (in AsyncPolicy)
+            // 5: <>c__DisplayClass14_0 (in AsyncPolicy`1)
+            // 6: <>c__DisplayClass15_0 (in AsyncPolicy`1)
+            // 7: <>c__DisplayClass16_0 (in AsyncPolicy`1)
+            // 8: PolicyBuilder (non-generic), children: 10
+            // 9: PolicyBuilder`1 (generic TResult), children: 11
+            // 10: <>c__DisplayClass15_0`1 (in PolicyBuilder)
+            // 11: <>c__DisplayClass15_0 (in PolicyBuilder`1)
+            var typeDefs = new[]
+            {
+                // 0: AsyncPolicy
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = asyncPolicyName,
+                    namespaceIndex = nsPolly,
+                    declaringTypeIndex = -1,
+                    parentIndex = -1,
+                    genericContainerIndex = -1,
+                    nestedTypesStart = 0,
+                    nested_type_count = 3,
+                    flags = TYPE_ATTRIBUTE_PUBLIC | TYPE_ATTRIBUTE_ABSTRACT
+                },
+                // 1: AsyncPolicy`1
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = asyncPolicyGenericName,
+                    namespaceIndex = nsPolly,
+                    declaringTypeIndex = -1,
+                    parentIndex = -1,
+                    genericContainerIndex = 0,
+                    nestedTypesStart = 3,
+                    nested_type_count = 3,
+                    flags = TYPE_ATTRIBUTE_PUBLIC | TYPE_ATTRIBUTE_ABSTRACT
+                },
+                // 2: <>c__DisplayClass14_0`1 (in AsyncPolicy)
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = disp14GenericName,
+                    namespaceIndex = 0,
+                    declaringTypeIndex = 0,
+                    parentIndex = -1,
+                    genericContainerIndex = 1,
+                    fieldStart = 0,
+                    field_count = 1,
+                    flags = TYPE_ATTRIBUTE_NESTED_PRIVATE | TYPE_ATTRIBUTE_SEALED
+                },
+                // 3: <>c__DisplayClass15_0`1 (in AsyncPolicy)
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = disp15GenericName,
+                    namespaceIndex = 0,
+                    declaringTypeIndex = 0,
+                    parentIndex = -1,
+                    genericContainerIndex = 2,
+                    fieldStart = 1,
+                    field_count = 1,
+                    flags = TYPE_ATTRIBUTE_NESTED_PRIVATE | TYPE_ATTRIBUTE_SEALED
+                },
+                // 4: <>c__DisplayClass16_0`1 (in AsyncPolicy)
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = disp16GenericName,
+                    namespaceIndex = 0,
+                    declaringTypeIndex = 0,
+                    parentIndex = -1,
+                    genericContainerIndex = 3,
+                    fieldStart = 2,
+                    field_count = 1,
+                    flags = TYPE_ATTRIBUTE_NESTED_PRIVATE | TYPE_ATTRIBUTE_SEALED
+                },
+                // 5: <>c__DisplayClass14_0 (in AsyncPolicy`1)
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = disp14Name,
+                    namespaceIndex = 0,
+                    declaringTypeIndex = 1,
+                    parentIndex = -1,
+                    genericContainerIndex = 4,
+                    fieldStart = 3,
+                    field_count = 1,
+                    flags = TYPE_ATTRIBUTE_NESTED_PRIVATE | TYPE_ATTRIBUTE_SEALED
+                },
+                // 6: <>c__DisplayClass15_0 (in AsyncPolicy`1)
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = disp15Name,
+                    namespaceIndex = 0,
+                    declaringTypeIndex = 1,
+                    parentIndex = -1,
+                    genericContainerIndex = 5,
+                    fieldStart = 4,
+                    field_count = 1,
+                    flags = TYPE_ATTRIBUTE_NESTED_PRIVATE | TYPE_ATTRIBUTE_SEALED
+                },
+                // 7: <>c__DisplayClass16_0 (in AsyncPolicy`1)
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = disp16Name,
+                    namespaceIndex = 0,
+                    declaringTypeIndex = 1,
+                    parentIndex = -1,
+                    genericContainerIndex = 6,
+                    fieldStart = 5,
+                    field_count = 1,
+                    flags = TYPE_ATTRIBUTE_NESTED_PRIVATE | TYPE_ATTRIBUTE_SEALED
+                },
+                // 8: PolicyBuilder
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = policyBuilderName,
+                    namespaceIndex = nsPolly,
+                    declaringTypeIndex = -1,
+                    parentIndex = -1,
+                    genericContainerIndex = -1,
+                    nestedTypesStart = 6,
+                    nested_type_count = 1,
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                },
+                // 9: PolicyBuilder`1
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = policyBuilderGenericName,
+                    namespaceIndex = nsPolly,
+                    declaringTypeIndex = -1,
+                    parentIndex = -1,
+                    genericContainerIndex = 7,
+                    nestedTypesStart = 7,
+                    nested_type_count = 1,
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                },
+                // 10: <>c__DisplayClass15_0`1 (in PolicyBuilder)
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = disp15GenericName,
+                    namespaceIndex = 0,
+                    declaringTypeIndex = 8,
+                    parentIndex = -1,
+                    genericContainerIndex = 8,
+                    fieldStart = 6,
+                    field_count = 1,
+                    flags = TYPE_ATTRIBUTE_NESTED_PRIVATE | TYPE_ATTRIBUTE_SEALED
+                },
+                // 11: <>c__DisplayClass15_0 (in PolicyBuilder`1)
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = disp15Name,
+                    namespaceIndex = 0,
+                    declaringTypeIndex = 9,
+                    parentIndex = -1,
+                    genericContainerIndex = 9,
+                    fieldStart = 7,
+                    field_count = 1,
+                    flags = TYPE_ATTRIBUTE_NESTED_PRIVATE | TYPE_ATTRIBUTE_SEALED
+                }
+            };
+
+            m.typeDefs = typeDefs;
+
+            // Link nested types:
+            // 0 (AsyncPolicy) -> [2, 3, 4]
+            // 1 (AsyncPolicy`1) -> [5, 6, 7]
+            // 8 (PolicyBuilder) -> [10]
+            // 9 (PolicyBuilder`1) -> [11]
+            m.nestedTypeIndices = new[] { 2, 3, 4, 5, 6, 7, 10, 11 };
+
+            // Generic containers and generic parameters:
+            m.genericParameters = new[]
+            {
+                new Il2CppGenericParameter { nameIndex = tresultParamName }
+            };
+
+            m.genericContainers = new[]
+            {
+                // 0: AsyncPolicy`1
+                new Il2CppGenericContainer { genericParameterStart = 0, type_argc = 1 },
+                // 1: <>c__DisplayClass14_0`1 in AsyncPolicy
+                new Il2CppGenericContainer { genericParameterStart = 0, type_argc = 1 },
+                // 2: <>c__DisplayClass15_0`1 in AsyncPolicy
+                new Il2CppGenericContainer { genericParameterStart = 0, type_argc = 1 },
+                // 3: <>c__DisplayClass16_0`1 in AsyncPolicy
+                new Il2CppGenericContainer { genericParameterStart = 0, type_argc = 1 },
+                // 4: <>c__DisplayClass14_0 in AsyncPolicy`1 (inherits container)
+                new Il2CppGenericContainer { genericParameterStart = 0, type_argc = 1 },
+                // 5: <>c__DisplayClass15_0 in AsyncPolicy`1 (inherits container)
+                new Il2CppGenericContainer { genericParameterStart = 0, type_argc = 1 },
+                // 6: <>c__DisplayClass16_0 in AsyncPolicy`1 (inherits container)
+                new Il2CppGenericContainer { genericParameterStart = 0, type_argc = 1 },
+                // 7: PolicyBuilder`1
+                new Il2CppGenericContainer { genericParameterStart = 0, type_argc = 1 },
+                // 8: <>c__DisplayClass15_0`1 in PolicyBuilder
+                new Il2CppGenericContainer { genericParameterStart = 0, type_argc = 1 },
+                // 9: <>c__DisplayClass15_0 in PolicyBuilder`1 (inherits container)
+                new Il2CppGenericContainer { genericParameterStart = 0, type_argc = 1 }
+            };
+
+            m.fieldDefs = new[]
+            {
+                new Il2CppFieldDefinition { nameIndex = fieldActionName, typeIndex = 12, token = 0x04000001 },
+                new Il2CppFieldDefinition { nameIndex = fieldActionName, typeIndex = 12, token = 0x04000002 },
+                new Il2CppFieldDefinition { nameIndex = fieldActionName, typeIndex = 12, token = 0x04000003 },
+                new Il2CppFieldDefinition { nameIndex = fieldActionName, typeIndex = 12, token = 0x04000004 },
+                new Il2CppFieldDefinition { nameIndex = fieldActionName, typeIndex = 12, token = 0x04000005 },
+                new Il2CppFieldDefinition { nameIndex = fieldActionName, typeIndex = 12, token = 0x04000006 },
+                new Il2CppFieldDefinition { nameIndex = fieldActionName, typeIndex = 12, token = 0x04000007 },
+                new Il2CppFieldDefinition { nameIndex = fieldActionName, typeIndex = 12, token = 0x04000008 }
+            };
+
+            m.methodDefs = Array.Empty<Il2CppMethodDefinition>();
+            m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
+            m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
+
+            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[8192]), 0)
+            {
+                Version = 16,
+                methodPointers = Array.Empty<ulong>()
+            };
+
+            var typesList = new List<Il2CppType>();
+            for (int i = 0; i < 12; i++)
+            {
+                typesList.Add(new Il2CppType
+                {
+                    type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS,
+                    data = new Il2CppType.Union { dummy = (ulong)i }
+                });
+            }
+            // Field type 12 (int)
+            typesList.Add(new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_I4 });
+
+            il2Cpp.types = typesList.ToArray();
+
+            var executor = new Il2CppExecutor(m, il2Cpp);
+            return (m, il2Cpp, executor, typeDefs);
+        }
+
+        [Fact]
+        public void PollyCollisions_CanonicalNamesAreDistinct_AndNoCollisions()
+        {
+            var (m, il2Cpp, executor, typeDefs) = CreatePollyEnvironment();
+            using (m)
+            using (il2Cpp)
+            {
+                var names = typeDefs.Select(t => executor.GetTypeDefName(t, true, true)).ToList();
+
+                Assert.Equal("Polly.AsyncPolicy", names[0]);
+                Assert.Equal("Polly.AsyncPolicy<TResult>", names[1]);
+
+                Assert.Equal("Polly.AsyncPolicy.<>c__DisplayClass14_0<TResult>", names[2]);
+                Assert.Equal("Polly.AsyncPolicy.<>c__DisplayClass15_0<TResult>", names[3]);
+                Assert.Equal("Polly.AsyncPolicy.<>c__DisplayClass16_0<TResult>", names[4]);
+
+                Assert.Equal("Polly.AsyncPolicy<TResult>.<>c__DisplayClass14_0", names[5]);
+                Assert.Equal("Polly.AsyncPolicy<TResult>.<>c__DisplayClass15_0", names[6]);
+                Assert.Equal("Polly.AsyncPolicy<TResult>.<>c__DisplayClass16_0", names[7]);
+
+                Assert.Equal("Polly.PolicyBuilder", names[8]);
+                Assert.Equal("Polly.PolicyBuilder<TResult>", names[9]);
+
+                Assert.Equal("Polly.PolicyBuilder.<>c__DisplayClass15_0<TResult>", names[10]);
+                Assert.Equal("Polly.PolicyBuilder<TResult>.<>c__DisplayClass15_0", names[11]);
+
+                // All 12 names must be distinct
+                var uniqueNames = names.Distinct().ToList();
+                Assert.Equal(12, uniqueNames.Count);
+            }
+        }
+
+        [Fact]
+        public void PollyDump_JsonDumpGenerator_StructureAndSelfDiff_SucceedsWithZeroChanges()
+        {
+            var (m, il2Cpp, executor, _) = CreatePollyEnvironment();
+            using (m)
+            using (il2Cpp)
+            {
+                var config = new Config
+                {
+                    DumpField = true,
+                    DumpFieldOffset = false,
+                    DumpAttribute = false,
+                    DumpMethod = false,
+                    DumpProperty = false
+                };
+
+                var model = JsonDumpGenerator.Create(executor, config);
+                Assert.NotNull(model);
+
+                // Root types must be only the non-nested types: AsyncPolicy, AsyncPolicy<TResult>, PolicyBuilder, PolicyBuilder<TResult>
+                Assert.Equal(4, model.types.Count);
+                Assert.Contains(model.types, t => t.fullName == "Polly.AsyncPolicy");
+                Assert.Contains(model.types, t => t.fullName == "Polly.AsyncPolicy<TResult>");
+                Assert.Contains(model.types, t => t.fullName == "Polly.PolicyBuilder");
+                Assert.Contains(model.types, t => t.fullName == "Polly.PolicyBuilder<TResult>");
+
+                var asyncPolicy = model.types.First(t => t.fullName == "Polly.AsyncPolicy");
+                Assert.Equal(3, asyncPolicy.nested.Count);
+                Assert.Contains(asyncPolicy.nested, n => n.fullName == "Polly.AsyncPolicy.<>c__DisplayClass14_0<TResult>");
+                Assert.Contains(asyncPolicy.nested, n => n.fullName == "Polly.AsyncPolicy.<>c__DisplayClass15_0<TResult>");
+                Assert.Contains(asyncPolicy.nested, n => n.fullName == "Polly.AsyncPolicy.<>c__DisplayClass16_0<TResult>");
+
+                var asyncPolicyGeneric = model.types.First(t => t.fullName == "Polly.AsyncPolicy<TResult>");
+                Assert.Equal(3, asyncPolicyGeneric.nested.Count);
+                Assert.Contains(asyncPolicyGeneric.nested, n => n.fullName == "Polly.AsyncPolicy<TResult>.<>c__DisplayClass14_0");
+                Assert.Contains(asyncPolicyGeneric.nested, n => n.fullName == "Polly.AsyncPolicy<TResult>.<>c__DisplayClass15_0");
+                Assert.Contains(asyncPolicyGeneric.nested, n => n.fullName == "Polly.AsyncPolicy<TResult>.<>c__DisplayClass16_0");
+
+                var policyBuilder = model.types.First(t => t.fullName == "Polly.PolicyBuilder");
+                Assert.Single(policyBuilder.nested);
+                Assert.Equal("Polly.PolicyBuilder.<>c__DisplayClass15_0<TResult>", policyBuilder.nested[0].fullName);
+
+                var policyBuilderGeneric = model.types.First(t => t.fullName == "Polly.PolicyBuilder<TResult>");
+                Assert.Single(policyBuilderGeneric.nested);
+                Assert.Equal("Polly.PolicyBuilder<TResult>.<>c__DisplayClass15_0", policyBuilderGeneric.nested[0].fullName);
+
+                // Self comparison must succeed with zero changes and no ambiguous collision exception
+                var diffResult = DumpDiffer.Compare(model, model);
+                Assert.NotNull(diffResult);
+                Assert.False(diffResult.HasDifferences);
+                Assert.Empty(diffResult.types.added);
+                Assert.Empty(diffResult.types.removed);
+                Assert.Empty(diffResult.types.changed);
+            }
+        }
+
+        private static void RegisterTypeInTypeDic(Il2Cpp il2Cpp, ulong pointer, Il2CppType type)
+        {
+            var field = typeof(Il2Cpp).GetField("typeDic", BindingFlags.Instance | BindingFlags.NonPublic);
+            var dict = (Dictionary<ulong, Il2CppType>)field!.GetValue(il2Cpp)!;
+            dict[pointer] = type;
+        }
+
+        private static ulong CreateGenericInstanceInMemory(
+            WebAssemblyMemory il2Cpp,
+            uint baseAddr,
+            int targetTypeDefIndex,
+            ulong[] typeArgPointers)
+        {
+            var stream = (MemoryStream)typeof(BinaryStream)
+                .GetField("stream", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(il2Cpp)!;
+
+            var writer = new BinaryWriter(stream);
+
+            // 1. Write argv array (each pointer is 4 bytes in 32-bit)
+            var argvAddr = baseAddr;
+            stream.Position = argvAddr;
+            foreach (var ptr in typeArgPointers)
+            {
+                writer.Write((uint)ptr);
+            }
+            var pos = (uint)stream.Position;
+            if ((pos % 4) != 0) pos += 4 - (pos % 4);
+
+            // 2. Write Il2CppGenericInst
+            var instAddr = pos;
+            stream.Position = instAddr;
+            writer.Write((int)typeArgPointers.Length); // type_argc
+            writer.Write((uint)argvAddr);              // type_argv
+            pos = (uint)stream.Position;
+            if ((pos % 4) != 0) pos += 4 - (pos % 4);
+
+            // 3. Write Il2CppGenericClass
+            var classAddr = pos;
+            stream.Position = classAddr;
+            writer.Write((int)targetTypeDefIndex);     // typeDefinitionIndex
+            writer.Write((uint)instAddr);              // context.class_inst
+            writer.Write((uint)0);                     // context.method_inst
+            writer.Write((uint)0);                     // cached_class
+
+            return classAddr;
+        }
+
+        [Fact]
+        public void PollyDump_CrossBuildDiff_DetectsFieldReferenceSwap_BetweenCorrectedGenericClosures()
+        {
+            // Point 1: A reference swap between AsyncPolicy.<>c__DisplayClass14_0<int>
+            // and AsyncPolicy<int>.<>c__DisplayClass14_0 in metadata field typeIndex
+            // must be detected by DumpDiffer.
+            var tempDir = Path.Combine(Path.GetTempPath(), "polly-field-swap-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                // Left build: field references AsyncPolicy.<>c__DisplayClass14_0<int> (TypeDef 2)
+                var (m1, il2Cpp1, exec1, _) = CreatePollyEnvironment();
+                JsonDumpModel left;
+                using (m1) using (il2Cpp1)
+                {
+                    const ulong intPtr = 0x1000;
+                    RegisterTypeInTypeDic(il2Cpp1, intPtr, il2Cpp1.types[12]); // int type
+
+                    var classAddr1 = CreateGenericInstanceInMemory(il2Cpp1, 2048, 2, new[] { intPtr });
+                    var genType1 = new Il2CppType
+                    {
+                        type = Il2CppTypeEnum.IL2CPP_TYPE_GENERICINST,
+                        data = new Il2CppType.Union { dummy = classAddr1 }
+                    };
+
+                    var types1 = il2Cpp1.types.ToList();
+                    types1.Add(genType1);
+                    il2Cpp1.types = types1.ToArray();
+
+                    // Point field 0 to type 13
+                    m1.fieldDefs[0].typeIndex = 13;
+
+                    // Verify GetTypeName formatting
+                    var leftFieldTypeName = exec1.GetTypeName(genType1, false, false);
+                    Assert.Equal("AsyncPolicy.<>c__DisplayClass14_0<int>", leftFieldTypeName);
+
+                    left = JsonDumpGenerator.Create(exec1, new Config { DumpField = true });
+                }
+
+                // Right build: field references AsyncPolicy<int>.<>c__DisplayClass14_0 (TypeDef 5)
+                var (m2, il2Cpp2, exec2, _) = CreatePollyEnvironment();
+                JsonDumpModel right;
+                using (m2) using (il2Cpp2)
+                {
+                    const ulong intPtr = 0x1000;
+                    RegisterTypeInTypeDic(il2Cpp2, intPtr, il2Cpp2.types[12]); // int type
+
+                    var classAddr2 = CreateGenericInstanceInMemory(il2Cpp2, 2048, 5, new[] { intPtr });
+                    var genType2 = new Il2CppType
+                    {
+                        type = Il2CppTypeEnum.IL2CPP_TYPE_GENERICINST,
+                        data = new Il2CppType.Union { dummy = classAddr2 }
+                    };
+
+                    var types2 = il2Cpp2.types.ToList();
+                    types2.Add(genType2);
+                    il2Cpp2.types = types2.ToArray();
+
+                    // Point field 0 to type 13
+                    m2.fieldDefs[0].typeIndex = 13;
+
+                    // Verify GetTypeName formatting
+                    var rightFieldTypeName = exec2.GetTypeName(genType2, false, false);
+                    Assert.Equal("AsyncPolicy<int>.<>c__DisplayClass14_0", rightFieldTypeName);
+
+                    right = JsonDumpGenerator.Create(exec2, new Config { DumpField = true });
+                }
+
+                var leftPath = Path.Combine(tempDir, "left.json");
+                var rightPath = Path.Combine(tempDir, "right.json");
+                var diffPath = Path.Combine(tempDir, "diff.json");
+
+                File.WriteAllText(leftPath, JsonSerializer.Serialize(left, JsonDumpGenerator.JsonOptions));
+                File.WriteAllText(rightPath, JsonSerializer.Serialize(right, JsonDumpGenerator.JsonOptions));
+
+                using var sw = new StringWriter();
+                var exitCode = DumpDiffer.Execute(leftPath, rightPath, diffPath, sw);
+
+                Assert.Equal(1, exitCode); // Differences must be found!
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(diffPath));
+                Assert.NotNull(diff);
+                Assert.True(diff.HasDifferences);
+                Assert.Single(diff.types.changed);
+
+                var changedType = diff.types.changed[0];
+                Assert.Equal("Polly.dll!Polly.AsyncPolicy.<>c__DisplayClass14_0<TResult>", changedType.type);
+                Assert.Single(changedType.fields.changed);
+                Assert.Equal("action", changedType.fields.changed[0].field);
+                Assert.Equal("AsyncPolicy.<>c__DisplayClass14_0<int>", changedType.fields.changed[0].left.type);
+                Assert.Equal("AsyncPolicy<int>.<>c__DisplayClass14_0", changedType.fields.changed[0].right.type);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void PollyDump_DivergentMetadata_UsesUnifiedParentResolution_AndAvoidsArbitraryOrder()
+        {
+            // Point 2: If a child is listed in multiple parents' nestedTypeIndices:
+            // Case A: declaringTypeIndex is valid -> binds strictly to declaringTypeIndex parent, not read order!
+            var (mA, il2CppA, execA, typeDefsA) = CreatePollyEnvironment();
+            using (mA) using (il2CppA)
+            {
+                typeDefsA[0].nested_type_count = 4;
+                mA.nestedTypeIndices = new[] { 2, 3, 4, 5, 5, 6, 7, 10, 11 };
+                typeDefsA[1].nestedTypesStart = 4; // points to [5, 6, 7]
+
+                var parent = execA.GetParentTypeDefinition(typeDefsA[5]);
+                Assert.Same(typeDefsA[1], parent); // Must resolve to declaring parent (AsyncPolicy<TResult>), NOT first traversed (AsyncPolicy)!
+
+                var model = JsonDumpGenerator.Create(execA, new Config());
+                var p0 = model.types.First(t => t.fullName == "Polly.AsyncPolicy");
+                var p1 = model.types.First(t => t.fullName == "Polly.AsyncPolicy<TResult>");
+
+                // Child 5 must be nested under p1, NOT p0
+                Assert.DoesNotContain(p0.nested, n => n.fullName == "Polly.AsyncPolicy<TResult>.<>c__DisplayClass14_0");
+                Assert.Contains(p1.nested, n => n.fullName == "Polly.AsyncPolicy<TResult>.<>c__DisplayClass14_0");
+            }
+
+            // Case B: declaringTypeIndex == -1 and multiple candidate parents exist (unresolved conflict)
+            // Emits structured warning via CoreLogger (captured by API consumer) and returns null
+            var (mB, il2CppB, execB, typeDefsB) = CreatePollyEnvironment();
+            using (mB) using (il2CppB)
+            {
+                typeDefsB[5].declaringTypeIndex = -1; // No declared parent
+                typeDefsB[0].nested_type_count = 4;
+                mB.nestedTypeIndices = new[] { 2, 3, 4, 5, 5, 6, 7, 10, 11 };
+                typeDefsB[1].nestedTypesStart = 4;
+
+                var warnings = new List<string>();
+                using var sw = new StringWriter();
+                JsonDumpModel model;
+                using (CoreLogger.Scope(sw, warnings))
+                {
+                    var parent = execB.GetParentTypeDefinition(typeDefsB[5]);
+                    Assert.Null(parent); // Ambiguous conflict without declared parent -> returns null!
+
+                    model = JsonDumpGenerator.Create(execB, new Config());
+                }
+
+                // Child 5 becomes root type, not adopted by arbitrary order
+                var p0 = model.types.First(t => t.fullName == "Polly.AsyncPolicy");
+                var p1 = model.types.First(t => t.fullName == "Polly.AsyncPolicy<TResult>");
+                Assert.DoesNotContain(p1.nested, n => n.fullName.Contains("DisplayClass14_0"));
+                Assert.Contains(model.types, t => t.fullName == "<>c__DisplayClass14_0<TResult>");
+
+                // Warning must be captured in CoreLogger and API writer exactly once for this definition
+                Assert.Single(warnings);
+                Assert.Contains("WARNING: Ambiguous declaring type for nested type '<>c__DisplayClass14_0'", warnings[0]);
+                Assert.Contains("AsyncPolicy", warnings[0]);
+                Assert.Contains("AsyncPolicy`1", warnings[0]);
+                Assert.Contains(warnings[0], sw.ToString());
+            }
+        }
+
+        [Fact]
+        public void PollyDump_ParentCycle_RejectsCycleAndFallsBackToAcyclicCandidate_PreservingDefinitionCount()
+        {
+            // Point 1: When declaringTypeIndex of def 5 points to itself (def 5),
+            // but nestedTypeIndices table indicates def 1 (AsyncPolicy<TResult>) as parent:
+            // The shared resolver rejects the cycle, falls back to the unique acyclic candidate (def 1),
+            // emits a warning on CoreLogger, and the recursive definition count is preserved at 12 (does NOT drop to 11).
+            var (m, il2Cpp, exec, typeDefs) = CreatePollyEnvironment();
+            using (m) using (il2Cpp)
+            {
+                typeDefs[5].declaringTypeIndex = 5; // Mutate to point to itself!
+
+                var warnings = new List<string>();
+                using var sw = new StringWriter();
+                JsonDumpModel model;
+                using (CoreLogger.Scope(sw, warnings))
+                {
+                    var parent = exec.GetParentTypeDefinition(typeDefs[5]);
+                    Assert.Same(typeDefs[1], parent); // Must reject self-cycle and fall back to def 1!
+
+                    model = JsonDumpGenerator.Create(exec, new Config());
+                }
+
+                static int CountTypes(IEnumerable<JsonDumpType> types)
+                {
+                    int count = 0;
+                    foreach (var t in types)
+                    {
+                        count += 1 + CountTypes(t.nested);
+                    }
+                    return count;
+                }
+
+                Assert.Equal(12, CountTypes(model.types)); // Must NOT drop to 11!
+
+                var p1 = model.types.First(t => t.fullName == "Polly.AsyncPolicy<TResult>");
+                Assert.Contains(p1.nested, n => n.fullName == "Polly.AsyncPolicy<TResult>.<>c__DisplayClass14_0");
+
+                // Warning logged via CoreLogger
+                Assert.Single(warnings);
+                Assert.Contains("WARNING: Cyclic declaring type detected for '<>c__DisplayClass14_0'", warnings[0]);
+                Assert.Contains("Falling back to candidate parent 'AsyncPolicy`1'", warnings[0]);
+                Assert.Contains(warnings[0], sw.ToString());
+
+                // Self-diff succeeds with 0 differences
+                var diff = DumpDiffer.Compare(model, model);
+                Assert.False(diff.HasDifferences);
+            }
+        }
+
+        [Fact]
+        public void PollyDump_ParentCycle_WithNoAcyclicCandidate_PreservesDefinitionAsRootWithDiagnostic()
+        {
+            // Point 1: If def 5 points to itself and has NO candidate in nestedTypeIndices:
+            // It is preserved as an unparented root definition with a warning, and total count is still 12.
+            var (m, il2Cpp, exec, typeDefs) = CreatePollyEnvironment();
+            using (m) using (il2Cpp)
+            {
+                typeDefs[5].declaringTypeIndex = 5; // self-cycle
+                typeDefs[1].nestedTypesStart = 4;
+                typeDefs[1].nested_type_count = 2; // only [6, 7], removed 5
+
+                var warnings = new List<string>();
+                using var sw = new StringWriter();
+                JsonDumpModel model;
+                using (CoreLogger.Scope(sw, warnings))
+                {
+                    var parent = exec.GetParentTypeDefinition(typeDefs[5]);
+                    Assert.Null(parent);
+
+                    model = JsonDumpGenerator.Create(exec, new Config());
+                }
+
+                static int CountTypes(IEnumerable<JsonDumpType> types)
+                {
+                    int count = 0;
+                    foreach (var t in types)
+                    {
+                        count += 1 + CountTypes(t.nested);
+                    }
+                    return count;
+                }
+
+                Assert.Equal(12, CountTypes(model.types)); // Definition 5 is preserved as root, count is 12!
+                Assert.Contains(model.types, t => t.fullName.Contains("<>c__DisplayClass14_0"));
+
+                Assert.Single(warnings);
+                Assert.Contains("WARNING: Cyclic declaring type detected for '<>c__DisplayClass14_0'", warnings[0]);
+                Assert.Contains("Preserving as unparented root definition", warnings[0]);
+                Assert.Contains(warnings[0], sw.ToString());
+            }
+        }
+
+                [Fact]
+        public void PollyDump_NonGenericTypeWithBacktickInName_PreservesLiteralName_WithoutCollision()
+        {
+            // Point 3: A non-generic definition named AsyncPolicy`Literal (genericContainerIndex = -1)
+            // must retain its literal name completely and not collide with AsyncPolicy.
+            var m = CreateEmptyMetadata();
+            uint strPos = 0;
+            AddString(m, "", ref strPos);
+            var imgName = AddString(m, "Polly.dll", ref strPos);
+            var asmName = AddString(m, "Polly", ref strPos);
+            var nsPolly = AddString(m, "Polly", ref strPos);
+
+            var asyncPolicyName = AddString(m, "AsyncPolicy", ref strPos);
+            var asyncPolicyLiteralName = AddString(m, "AsyncPolicy`Literal", ref strPos);
+
+            m.assemblyDefs = new[]
+            {
+                new Il2CppAssemblyDefinition
+                {
+                    aname = new Il2CppAssemblyNameDefinition { nameIndex = asmName }
+                }
+            };
+
+            m.imageDefs = new[]
+            {
+                new Il2CppImageDefinition
+                {
+                    nameIndex = imgName,
+                    assemblyIndex = 0,
+                    typeStart = 0,
+                    typeCount = 2
+                }
+            };
+
+            var typeDefs = new[]
+            {
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = asyncPolicyName,
+                    namespaceIndex = nsPolly,
+                    declaringTypeIndex = -1,
+                    genericContainerIndex = -1,
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                },
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = asyncPolicyLiteralName,
+                    namespaceIndex = nsPolly,
+                    declaringTypeIndex = -1,
+                    genericContainerIndex = -1, // Non-generic!
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                }
+            };
+            m.typeDefs = typeDefs;
+            m.nestedTypeIndices = Array.Empty<int>();
+            m.genericContainers = Array.Empty<Il2CppGenericContainer>();
+            m.genericParameters = Array.Empty<Il2CppGenericParameter>();
+            m.methodDefs = Array.Empty<Il2CppMethodDefinition>();
+            m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
+            m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
+            m.fieldDefs = Array.Empty<Il2CppFieldDefinition>();
+
+            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[1024]), 0)
+            {
+                Version = 16,
+                methodPointers = Array.Empty<ulong>(),
+                types = new[]
+                {
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 0 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 1 } }
+                }
+            };
+
+            using (m)
+            using (il2Cpp)
+            {
+                var executor = new Il2CppExecutor(m, il2Cpp);
+
+                var name0 = executor.GetTypeDefName(typeDefs[0], true, true);
+                var name1 = executor.GetTypeDefName(typeDefs[1], true, true);
+
+                Assert.Equal("Polly.AsyncPolicy", name0);
+                Assert.Equal("Polly.AsyncPolicy`Literal", name1);
+                Assert.NotEqual(name0, name1); // Must not collide!
+
+                var model = JsonDumpGenerator.Create(executor, new Config());
+                Assert.Equal(2, model.types.Count);
+                Assert.Contains(model.types, t => t.fullName == "Polly.AsyncPolicy");
+                Assert.Contains(model.types, t => t.fullName == "Polly.AsyncPolicy`Literal");
+
+                // Self-diff must succeed with zero differences and no collisions
+                var diff = DumpDiffer.Compare(model, model);
+                Assert.False(diff.HasDifferences);
+                Assert.Empty(diff.types.added);
+                Assert.Empty(diff.types.removed);
+                Assert.Empty(diff.types.changed);
+            }
+        }
+
+                [Fact]
+        public void NestedType_DeclaringTypeIndexMinusOne_ResolvesParentFromNestedTypeIndices()
+        {
+            var m = CreateEmptyMetadata();
+            uint strPos = 0;
+            AddString(m, "", ref strPos);
+            var imgName = AddString(m, "Assembly.dll", ref strPos);
+            var parentName = AddString(m, "ParentClass`1", ref strPos);
+            var childName = AddString(m, "ChildClass", ref strPos);
+            var tParamName = AddString(m, "T", ref strPos);
+
+            m.imageDefs = new[]
+            {
+                new Il2CppImageDefinition { nameIndex = imgName, assemblyIndex = -1, typeStart = 0, typeCount = 2 }
+            };
+
+            m.typeDefs = new[]
+            {
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = parentName,
+                    namespaceIndex = 0,
+                    declaringTypeIndex = -1,
+                    parentIndex = -1,
+                    genericContainerIndex = 0,
+                    nestedTypesStart = 0,
+                    nested_type_count = 1,
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                },
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = childName,
+                    namespaceIndex = 0,
+                    declaringTypeIndex = -1, // declaringTypeIndex is -1 in metadata!
+                    parentIndex = -1,
+                    genericContainerIndex = -1,
+                    flags = TYPE_ATTRIBUTE_NESTED_PUBLIC
+                }
+            };
+
+            m.nestedTypeIndices = new[] { 1 };
+            m.genericContainers = new[]
+            {
+                new Il2CppGenericContainer { genericParameterStart = 0, type_argc = 1 }
+            };
+            m.genericParameters = new[]
+            {
+                new Il2CppGenericParameter { nameIndex = tParamName }
+            };
+
+            m.methodDefs = Array.Empty<Il2CppMethodDefinition>();
+            m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
+            m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
+            m.fieldDefs = Array.Empty<Il2CppFieldDefinition>();
+
+            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[8192]), 0)
+            {
+                Version = 16,
+                methodPointers = Array.Empty<ulong>(),
+                types = new[]
+                {
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 0 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 1 } }
+                }
+            };
+
+            using (m)
+            using (il2Cpp)
+            {
+                var executor = new Il2CppExecutor(m, il2Cpp);
+                var childTypeDef = m.typeDefs[1];
+
+                var fullName = executor.GetTypeDefName(childTypeDef, true, true);
+                Assert.Equal("ParentClass<T>.ChildClass", fullName);
+            }
+        }
+
+        [Fact]
+        public void DeeplyNestedGenericTypes_ResolvesFullCanonicalPath()
+        {
+            var m = CreateEmptyMetadata();
+            uint strPos = 0;
+            AddString(m, "", ref strPos);
+            var imgName = AddString(m, "Assembly.dll", ref strPos);
+            var nsName = AddString(m, "TestNs", ref strPos);
+            var outerName = AddString(m, "Outer`1", ref strPos);
+            var middleName = AddString(m, "Middle`1", ref strPos);
+            var innerName = AddString(m, "Inner`1", ref strPos);
+            var paramT = AddString(m, "T", ref strPos);
+            var paramU = AddString(m, "U", ref strPos);
+            var paramV = AddString(m, "V", ref strPos);
+
+            m.imageDefs = new[]
+            {
+                new Il2CppImageDefinition { nameIndex = imgName, assemblyIndex = -1, typeStart = 0, typeCount = 3 }
+            };
+
+            m.typeDefs = new[]
+            {
+                // 0: Outer`1
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = outerName,
+                    namespaceIndex = nsName,
+                    declaringTypeIndex = -1,
+                    genericContainerIndex = 0,
+                    nestedTypesStart = 0,
+                    nested_type_count = 1,
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                },
+                // 1: Middle`1
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = middleName,
+                    namespaceIndex = 0,
+                    declaringTypeIndex = 0,
+                    genericContainerIndex = 1,
+                    nestedTypesStart = 1,
+                    nested_type_count = 1,
+                    flags = TYPE_ATTRIBUTE_NESTED_PUBLIC
+                },
+                // 2: Inner`1
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = innerName,
+                    namespaceIndex = 0,
+                    declaringTypeIndex = 1,
+                    genericContainerIndex = 2,
+                    flags = TYPE_ATTRIBUTE_NESTED_PUBLIC
+                }
+            };
+
+            m.nestedTypeIndices = new[] { 1, 2 };
+            m.genericContainers = new[]
+            {
+                new Il2CppGenericContainer { genericParameterStart = 0, type_argc = 1 }, // T
+                new Il2CppGenericContainer { genericParameterStart = 0, type_argc = 2 }, // T, U
+                new Il2CppGenericContainer { genericParameterStart = 0, type_argc = 3 }  // T, U, V
+            };
+            m.genericParameters = new[]
+            {
+                new Il2CppGenericParameter { nameIndex = paramT },
+                new Il2CppGenericParameter { nameIndex = paramU },
+                new Il2CppGenericParameter { nameIndex = paramV }
+            };
+
+            m.methodDefs = Array.Empty<Il2CppMethodDefinition>();
+            m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
+            m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
+            m.fieldDefs = Array.Empty<Il2CppFieldDefinition>();
+
+            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[8192]), 0)
+            {
+                Version = 16,
+                methodPointers = Array.Empty<ulong>(),
+                types = new[]
+                {
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 0 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 1 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 2 } }
+                }
+            };
+
+            using (m)
+            using (il2Cpp)
+            {
+                var executor = new Il2CppExecutor(m, il2Cpp);
+
+                Assert.Equal("TestNs.Outer<T>", executor.GetTypeDefName(m.typeDefs[0], true, true));
+                Assert.Equal("TestNs.Outer<T>.Middle<U>", executor.GetTypeDefName(m.typeDefs[1], true, true));
+                Assert.Equal("TestNs.Outer<T>.Middle<U>.Inner<V>", executor.GetTypeDefName(m.typeDefs[2], true, true));
+            }
+        }
+
+        [Fact]
+        public void PollyDump_IndirectCycle_OppositeQueryOrders_ProduceIdenticalModelWithoutOrderDependence()
+        {
+            // Reproduces: AsyncPolicy (def 0) <-> AsyncPolicy`1 (def 1) forming an indirect cycle.
+            // Querying def 0 first or def 1 first must produce identical models without order dependence,
+            // preserving all 12 definitions and zero diffs between the two models.
+            static int CountTypes(IEnumerable<JsonDumpType> types)
+            {
+                int count = 0;
+                foreach (var t in types)
+                {
+                    count += 1 + CountTypes(t.nested);
+                }
+                return count;
+            }
+
+            JsonDumpModel modelA;
+            JsonDumpModel modelB;
+
+            // Run A: Query def 0 first
+            {
+                var (m, il2Cpp, exec, typeDefs) = CreatePollyEnvironment();
+                using (m) using (il2Cpp)
+                {
+                    typeDefs[0].declaringTypeIndex = 1;
+                    typeDefs[1].declaringTypeIndex = 0;
+
+                    var p0 = exec.GetParentTypeDefinition(typeDefs[0]);
+                    Assert.Null(p0);
+
+                    modelA = JsonDumpGenerator.Create(exec, new Config());
+                }
+            }
+
+            // Run B: Query def 1 first
+            {
+                var (m, il2Cpp, exec, typeDefs) = CreatePollyEnvironment();
+                using (m) using (il2Cpp)
+                {
+                    typeDefs[0].declaringTypeIndex = 1;
+                    typeDefs[1].declaringTypeIndex = 0;
+
+                    var p1 = exec.GetParentTypeDefinition(typeDefs[1]);
+                    Assert.Null(p1);
+
+                    modelB = JsonDumpGenerator.Create(exec, new Config());
+                }
+            }
+
+            // Both models must preserve all 12 definitions
+            Assert.Equal(12, CountTypes(modelA.types));
+            Assert.Equal(12, CountTypes(modelB.types));
+
+            // Both models must be strictly identical: HasDifferences = false
+            var diff = DumpDiffer.Compare(modelA, modelB);
+            Assert.False(diff.HasDifferences);
+        }
+
+        [Fact]
+        public void PollyDump_LargeCycleExceedingPreviousLimit_PreservesAllDefinitionsAndEmitsDiagnostics()
+        {
+            // Reproduces: A ring with 257 definitions (exceeding the old 256 depth limit).
+            // All 257 definitions must be preserved in model.types (count does not drop to 0),
+            // and diagnostic warnings must be emitted via CoreLogger.
+            const int count = 257;
+            var m = CreateEmptyMetadata();
+            uint strPos = 0;
+            AddString(m, "", ref strPos);
+            var imgName = AddString(m, "Assembly.dll", ref strPos);
+            var asmName = AddString(m, "Assembly", ref strPos);
+            var nsName = AddString(m, "TestNs", ref strPos);
+
+            m.assemblyDefs = new[]
+            {
+                new Il2CppAssemblyDefinition { aname = new Il2CppAssemblyNameDefinition { nameIndex = asmName } }
+            };
+            m.imageDefs = new[]
+            {
+                new Il2CppImageDefinition { nameIndex = imgName, assemblyIndex = 0, typeStart = 0, typeCount = count }
+            };
+
+            var typeDefs = new Il2CppTypeDefinition[count];
+            var il2CppTypes = new Il2CppType[count];
+
+            for (int i = 0; i < count; i++)
+            {
+                var nameIndex = AddString(m, $"RingType_{i}", ref strPos);
+                int nextIndex = (i + 1) % count; // Forms closed cycle of length 257!
+                typeDefs[i] = new Il2CppTypeDefinition
+                {
+                    nameIndex = nameIndex,
+                    namespaceIndex = nsName,
+                    declaringTypeIndex = nextIndex,
+                    parentIndex = -1,
+                    genericContainerIndex = -1,
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                };
+                il2CppTypes[i] = new Il2CppType
+                {
+                    type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS,
+                    data = new Il2CppType.Union { dummy = (ulong)i }
+                };
+            }
+
+            m.typeDefs = typeDefs;
+            m.nestedTypeIndices = Array.Empty<int>();
+            m.genericContainers = Array.Empty<Il2CppGenericContainer>();
+            m.genericParameters = Array.Empty<Il2CppGenericParameter>();
+            m.methodDefs = Array.Empty<Il2CppMethodDefinition>();
+            m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
+            m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
+            m.fieldDefs = Array.Empty<Il2CppFieldDefinition>();
+
+            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[8192]), 0)
+            {
+                Version = 16,
+                methodPointers = Array.Empty<ulong>(),
+                types = il2CppTypes
+            };
+
+            using (m)
+            using (il2Cpp)
+            {
+                var exec = new Il2CppExecutor(m, il2Cpp);
+                var warnings = new List<string>();
+                using var sw = new StringWriter();
+                JsonDumpModel model;
+                using (CoreLogger.Scope(sw, warnings))
+                {
+                    model = JsonDumpGenerator.Create(exec, new Config());
+                }
+
+                // All 257 definitions MUST be present in model.types (none vanished into an empty dump)
+                Assert.Equal(count, model.types.Count);
+                Assert.Equal(count, warnings.Count);
+                Assert.All(warnings, w => Assert.Contains("Cyclic declaring type detected", w));
+
+                var diff = DumpDiffer.Compare(model, model);
+                Assert.False(diff.HasDifferences);
+            }
+        }
+
+        [Fact]
+        public void PollyDump_UniqueParentCandidateAppearingAfterChild_ResolvesCorrectlyWithoutDroppingToRoot()
+        {
+            // Case 1: Unique parent candidate appearing after child in metadata (e.g. child index 2, parent index 8).
+            // Child 2 has declaringTypeIndex = -1.
+            // Parent 8 (PolicyBuilder) is listed as candidate parent for child 2 in nestedTypeIndices.
+            // Child 2 must correctly link to parent 8 rather than dropping to root.
+            var (m, il2Cpp, exec, typeDefs) = CreatePollyEnvironment();
+            using (m) using (il2Cpp)
+            {
+                typeDefs[2].declaringTypeIndex = -1; // No declared parent
+
+                m.nestedTypeIndices = new[] { 3, 4, 5, 6, 7, 2, 10, 11 };
+                typeDefs[0].nestedTypesStart = 0;
+                typeDefs[0].nested_type_count = 2; // [3, 4]
+                typeDefs[1].nestedTypesStart = 2;
+                typeDefs[1].nested_type_count = 3; // [5, 6, 7]
+                typeDefs[8].nestedTypesStart = 5;
+                typeDefs[8].nested_type_count = 2; // [2, 10]
+
+                var parent = exec.GetParentTypeDefinition(typeDefs[2]);
+                Assert.Same(typeDefs[8], parent); // Must resolve to parent 8!
+
+                var model = JsonDumpGenerator.Create(exec, new Config());
+                var p8 = model.types.First(t => t.fullName == "Polly.PolicyBuilder");
+                Assert.Contains(p8.nested, n => n.fullName.Contains("<>c__DisplayClass14_0"));
+            }
+        }
+
+        [Fact]
+        public void PollyDump_TwoCandidateParentsOnOppositeSidesOfChild_IdentifiesAmbiguityAndPreservesAsRoot()
+        {
+            // Case 2: Two candidate parents on opposite sides of child in metadata:
+            // Child index 2, candidate parent A index 1 (1 < 2), candidate parent B index 8 (8 > 2).
+            // Child 2 has declaringTypeIndex = -1.
+            // Both parent 1 and parent 8 list child 2 in nestedTypeIndices.
+            // Must detect ambiguity, emit diagnostic warning identifying both candidates, and preserve child 2 as root.
+            var (m, il2Cpp, exec, typeDefs) = CreatePollyEnvironment();
+            using (m) using (il2Cpp)
+            {
+                typeDefs[2].declaringTypeIndex = -1; // No declared parent
+                typeDefs[0].nestedTypesStart = 0;
+                typeDefs[0].nested_type_count = 2; // [3, 4]
+
+                // Link child 2 under parent 1 (AsyncPolicy`1, index 1 < 2) AND parent 8 (PolicyBuilder, index 8 > 2)
+                m.nestedTypeIndices = new[] { 3, 4, 2, 5, 6, 7, 2, 10, 11 };
+                typeDefs[1].nestedTypesStart = 2;
+                typeDefs[1].nested_type_count = 4; // [2, 5, 6, 7]
+                typeDefs[8].nestedTypesStart = 6;
+                typeDefs[8].nested_type_count = 2; // [2, 10]
+
+                var warnings = new List<string>();
+                using var sw = new StringWriter();
+                JsonDumpModel model;
+                using (CoreLogger.Scope(sw, warnings))
+                {
+                    var parent = exec.GetParentTypeDefinition(typeDefs[2]);
+                    Assert.Null(parent); // Must NOT pick candidate 1 by index order! Must be preserved as root!
+
+                    model = JsonDumpGenerator.Create(exec, new Config());
+                }
+
+                // Child 2 is preserved at root
+                Assert.Contains(model.types, t => t.fullName.Contains("<>c__DisplayClass14_0"));
+
+                // Ambiguity warning emitted identifying child 2 and both candidate parents
+                Assert.Single(warnings);
+                Assert.Contains("Ambiguous declaring type for nested type '<>c__DisplayClass14_0", warnings[0]);
+                Assert.Contains("AsyncPolicy`1", warnings[0]);
+                Assert.Contains("PolicyBuilder", warnings[0]);
+            }
+        }
+
+        private static (Metadata, WebAssemblyMemory, Il2CppExecutor, Il2CppTypeDefinition[]) CreateInversePairEnvironment(bool genericFirst)
+        {
+            var m = CreateEmptyMetadata();
+            uint strPos = 0;
+            AddString(m, "", ref strPos);
+            var imgName = AddString(m, "Polly.dll", ref strPos);
+            var asmName = AddString(m, "Polly", ref strPos);
+            var nsPolly = AddString(m, "Polly", ref strPos);
+
+            var asyncPolicyName = AddString(m, "AsyncPolicy", ref strPos);
+            var asyncPolicyGenericName = AddString(m, "AsyncPolicy`1", ref strPos);
+            var tresultParamName = AddString(m, "TResult", ref strPos);
+
+            m.assemblyDefs = new[]
+            {
+                new Il2CppAssemblyDefinition { aname = new Il2CppAssemblyNameDefinition { nameIndex = asmName } }
+            };
+
+            m.imageDefs = new[]
+            {
+                new Il2CppImageDefinition
+                {
+                    nameIndex = imgName,
+                    assemblyIndex = 0,
+                    typeStart = 0,
+                    typeCount = 2
+                }
+            };
+
+            m.genericParameters = new[]
+            {
+                new Il2CppGenericParameter { nameIndex = tresultParamName }
+            };
+            m.genericContainers = new[]
+            {
+                new Il2CppGenericContainer { genericParameterStart = 0, type_argc = 1 }
+            };
+
+            var nonGenericDef = new Il2CppTypeDefinition
+            {
+                nameIndex = asyncPolicyName,
+                namespaceIndex = nsPolly,
+                declaringTypeIndex = genericFirst ? 0 : 1, // Points to generic parent
+                parentIndex = -1,
+                genericContainerIndex = -1,
+                nestedTypesStart = 0,
+                nested_type_count = 1, // Claims generic type as nested child (inverse fallback)
+                flags = TYPE_ATTRIBUTE_NESTED_PUBLIC
+            };
+
+            var genericDef = new Il2CppTypeDefinition
+            {
+                nameIndex = asyncPolicyGenericName,
+                namespaceIndex = nsPolly,
+                declaringTypeIndex = -1, // No declared parent
+                parentIndex = -1,
+                genericContainerIndex = 0,
+                nestedTypesStart = 0,
+                nested_type_count = 0,
+                flags = TYPE_ATTRIBUTE_PUBLIC
+            };
+
+            var typeDefs = genericFirst
+                ? new[] { genericDef, nonGenericDef }
+                : new[] { nonGenericDef, genericDef };
+
+            m.typeDefs = typeDefs;
+            m.nestedTypeIndices = new[] { genericFirst ? 0 : 1 }; // Non-generic points to generic
+            m.methodDefs = Array.Empty<Il2CppMethodDefinition>();
+            m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
+            m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
+            m.fieldDefs = Array.Empty<Il2CppFieldDefinition>();
+
+            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[8192]), 0)
+            {
+                Version = 16,
+                methodPointers = Array.Empty<ulong>(),
+                types = new[]
+                {
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 0 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 1 } }
+                }
+            };
+
+            var exec = new Il2CppExecutor(m, il2Cpp);
+            return (m, il2Cpp, exec, typeDefs);
+        }
+
+        [Fact]
+        public void PollyDump_AcyclicDeclaredEdgeWithInverseFallback_PreservesDeclaredEdgeRegardlessOfTypeDefOrder()
+        {
+            // Verifies [P2] fix:
+            // Layout A: Non-generic (0) before Generic (1).
+            // Layout B: Generic (0) before Non-generic (1).
+            // In both layouts:
+            // Non-generic declares Generic as parent (declaringTypeIndex).
+            // nestedTypeIndices offers the inverse link (Non-generic -> Generic) as a fallback for Generic.
+            // Both layouts MUST preserve the acyclic declared edge (Non-generic parent is Generic),
+            // reject the inverse fallback candidate (Generic parent is null),
+            // emit a diagnostic warning, and produce identical tree hierarchy and canonical names.
+
+            // Layout A: non-generic at 0, generic at 1
+            var (mA, il2CppA, execA, typeDefsA) = CreateInversePairEnvironment(genericFirst: false);
+            var warningsA = new List<string>();
+            JsonDumpModel modelA;
+            using (mA) using (il2CppA)
+            {
+                using var swA = new StringWriter();
+                using (CoreLogger.Scope(swA, warningsA))
+                {
+                    var parentOfNonGenericA = execA.GetParentTypeDefinition(typeDefsA[0]);
+                    var parentOfGenericA = execA.GetParentTypeDefinition(typeDefsA[1]);
+
+                    Assert.Same(typeDefsA[1], parentOfNonGenericA); // Declared parent preserved!
+                    Assert.Null(parentOfGenericA);                  // Inverse fallback rejected!
+
+                    modelA = JsonDumpGenerator.Create(execA, new Config());
+                }
+            }
+
+            // Layout B: generic at 0, non-generic at 1
+            var (mB, il2CppB, execB, typeDefsB) = CreateInversePairEnvironment(genericFirst: true);
+            var warningsB = new List<string>();
+            JsonDumpModel modelB;
+            using (mB) using (il2CppB)
+            {
+                using var swB = new StringWriter();
+                using (CoreLogger.Scope(swB, warningsB))
+                {
+                    var parentOfGenericB = execB.GetParentTypeDefinition(typeDefsB[0]);
+                    var parentOfNonGenericB = execB.GetParentTypeDefinition(typeDefsB[1]);
+
+                    Assert.Same(typeDefsB[0], parentOfNonGenericB); // Declared parent preserved!
+                    Assert.Null(parentOfGenericB);                  // Inverse fallback rejected!
+
+                    modelB = JsonDumpGenerator.Create(execB, new Config());
+                }
+            }
+
+            // Both models must have identical hierarchy:
+            // Root: Polly.AsyncPolicy<TResult>
+            // Nested: Polly.AsyncPolicy
+            Assert.Single(modelA.types);
+            Assert.Equal("Polly.AsyncPolicy<TResult>", modelA.types[0].fullName);
+            Assert.Single(modelA.types[0].nested);
+            Assert.Contains("AsyncPolicy", modelA.types[0].nested[0].fullName);
+
+            Assert.Single(modelB.types);
+            Assert.Equal("Polly.AsyncPolicy<TResult>", modelB.types[0].fullName);
+            Assert.Single(modelB.types[0].nested);
+            Assert.Contains("AsyncPolicy", modelB.types[0].nested[0].fullName);
+
+            // Dumps must be completely identical regardless of TypeDefs order
+            var diff = DumpDiffer.Compare(modelA, modelB);
+            Assert.False(diff.HasDifferences);
+
+            // Diagnostic warnings emitted in both runs for rejected cycle-closing candidate
+            Assert.Contains(warningsA, w => w.Contains("rejected: creates a cycle with an established declared parent chain"));
+            Assert.Contains(warningsB, w => w.Contains("rejected: creates a cycle with an established declared parent chain"));
+        }
+
+        private static (Metadata, WebAssemblyMemory, Il2CppExecutor, Il2CppTypeDefinition[]) CreateMutualFallbackEnvironment(bool policyBuilderFirst)
+        {
+            var m = CreateEmptyMetadata();
+            uint strPos = 0;
+            AddString(m, "", ref strPos);
+            var imgName = AddString(m, "Polly.dll", ref strPos);
+            var asmName = AddString(m, "Polly", ref strPos);
+            var nsPolly = AddString(m, "Polly", ref strPos);
+
+            var asyncPolicyName = AddString(m, "AsyncPolicy", ref strPos);
+            var policyBuilderName = AddString(m, "PolicyBuilder", ref strPos);
+            var dispAName = AddString(m, "<>c__DisplayClassA", ref strPos);
+            var dispBName = AddString(m, "<>c__DisplayClassB", ref strPos);
+
+            m.assemblyDefs = new[]
+            {
+                new Il2CppAssemblyDefinition { aname = new Il2CppAssemblyNameDefinition { nameIndex = asmName } }
+            };
+
+            m.imageDefs = new[]
+            {
+                new Il2CppImageDefinition
+                {
+                    nameIndex = imgName,
+                    assemblyIndex = 0,
+                    typeStart = 0,
+                    typeCount = 4
+                }
+            };
+
+            var asyncPolicyDef = new Il2CppTypeDefinition
+            {
+                nameIndex = asyncPolicyName,
+                namespaceIndex = nsPolly,
+                declaringTypeIndex = -1,
+                parentIndex = -1,
+                genericContainerIndex = -1,
+                flags = TYPE_ATTRIBUTE_PUBLIC
+            };
+
+            var policyBuilderDef = new Il2CppTypeDefinition
+            {
+                nameIndex = policyBuilderName,
+                namespaceIndex = nsPolly,
+                declaringTypeIndex = -1,
+                parentIndex = -1,
+                genericContainerIndex = -1,
+                flags = TYPE_ATTRIBUTE_PUBLIC
+            };
+
+            var dispADef = new Il2CppTypeDefinition
+            {
+                nameIndex = dispAName,
+                namespaceIndex = 0,
+                parentIndex = -1,
+                genericContainerIndex = -1,
+                flags = TYPE_ATTRIBUTE_NESTED_PRIVATE
+            };
+
+            var dispBDef = new Il2CppTypeDefinition
+            {
+                nameIndex = dispBName,
+                namespaceIndex = 0,
+                parentIndex = -1,
+                genericContainerIndex = -1,
+                flags = TYPE_ATTRIBUTE_NESTED_PRIVATE
+            };
+
+            Il2CppTypeDefinition[] typeDefs;
+            if (!policyBuilderFirst)
+            {
+                // Layout 1: AsyncPolicy(0), PolicyBuilder(1), DispA(2), DispB(3)
+                typeDefs = new[] { asyncPolicyDef, policyBuilderDef, dispADef, dispBDef };
+                dispADef.declaringTypeIndex = 0; // Child of AsyncPolicy
+                dispBDef.declaringTypeIndex = 1; // Child of PolicyBuilder
+                asyncPolicyDef.nestedTypesStart = 0;
+                asyncPolicyDef.nested_type_count = 2; // [1, 2] -> PolicyBuilder (candidate parent), DispA
+                policyBuilderDef.nestedTypesStart = 2;
+                policyBuilderDef.nested_type_count = 2; // [0, 3] -> AsyncPolicy (candidate parent), DispB
+                m.nestedTypeIndices = new[] { 1, 2, 0, 3 };
+            }
+            else
+            {
+                // Layout 2: PolicyBuilder(0), AsyncPolicy(1), DispB(2), DispA(3)
+                typeDefs = new[] { policyBuilderDef, asyncPolicyDef, dispBDef, dispADef };
+                dispBDef.declaringTypeIndex = 0; // Child of PolicyBuilder
+                dispADef.declaringTypeIndex = 1; // Child of AsyncPolicy
+                policyBuilderDef.nestedTypesStart = 0;
+                policyBuilderDef.nested_type_count = 2; // [1, 2] -> AsyncPolicy (candidate parent), DispB
+                asyncPolicyDef.nestedTypesStart = 2;
+                asyncPolicyDef.nested_type_count = 2; // [0, 3] -> PolicyBuilder (candidate parent), DispA
+                m.nestedTypeIndices = new[] { 1, 2, 0, 3 };
+            }
+
+            m.typeDefs = typeDefs;
+            m.genericParameters = Array.Empty<Il2CppGenericParameter>();
+            m.genericContainers = Array.Empty<Il2CppGenericContainer>();
+            m.methodDefs = Array.Empty<Il2CppMethodDefinition>();
+            m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
+            m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
+            m.fieldDefs = Array.Empty<Il2CppFieldDefinition>();
+
+            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[8192]), 0)
+            {
+                Version = 16,
+                methodPointers = Array.Empty<ulong>(),
+                types = new[]
+                {
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 0 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 1 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 2 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 3 } }
+                }
+            };
+
+            var exec = new Il2CppExecutor(m, il2Cpp);
+            return (m, il2Cpp, exec, typeDefs);
+        }
+
+        [Fact]
+        public void PollyDump_MutualFallbackCycle_PreservesDefinitionsAtRootRegardlessOfTypeDefOrder()
+        {
+            // Reproduces the exact [P2] review issue:
+            // AsyncPolicy and PolicyBuilder have no declared parent (declaringTypeIndex = -1).
+            // Each lists the other as nested child in nestedTypeIndices (mutual fallback cycle).
+            // In both TypeDef layout orders:
+            // - The cycle composed entirely of fallbacks must be detected and stripped before publishing.
+            // - Both definitions must be preserved at root (parent = null).
+            // - Their respective nested classes must remain nested under their declared parents.
+            // - Diagnostic warnings identifying the cyclic fallback parent must be emitted.
+            // - Diff between the two models must show ZERO additions and ZERO removals (HasDifferences = false).
+
+            // Layout 1: AsyncPolicy at 0, PolicyBuilder at 1
+            var (m1, il2Cpp1, exec1, typeDefs1) = CreateMutualFallbackEnvironment(policyBuilderFirst: false);
+            var warnings1 = new List<string>();
+            JsonDumpModel model1;
+            using (m1) using (il2Cpp1)
+            {
+                using var sw1 = new StringWriter();
+                using (CoreLogger.Scope(sw1, warnings1))
+                {
+                    var parentAsyncPolicy1 = exec1.GetParentTypeDefinition(typeDefs1[0]);
+                    var parentPolicyBuilder1 = exec1.GetParentTypeDefinition(typeDefs1[1]);
+
+                    Assert.Null(parentAsyncPolicy1);
+                    Assert.Null(parentPolicyBuilder1);
+
+                    Assert.Same(typeDefs1[0], exec1.GetParentTypeDefinition(typeDefs1[2])); // DispA in AsyncPolicy
+                    Assert.Same(typeDefs1[1], exec1.GetParentTypeDefinition(typeDefs1[3])); // DispB in PolicyBuilder
+
+                    model1 = JsonDumpGenerator.Create(exec1, new Config());
+                }
+            }
+
+            // Layout 2: PolicyBuilder at 0, AsyncPolicy at 1
+            var (m2, il2Cpp2, exec2, typeDefs2) = CreateMutualFallbackEnvironment(policyBuilderFirst: true);
+            var warnings2 = new List<string>();
+            JsonDumpModel model2;
+            using (m2) using (il2Cpp2)
+            {
+                using var sw2 = new StringWriter();
+                using (CoreLogger.Scope(sw2, warnings2))
+                {
+                    var parentPolicyBuilder2 = exec2.GetParentTypeDefinition(typeDefs2[0]);
+                    var parentAsyncPolicy2 = exec2.GetParentTypeDefinition(typeDefs2[1]);
+
+                    Assert.Null(parentPolicyBuilder2);
+                    Assert.Null(parentAsyncPolicy2);
+
+                    Assert.Same(typeDefs2[0], exec2.GetParentTypeDefinition(typeDefs2[2])); // DispB in PolicyBuilder
+                    Assert.Same(typeDefs2[1], exec2.GetParentTypeDefinition(typeDefs2[3])); // DispA in AsyncPolicy
+
+                    model2 = JsonDumpGenerator.Create(exec2, new Config());
+                }
+            }
+
+            // Zero additions or removals between the two dumps
+            var diff = DumpDiffer.Compare(model1, model2);
+            Assert.False(diff.HasDifferences);
+            Assert.Empty(diff.types.added);
+            Assert.Empty(diff.types.removed);
+
+            // Both runs emit diagnostics identifying the cyclic fallback parent
+            Assert.Contains(warnings1, w => w.Contains("Cyclic fallback parent detected for 'AsyncPolicy'") && w.Contains("PolicyBuilder"));
+            Assert.Contains(warnings1, w => w.Contains("Cyclic fallback parent detected for 'PolicyBuilder'") && w.Contains("AsyncPolicy"));
+
+            Assert.Contains(warnings2, w => w.Contains("Cyclic fallback parent detected for 'AsyncPolicy'") && w.Contains("PolicyBuilder"));
+            Assert.Contains(warnings2, w => w.Contains("Cyclic fallback parent detected for 'PolicyBuilder'") && w.Contains("AsyncPolicy"));
+        }
+
+        [Fact]
+        public void PollyDump_DeepDeclaredCycle_30000Definitions_ExecutesIterativelyWithoutStackOverflow()
+        {
+            // Reproduces issue 1:
+            // Synthetic cycle of 30,000 definitions executed in a separate thread with a 1 MiB stack size.
+            // The iterative DFS on declared edges must evaluate without StackOverflowException,
+            // preserving all definitions as unparented root definitions.
+            const int count = 30000;
+            var m = CreateEmptyMetadata();
+            uint strPos = 0;
+            AddString(m, "", ref strPos);
+            var imgName = AddString(m, "LargeAssembly.dll", ref strPos);
+            var asmName = AddString(m, "LargeAssembly", ref strPos);
+            var nsName = AddString(m, "LargeNs", ref strPos);
+
+            m.assemblyDefs = new[]
+            {
+                new Il2CppAssemblyDefinition { aname = new Il2CppAssemblyNameDefinition { nameIndex = asmName } }
+            };
+            m.imageDefs = new[]
+            {
+                new Il2CppImageDefinition { nameIndex = imgName, assemblyIndex = 0, typeStart = 0, typeCount = count }
+            };
+
+            var typeDefs = new Il2CppTypeDefinition[count];
+            var il2CppTypes = new Il2CppType[count];
+            var typeName = AddString(m, "RingType", ref strPos);
+
+            for (int i = 0; i < count; i++)
+            {
+                int nextIndex = (i + 1) % count; // Cycle of length 30,000!
+                typeDefs[i] = new Il2CppTypeDefinition
+                {
+                    nameIndex = typeName,
+                    namespaceIndex = nsName,
+                    declaringTypeIndex = nextIndex,
+                    parentIndex = -1,
+                    genericContainerIndex = -1,
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                };
+                il2CppTypes[i] = new Il2CppType
+                {
+                    type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS,
+                    data = new Il2CppType.Union { dummy = (ulong)i }
+                };
+            }
+
+            m.typeDefs = typeDefs;
+            m.nestedTypeIndices = Array.Empty<int>();
+            m.genericContainers = Array.Empty<Il2CppGenericContainer>();
+            m.genericParameters = Array.Empty<Il2CppGenericParameter>();
+            m.methodDefs = Array.Empty<Il2CppMethodDefinition>();
+            m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
+            m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
+            m.fieldDefs = Array.Empty<Il2CppFieldDefinition>();
+
+            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[8192]), 0)
+            {
+                Version = 16,
+                methodPointers = Array.Empty<ulong>(),
+                types = il2CppTypes
+            };
+
+            using (m) using (il2Cpp)
+            {
+                var exec = new Il2CppExecutor(m, il2Cpp);
+                Exception? threadException = null;
+                Il2CppTypeDefinition? resolvedParent = null;
+
+                // Execute on a thread with a 1 MiB stack size (standard stack size)
+                var thread = new System.Threading.Thread(() =>
+                {
+                    try
+                    {
+                        resolvedParent = exec.GetParentTypeDefinition(typeDefs[0]);
+                    }
+                    catch (Exception ex)
+                    {
+                        threadException = ex;
+                    }
+                }, 1024 * 1024);
+
+                thread.Start();
+                thread.Join();
+
+                Assert.Null(threadException);
+                Assert.Null(resolvedParent); // Cyclic declared chain successfully detected and preserved at root
+            }
+        }
+
+        [Fact]
+        public void PollyDump_CyclicDeclaredParentsWithMutualFallbackCycle_DiagnosticsMatchFinalExportedRoots()
+        {
+            // Reproduces issue 2:
+            // AsyncPolicy and PolicyBuilder declare themselves (declaringTypeIndex points to self, a cyclic declared parent).
+            // Each offers the other as a candidate parent in nestedTypeIndices (mutual fallback cycle).
+            // In the final dump, both definitions MUST be at root (parent = null).
+            // The emitted diagnostic warnings MUST correspond strictly to the exported outcome:
+            // - MUST NOT announce "Falling back to candidate parent".
+            // - MUST announce "Cyclic declaring type detected for ... with no unique acyclic parent candidate. Preserving as unparented root definition."
+            var m = CreateEmptyMetadata();
+            uint strPos = 0;
+            AddString(m, "", ref strPos);
+            var imgName = AddString(m, "Polly.dll", ref strPos);
+            var asmName = AddString(m, "Polly", ref strPos);
+            var nsPolly = AddString(m, "Polly", ref strPos);
+
+            var asyncPolicyName = AddString(m, "AsyncPolicy", ref strPos);
+            var policyBuilderName = AddString(m, "PolicyBuilder", ref strPos);
+
+            m.assemblyDefs = new[]
+            {
+                new Il2CppAssemblyDefinition { aname = new Il2CppAssemblyNameDefinition { nameIndex = asmName } }
+            };
+            m.imageDefs = new[]
+            {
+                new Il2CppImageDefinition { nameIndex = imgName, assemblyIndex = 0, typeStart = 0, typeCount = 2 }
+            };
+
+            // Index 0: AsyncPolicy (declaringTypeIndex = 0, self-reference)
+            // Index 1: PolicyBuilder (declaringTypeIndex = 1, self-reference)
+            var typeDefs = new[]
+            {
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = asyncPolicyName,
+                    namespaceIndex = nsPolly,
+                    declaringTypeIndex = 0, // Self-cycle
+                    parentIndex = -1,
+                    genericContainerIndex = -1,
+                    nestedTypesStart = 0,
+                    nested_type_count = 1, // Claims PolicyBuilder (1)
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                },
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = policyBuilderName,
+                    namespaceIndex = nsPolly,
+                    declaringTypeIndex = 1, // Self-cycle
+                    parentIndex = -1,
+                    genericContainerIndex = -1,
+                    nestedTypesStart = 1,
+                    nested_type_count = 1, // Claims AsyncPolicy (0)
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                }
+            };
+
+            m.typeDefs = typeDefs;
+            m.nestedTypeIndices = new[] { 1, 0 }; // Mutual fallback candidates
+            m.genericParameters = Array.Empty<Il2CppGenericParameter>();
+            m.genericContainers = Array.Empty<Il2CppGenericContainer>();
+            m.methodDefs = Array.Empty<Il2CppMethodDefinition>();
+            m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
+            m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
+            m.fieldDefs = Array.Empty<Il2CppFieldDefinition>();
+
+            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[8192]), 0)
+            {
+                Version = 16,
+                methodPointers = Array.Empty<ulong>(),
+                types = new[]
+                {
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 0 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 1 } }
+                }
+            };
+
+            using (m) using (il2Cpp)
+            {
+                var exec = new Il2CppExecutor(m, il2Cpp);
+                var warnings = new List<string>();
+                JsonDumpModel model;
+                using var sw = new StringWriter();
+                using (CoreLogger.Scope(sw, warnings))
+                {
+                    var parentAsync = exec.GetParentTypeDefinition(typeDefs[0]);
+                    var parentPolicy = exec.GetParentTypeDefinition(typeDefs[1]);
+
+                    Assert.Null(parentAsync);
+                    Assert.Null(parentPolicy);
+
+                    model = JsonDumpGenerator.Create(exec, new Config());
+                }
+
+                // Both definitions must be roots in the exported model
+                Assert.Equal(2, model.types.Count);
+                Assert.Contains(model.types, t => t.fullName == "Polly.AsyncPolicy");
+                Assert.Contains(model.types, t => t.fullName == "Polly.PolicyBuilder");
+
+                // Diagnostics MUST NOT announce a fallback that was discarded
+                Assert.DoesNotContain(warnings, w => w.Contains("Falling back to candidate parent"));
+
+                // Diagnostics MUST announce preservation as unparented root
+                Assert.Contains(warnings, w => w.Contains("Cyclic declaring type detected for 'AsyncPolicy' with no unique acyclic parent candidate. Preserving as unparented root definition."));
+                Assert.Contains(warnings, w => w.Contains("Cyclic declaring type detected for 'PolicyBuilder' with no unique acyclic parent candidate. Preserving as unparented root definition."));
+            }
+        }
+
+        [Fact]
+        public void PollyDump_DeclaredEdgeWithTwoFallbacksClosingMixedCycle_PreservesDeclaredEdgeAndEmitsCorrectDiagnostics()
+        {
+            // Reproduces:
+            // A -> B in declaringTypeIndex (declared edge)
+            // B -> C -> A in nestedTypeIndices (two fallback edges closing a mixed cycle)
+            // Parent graph: A -> B -> C -> A
+            // The declared edge A -> B MUST be preserved.
+            // The two fallback edges MUST be discarded, leaving B and C at root.
+            // Diagnostics MUST identify that the candidates were rejected for creating a cycle with an established declared parent chain
+            // (MUST NOT incorrectly claim they form "a cycle of fallback edges").
+            var m = CreateEmptyMetadata();
+            uint strPos = 0;
+            AddString(m, "", ref strPos);
+            var imgName = AddString(m, "MixedAssembly.dll", ref strPos);
+            var asmName = AddString(m, "MixedAssembly", ref strPos);
+            var nsName = AddString(m, "TestNs", ref strPos);
+
+            var typeAName = AddString(m, "TypeA", ref strPos);
+            var typeBName = AddString(m, "TypeB", ref strPos);
+            var typeCName = AddString(m, "TypeC", ref strPos);
+
+            m.assemblyDefs = new[]
+            {
+                new Il2CppAssemblyDefinition { aname = new Il2CppAssemblyNameDefinition { nameIndex = asmName } }
+            };
+            m.imageDefs = new[]
+            {
+                new Il2CppImageDefinition { nameIndex = imgName, assemblyIndex = 0, typeStart = 0, typeCount = 3 }
+            };
+
+            // Index 0: TypeA declares parent TypeB (1)
+            // Index 1: TypeB has declaringTypeIndex = -1, candidate parent TypeC (2) because TypeC lists TypeB
+            // Index 2: TypeC has declaringTypeIndex = -1, candidate parent TypeA (0) because TypeA lists TypeC
+            var typeDefs = new[]
+            {
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = typeAName,
+                    namespaceIndex = nsName,
+                    declaringTypeIndex = 1, // Declared parent TypeB
+                    parentIndex = -1,
+                    genericContainerIndex = -1,
+                    nestedTypesStart = 1,
+                    nested_type_count = 1, // Claims TypeC (2) as nested child
+                    flags = TYPE_ATTRIBUTE_NESTED_PUBLIC
+                },
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = typeBName,
+                    namespaceIndex = nsName,
+                    declaringTypeIndex = -1, // No declared parent
+                    parentIndex = -1,
+                    genericContainerIndex = -1,
+                    nestedTypesStart = 0,
+                    nested_type_count = 0,
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                },
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = typeCName,
+                    namespaceIndex = nsName,
+                    declaringTypeIndex = -1, // No declared parent
+                    parentIndex = -1,
+                    genericContainerIndex = -1,
+                    nestedTypesStart = 0,
+                    nested_type_count = 1, // Claims TypeB (1) as nested child
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                }
+            };
+
+            m.typeDefs = typeDefs;
+            // nestedTypeIndices:
+            // 0: index 1 (TypeB, nested under TypeC)
+            // 1: index 2 (TypeC, nested under TypeA)
+            m.nestedTypeIndices = new[] { 1, 2 };
+            m.genericParameters = Array.Empty<Il2CppGenericParameter>();
+            m.genericContainers = Array.Empty<Il2CppGenericContainer>();
+            m.methodDefs = Array.Empty<Il2CppMethodDefinition>();
+            m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
+            m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
+            m.fieldDefs = Array.Empty<Il2CppFieldDefinition>();
+
+            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[8192]), 0)
+            {
+                Version = 16,
+                methodPointers = Array.Empty<ulong>(),
+                types = new[]
+                {
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 0 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 1 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 2 } }
+                }
+            };
+
+            using (m) using (il2Cpp)
+            {
+                var exec = new Il2CppExecutor(m, il2Cpp);
+                var warnings = new List<string>();
+                JsonDumpModel model;
+                using var sw = new StringWriter();
+                using (CoreLogger.Scope(sw, warnings))
+                {
+                    var parentA = exec.GetParentTypeDefinition(typeDefs[0]);
+                    var parentB = exec.GetParentTypeDefinition(typeDefs[1]);
+                    var parentC = exec.GetParentTypeDefinition(typeDefs[2]);
+
+                    // Declared edge A -> B preserved!
+                    Assert.Same(typeDefs[1], parentA);
+
+                    // Fallbacks discarded, B and C stay at root
+                    Assert.Null(parentB);
+                    Assert.Null(parentC);
+
+                    model = JsonDumpGenerator.Create(exec, new Config());
+                }
+
+                // Final tree: TypeB at root containing TypeA; TypeC at root
+                var typeBModel = model.types.FirstOrDefault(t => t.fullName == "TestNs.TypeB");
+                Assert.NotNull(typeBModel);
+                Assert.Single(typeBModel!.nested);
+                Assert.Contains("TypeA", typeBModel.nested[0].fullName);
+
+                var typeCModel = model.types.FirstOrDefault(t => t.fullName == "TestNs.TypeC");
+                Assert.NotNull(typeCModel);
+                Assert.Empty(typeCModel!.nested);
+
+                // Diagnostics check:
+                // MUST NOT claim "forms a cycle of fallback edges"
+                Assert.DoesNotContain(warnings, w => w.Contains("forms a cycle of fallback edges"));
+
+                // MUST identify that candidate was rejected for creating cycle with declared parent chain
+                Assert.Contains(warnings, w => w.Contains("Candidate parent 'TypeC' for 'TypeB' rejected: creates a cycle with an established declared parent chain."));
+                Assert.Contains(warnings, w => w.Contains("Candidate parent 'TypeA' for 'TypeC' rejected: creates a cycle with an established declared parent chain."));
+            }
+        }
+    }
+}
