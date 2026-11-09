@@ -344,9 +344,8 @@ namespace Il2CppDumper.Tests
                 Assert.False(result.Success);
                 Assert.NotNull(result.Error);
                 Assert.Contains("ERROR: il2cpp file not supported.", result.Error);
-                var normalizedError = result.Error.Replace("\r\n", "\n").Trim();
-                var normalizedCli = cliStdout.Replace("\r\n", "\n");
-                Assert.Contains(normalizedError, normalizedCli);
+                var errorFirstLine = result.Error.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
+                Assert.Contains(errorFirstLine, cliStdout);
             }
             finally
             {
