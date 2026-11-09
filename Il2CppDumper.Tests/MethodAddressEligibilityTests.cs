@@ -1,0 +1,1543 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Text;
+using System.Text.Json;
+using Il2CppDumper;
+using Mono.Cecil;
+using Xunit;
+
+namespace Il2CppDumper.Tests
+{
+    public class MethodAddressEligibilityTests
+    {
+        private static (byte[] peBytes, ulong validCodeVa, ulong dataVa) CreateTestPe(uint textVirtualSize = 512, uint textRawSize = 512)
+        {
+            var sections = new (string, byte[], uint, uint)[]
+            {
+                (".text", new byte[textRawSize], textVirtualSize, 0x60000020), // RVA 0x1000, executable
+                (".data", new byte[512], 512, 0xC0000040)                      // RVA 0x2000, non-executable data
+            };
+            var peBytes = ProtectionReportTests.CreateSyntheticPe(sections);
+            // ImageBase in CreateSyntheticPe is 0x180000000
+            var validCodeVa = 0x180001000ul;
+            var dataVa = 0x180002000ul;
+            return (peBytes, validCodeVa, dataVa);
+        }
+
+        private static byte[] CreateSyntheticElf64WithSegment(ulong p_vaddr, ulong p_offset, ulong p_memsz, ulong p_filesz, uint p_flags = 7)
+        {
+            var dynamicOffset = Math.Max(p_offset + p_filesz, 0x600ul) + 0x100ul;
+            var dynamicVaddr = 0x5000ul;
+            var totalSize = (int)dynamicOffset + 0x2000;
+            var data = new byte[totalSize];
+            using var ms = new MemoryStream(data);
+            using var w = new BinaryWriter(ms);
+
+            w.Write(new byte[] { 0x7F, (byte)'E', (byte)'L', (byte)'F' }); // e_ident[0..3]
+            w.Write((byte)2); // EI_CLASS: ELFCLASS64
+            w.Write((byte)1); // EI_DATA: ELFDATA2LSB
+            w.Write((byte)1); // EI_VERSION: EV_CURRENT
+            w.Write(new byte[9]); // padding
+
+            w.Write((ushort)3); // e_type: ET_DYN
+            w.Write((ushort)183); // e_machine: EM_AARCH64
+            w.Write((uint)1); // e_version: EV_CURRENT
+            w.Write((ulong)0); // e_entry
+            w.Write((ulong)64); // e_phoff = 64
+            w.Write((ulong)0x1000); // e_shoff = 0x1000 (non-zero so IsDumped is false, preserving disk p_filesz)
+            w.Write((uint)0); // e_flags
+            w.Write((ushort)64); // e_ehsize = 64
+            w.Write((ushort)56); // e_phentsize = 56
+            w.Write((ushort)2); // e_phnum = 2 (PT_LOAD and PT_DYNAMIC)
+            w.Write((ushort)64); // e_shentsize = 64
+            w.Write((ushort)0); // e_shnum = 0
+            w.Write((ushort)0); // e_shstrndx = 0
+
+            // Program header 0: PT_LOAD
+            w.Write((uint)1); // p_type: PT_LOAD
+            w.Write(p_flags); // p_flags: PF_X
+            w.Write(p_offset); // p_offset
+            w.Write(p_vaddr); // p_vaddr
+            w.Write(p_vaddr); // p_paddr
+            w.Write(p_filesz); // p_filesz
+            w.Write(p_memsz); // p_memsz
+            w.Write((ulong)4096); // p_align
+
+            // Program header 1: PT_DYNAMIC (required by Elf64.Load)
+            w.Write((uint)2); // p_type: PT_DYNAMIC
+            w.Write((uint)6); // p_flags: PF_R | PF_W
+            w.Write(dynamicOffset); // p_offset
+            w.Write(dynamicVaddr); // p_vaddr
+            w.Write(dynamicVaddr); // p_paddr
+            w.Write((ulong)16); // p_filesz (1 entry = 16 bytes)
+            w.Write((ulong)16); // p_memsz
+            w.Write((ulong)8); // p_align
+
+            // Dynamic table entry: DT_NULL
+            ms.Position = (long)dynamicOffset;
+            w.Write((long)0); // d_tag = DT_NULL
+            w.Write((ulong)0); // d_un = 0
+
+            return data;
+        }
+
+        private static byte[] CreateSyntheticMacho64TwoAdjacentSections(ulong addr1, ulong size1, uint off1, ulong addr2, ulong size2, uint off2)
+        {
+            var totalSize = (int)Math.Max(off1 + size1, off2 + size2) + 0x400;
+            var bytes = new byte[totalSize];
+            using var ms = new MemoryStream(bytes);
+            using var w = new BinaryWriter(ms);
+
+            // Mach-O 64 header (32 bytes)
+            w.Write((uint)0xFEEDFACF); // magic
+            w.Write((uint)0x01000007); // cputype (x86_64)
+            w.Write((uint)0x03);       // cpusubtype
+            w.Write((uint)0x02);       // filetype (MH_EXECUTE)
+            w.Write((uint)2);          // ncmds = 2 segments
+            uint cmdSize = 72 + 80;    // 152 bytes per segment with 1 section
+            w.Write((uint)(cmdSize * 2)); // sizeofcmds
+            w.Write((uint)0);          // flags
+            w.Write((uint)0);          // reserved
+
+            void WriteSegment(string name, ulong vmaddr, ulong vmsize, uint fileoff, ulong filesize, ulong secAddr, ulong secSize, uint secOff)
+            {
+                w.Write((uint)0x19);   // LC_SEGMENT_64
+                w.Write(cmdSize);
+                var segBytes = new byte[16];
+                Encoding.ASCII.GetBytes(name).CopyTo(segBytes, 0);
+                w.Write(segBytes);
+                w.Write(vmaddr);
+                w.Write(vmsize);
+                w.Write((ulong)fileoff);
+                w.Write(filesize);
+                w.Write((uint)7);      // maxprot
+                w.Write((uint)5);      // initprot
+                w.Write((uint)1);      // nsects = 1
+                w.Write((uint)0);      // flags
+
+                // section
+                var sectBytes = new byte[16];
+                Encoding.ASCII.GetBytes("__text").CopyTo(sectBytes, 0);
+                w.Write(sectBytes);
+                w.Write(segBytes);
+                w.Write(secAddr);
+                w.Write(secSize);
+                w.Write(secOff);
+                w.Write((uint)3);      // align
+                w.Write((uint)0);      // reloff
+                w.Write((uint)0);      // nreloc
+                w.Write((uint)0x80000400); // flags: executable code
+                w.Write((uint)0);
+                w.Write((uint)0);
+                w.Write((uint)0);
+            }
+
+            WriteSegment("__TEXT1", addr1, size1, off1, size1, addr1, size1, off1);
+            WriteSegment("__TEXT2", addr2, size2, off2, size2, addr2, size2, off2);
+
+            return bytes;
+        }
+
+        private static Metadata CreateTestMetadata(
+            string imageName,
+            string typeName,
+            bool isInterface,
+            (string methodName, bool isAbstract, uint token)[] methods)
+        {
+            var bytes = new byte[8192];
+            BitConverter.GetBytes(0xFAB11BAFu).CopyTo(bytes, 0);
+            BitConverter.GetBytes(29).CopyTo(bytes, 4);
+
+            var m = new Metadata(new MemoryStream(bytes));
+            m.header.stringOffset = 1024;
+            m.header.stringSize = 4096;
+
+            uint pos = 0;
+            uint AddStr(string val)
+            {
+                var r = pos;
+                var strBytes = Encoding.UTF8.GetBytes(val + "\0");
+                m.Position = m.header.stringOffset + pos;
+                m.Writer.Write(strBytes);
+                pos += (uint)strBytes.Length;
+                return r;
+            }
+
+            AddStr("");
+            var imgNameIdx = AddStr(imageName);
+            var typeNameIdx = AddStr(typeName);
+
+            m.imageDefs = new[]
+            {
+                new Il2CppImageDefinition
+                {
+                    nameIndex = imgNameIdx,
+                    assemblyIndex = -1,
+                    typeStart = 0,
+                    typeCount = 1
+                }
+            };
+
+            m.typeDefs = new[]
+            {
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = typeNameIdx,
+                    declaringTypeIndex = -1,
+                    parentIndex = -1,
+                    genericContainerIndex = -1,
+                    methodStart = 0,
+                    method_count = (ushort)methods.Length,
+                    flags = isInterface ? (uint)(Il2CppConstants.TYPE_ATTRIBUTE_INTERFACE | Il2CppConstants.TYPE_ATTRIBUTE_PUBLIC) : (uint)Il2CppConstants.TYPE_ATTRIBUTE_PUBLIC,
+                    byvalTypeIndex = 0
+                }
+            };
+
+            var methodDefList = new List<Il2CppMethodDefinition>();
+            for (int i = 0; i < methods.Length; i++)
+            {
+                var (mName, isAbs, tok) = methods[i];
+                var mNameIdx = AddStr(mName);
+                ushort flags = isAbs
+                    ? (ushort)(Il2CppConstants.METHOD_ATTRIBUTE_ABSTRACT | Il2CppConstants.METHOD_ATTRIBUTE_VIRTUAL | Il2CppConstants.METHOD_ATTRIBUTE_PUBLIC)
+                    : (ushort)Il2CppConstants.METHOD_ATTRIBUTE_PUBLIC;
+
+                methodDefList.Add(new Il2CppMethodDefinition
+                {
+                    nameIndex = mNameIdx,
+                    declaringType = 0,
+                    returnType = 0,
+                    parameterCount = 0,
+                    parameterStart = 0,
+                    genericContainerIndex = -1,
+                    methodIndex = 0,
+                    token = tok,
+                    flags = flags,
+                    slot = ushort.MaxValue
+                });
+            }
+
+            m.methodDefs = methodDefList.ToArray();
+            m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
+            m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
+            m.fieldDefs = Array.Empty<Il2CppFieldDefinition>();
+            m.metadataUsageDic = new Dictionary<Il2CppMetadataUsage, SortedDictionary<uint, uint>>();
+            for (uint i = 1; i <= 6; i++) { m.metadataUsageDic[(Il2CppMetadataUsage)i] = new SortedDictionary<uint, uint>(); }
+            return m;
+        }
+
+        [Fact]
+        public void SyntheticAbstractInterfaceMethod_WithNonZeroInvalidCandidatePointer_EmitsNoResolvedAddress_AcrossAllOutputs()
+        {
+            var (peBytes, validCodeVa, _) = CreateTestPe();
+            var invalidCandidatePointer = 6144708780086416ul; // 0x15D4948015D490 from Issue #88
+
+            using var pe = new PE(new MemoryStream(peBytes));
+            pe.Version = 29;
+            pe.types = new[] { new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VOID } };
+            pe.codeGenModuleMethodPointers = new Dictionary<string, ulong[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["gdio.plugin.serializer.dll"] = new[] { invalidCandidatePointer }
+            };
+
+            using var metadata = CreateTestMetadata(
+                "gdio.plugin.serializer.dll",
+                "gdio.plugin.serializer.ICustomSerializer",
+                isInterface: true,
+                new[] { ("SupportedTypes", true, 0x06000001u) });
+
+            pe.SetProperties(29, 0, metadata);
+            var executor = new Il2CppExecutor(metadata, pe);
+
+            // 1. Direct engine check: GetMethodPointer must return 0 for abstract declarations
+            var pointer = pe.GetMethodPointer("gdio.plugin.serializer.dll", metadata.methodDefs[0]);
+            Assert.Equal(0ul, pointer);
+
+            var tempDir = Path.Combine(Path.GetTempPath(), "issue88_abstract_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                // 2. StructGenerator: script.json must NOT contain ScriptMethod entry or invalid Address
+                var structGenerator = new StructGenerator(executor);
+                structGenerator.WriteScript(tempDir + Path.DirectorySeparatorChar);
+
+                var scriptJsonPath = Path.Combine(tempDir, "script.json");
+                Assert.True(File.Exists(scriptJsonPath));
+                var scriptJsonText = File.ReadAllText(scriptJsonPath);
+                using (var doc = JsonDocument.Parse(scriptJsonText))
+                {
+                    var scriptMethods = doc.RootElement.GetProperty("ScriptMethod");
+                    var matching = scriptMethods.EnumerateArray()
+                        .Where(x => x.GetProperty("Name").GetString()!.Contains("SupportedTypes"))
+                        .ToList();
+                    Assert.Empty(matching);
+
+                    // P1: script.json.Addresses must also be filtered by IsValidMethodPointer
+                    var addresses = doc.RootElement.GetProperty("Addresses").EnumerateArray().Select(x => x.GetUInt64()).ToHashSet();
+                    Assert.DoesNotContain(invalidCandidatePointer, addresses);
+                    Assert.DoesNotContain(pe.GetRVA(invalidCandidatePointer), addresses);
+                }
+
+                // 3. Il2CppDecompiler: dump.cs must emit '// RVA: -1 Offset: -1'
+                var decompiler = new Il2CppDecompiler(executor);
+                var config = new Config { DumpMethod = true, DumpMethodOffset = true, DumpTypeDefIndex = true, DumpAttribute = false };
+                decompiler.Decompile(config, tempDir);
+
+                var dumpCsPath = Path.Combine(tempDir, "dump.cs");
+                Assert.True(File.Exists(dumpCsPath));
+                var dumpCsText = File.ReadAllText(dumpCsPath);
+                Assert.Contains("// RVA: -1 Offset: -1", dumpCsText);
+                Assert.DoesNotContain("0x15D4948015D490", dumpCsText);
+
+                // 4. DummyAssemblyGenerator: DummyDll must NOT attach AddressAttribute
+                var dummyGenerator = new DummyAssemblyGenerator(executor, false);
+                var assembly = dummyGenerator.Assemblies.First(a => a.MainModule.Name == "gdio.plugin.serializer.dll");
+                var method = assembly.MainModule.Types.First(t => t.Name == "gdio.plugin.serializer.ICustomSerializer").Methods[0];
+                Assert.DoesNotContain(method.CustomAttributes, a => a.AttributeType.Name == "AddressAttribute");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void InterfaceMethod_WithConcreteBody_E_g_StaticConstructor_IsExportedConsistently_AcrossAllOutputs()
+        {
+            // P1: Interface type does NOT imply abstract method; non-abstract interface methods (e.g. .cctor) have valid bodies
+            var (peBytes, validCodeVa, _) = CreateTestPe();
+
+            using var pe = new PE(new MemoryStream(peBytes));
+            pe.Version = 29;
+            pe.types = new[] { new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VOID } };
+            pe.codeGenModuleMethodPointers = new Dictionary<string, ulong[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["InterfaceModule.dll"] = new[] { validCodeVa } // 0x180001000
+            };
+
+            using var metadata = CreateTestMetadata(
+                "InterfaceModule.dll",
+                "InterfaceModule.IFoo",
+                isInterface: true,
+                new[] { (".cctor", false, 0x06000001u) }); // non-abstract method on interface
+
+            pe.SetProperties(29, 0, metadata);
+            var executor = new Il2CppExecutor(metadata, pe);
+
+            // Engine check: non-abstract method on interface resolves valid pointer
+            var pointer = pe.GetMethodPointer("InterfaceModule.dll", metadata.methodDefs[0]);
+            Assert.Equal(validCodeVa, pointer);
+
+            var tempDir = Path.Combine(Path.GetTempPath(), "issue88_interface_concrete_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var structGenerator = new StructGenerator(executor);
+                structGenerator.WriteScript(tempDir + Path.DirectorySeparatorChar);
+
+                var scriptJsonPath = Path.Combine(tempDir, "script.json");
+                using (var doc = JsonDocument.Parse(File.ReadAllText(scriptJsonPath)))
+                {
+                    var scriptMethods = doc.RootElement.GetProperty("ScriptMethod");
+                    var matching = scriptMethods.EnumerateArray()
+                        .Where(x => x.GetProperty("Name").GetString()!.Contains(".cctor"))
+                        .ToList();
+                    Assert.Single(matching);
+                    Assert.Equal(0x1000ul, matching[0].GetProperty("Address").GetUInt64());
+
+                    var addresses = doc.RootElement.GetProperty("Addresses").EnumerateArray().Select(x => x.GetUInt64()).ToHashSet();
+                    Assert.Contains(0x1000ul, addresses);
+                }
+
+                var decompiler = new Il2CppDecompiler(executor);
+                decompiler.Decompile(new Config { DumpMethod = true, DumpMethodOffset = true, DumpAttribute = false }, tempDir);
+
+                var dumpCsText = File.ReadAllText(Path.Combine(tempDir, "dump.cs"));
+                Assert.Contains("// RVA: 0x1000 Offset: 0x400 VA: 0x180001000", dumpCsText);
+
+                var dummyGenerator = new DummyAssemblyGenerator(executor, false);
+                var assembly = dummyGenerator.Assemblies.First(a => a.MainModule.Name == "InterfaceModule.dll");
+                var method = assembly.MainModule.Types.First(t => t.Name == "InterfaceModule.IFoo").Methods[0];
+                var addrAttr = method.CustomAttributes.FirstOrDefault(a => a.AttributeType.Name == "AddressAttribute");
+                Assert.NotNull(addrAttr);
+                Assert.Equal("0x1000", addrAttr.Fields.First(f => f.Name == "RVA").Argument.Value);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void PE_Disk_CandidatePointerInVirtualTailWithoutRawData_IsRejected_AndMapVATRReturnsZero()
+        {
+            // P2 Point 1: .text at RVA 0x1000, VirtualSize=0x400, SizeOfRawData=0x200
+            // Candidate RVA 0x1200 is in the virtual tail past SizeOfRawData (0x1000 + 0x200 = 0x1200)
+            var (peBytes, _, _) = CreateTestPe(textVirtualSize: 0x400, textRawSize: 0x200);
+
+            using var pe = new PE(new MemoryStream(peBytes));
+            var tailVa = 0x180001200ul; // RVA 0x1200
+
+            Assert.False(pe.IsValidMethodPointer(tailVa));
+            Assert.Equal(0ul, pe.MapVATR(tailVa));
+
+            // Positive control within SizeOfRawData (RVA 0x1180 -> raw 0x580)
+            var validVa = 0x180001180ul;
+            Assert.True(pe.IsValidMethodPointer(validVa));
+            Assert.Equal(0x580ul, pe.MapVATR(validVa));
+        }
+
+        [Fact]
+        public void ELF64_VirtualTailBeyondFilesz_IsRejected_AndMapVATRThrowsInvalidOperation()
+        {
+            // P2 Point 1: PT_LOAD executable segment with p_vaddr=0x1400, p_offset=0x400, p_memsz=0x400, p_filesz=0x200
+            var elfBytes = CreateSyntheticElf64WithSegment(p_vaddr: 0x1400, p_offset: 0x400, p_memsz: 0x400, p_filesz: 0x200);
+
+            using var elf = new Elf64(new MemoryStream(elfBytes));
+            var tailVa = 0x1600ul; // 0x1400 + 0x200 = 0x1600 (virtual tail beyond filesz)
+
+            Assert.False(elf.IsValidMethodPointer(tailVa));
+            Assert.Throws<InvalidOperationException>(() => elf.MapVATR(tailVa));
+
+            // Positive control within filesz (0x1500 -> offset 0x500)
+            var validVa = 0x1500ul;
+            Assert.True(elf.IsValidMethodPointer(validVa));
+            Assert.Equal(0x500ul, elf.MapVATR(validVa));
+        }
+
+        [Fact]
+        public void Macho64_AdjacentSectionsBoundary_SelectsSecondSectionForBothValidationAndMapVATR()
+        {
+            // P2 Point 2: Mach-O 64 with 2 adjacent code sections:
+            // Section 1 at addr=0x1000, size=0x1000, offset=0x1000.
+            // Section 2 at addr=0x2000, size=0x1000, offset=0x2000.
+            var machoBytes = CreateSyntheticMacho64TwoAdjacentSections(
+                addr1: 0x1000, size1: 0x1000, off1: 0x1000,
+                addr2: 0x2000, size2: 0x1000, off2: 0x2000);
+
+            using var macho = new Macho64(new MemoryStream(machoBytes));
+            var boundaryVa = 0x2000ul;
+
+            // At VA 0x2000, section 2 must be chosen exclusively
+            Assert.True(macho.IsValidMethodPointer(boundaryVa));
+            Assert.Equal(0x2000ul, macho.MapVATR(boundaryVa)); // Must return 0x2000, NOT 0x1000!
+        }
+
+        [Fact]
+        public void PE_DumpedMemory_StreamTruncated_CandidateOffsetOutsideStream_IsRejected()
+        {
+            // P2: Memory dump loaded via LoadFromMemory, where stream length is 0x800 bytes
+            // Candidate pointer at RVA 0x1000 translates to offset 0x1000, which is >= stream Length (0x800)
+            var (peBytes, _, _) = CreateTestPe(textVirtualSize: 0x200, textRawSize: 0x200);
+
+            // Truncate stream to 0x800 bytes
+            var truncatedBytes = new byte[0x800];
+            Array.Copy(peBytes, truncatedBytes, Math.Min(peBytes.Length, 0x800));
+
+            using var pe = new PE(new MemoryStream(truncatedBytes));
+            pe.LoadFromMemory(0x180000000ul);
+
+            var candidateVa = 0x180001000ul; // RVA 0x1000 -> raw offset 0x1000 >= 0x800
+
+            Assert.False(pe.IsValidMethodPointer(candidateVa));
+            Assert.Equal(0ul, pe.MapVATR(candidateVa));
+        }
+
+        [Fact]
+        public void AddMetadataUsageMethodRef_WithInvalidGenericMethodBodyPointer_PreservesSlotAddressAndEmitsStructuredWarning()
+        {
+            // P2 Point 3: AddMetadataUsageMethodRef with candidate VA 0x180900000 outside PE bounds
+            var (peBytes, validCodeVa, _) = CreateTestPe();
+
+            using var pe = new PE(new MemoryStream(peBytes));
+            pe.Version = 29;
+            pe.types = new[] { new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VOID } };
+
+            var invalidGenericMethodPointer = 0x180900000ul;
+            var testMethodSpec = new Il2CppMethodSpec { methodDefinitionIndex = 0, classIndexIndex = -1, methodIndexIndex = -1 };
+            pe.methodSpecs = new[] { testMethodSpec };
+            pe.methodSpecGenericMethodPointers = new Dictionary<Il2CppMethodSpec, ulong>
+            {
+                [testMethodSpec] = invalidGenericMethodPointer
+            };
+
+            using var metadata = CreateTestMetadata(
+                "TestModule.dll",
+                "TestNamespace.GenericContainer",
+                isInterface: false,
+                new[] { ("GenericMethod", false, 0x06000001u) });
+
+            pe.SetProperties(29, 0, metadata);
+            var executor = new Il2CppExecutor(metadata, pe);
+
+            var structGenerator = new StructGenerator(executor);
+            var scriptJson = new ScriptJson();
+
+            var addMethodRefMethod = typeof(StructGenerator).GetMethod("AddMetadataUsageMethodRef", BindingFlags.NonPublic | BindingFlags.Instance);
+            Assert.NotNull(addMethodRefMethod);
+
+            var usageSlotVa = 0x180001020ul; // Valid RVA 0x1020 in .text
+            var warnings = new List<string>();
+            using (CoreLogger.Scope(null, warnings))
+            {
+                addMethodRefMethod.Invoke(structGenerator, new object[] { scriptJson, 0u, usageSlotVa });
+            }
+
+            Assert.Single(scriptJson.ScriptMetadataMethod);
+            var entry = scriptJson.ScriptMetadataMethod[0];
+
+            // Slot address must be preserved (RVA 0x1020)
+            Assert.Equal(0x1020ul, entry.Address);
+            // Native method body pointer must be cleared to 0 (contract absence value) because 0x180900000 is invalid
+            Assert.Equal(0ul, entry.MethodAddress);
+
+            // P2 Point 3: Structured warning must be emitted in CoreLogger and recorded in MethodMappingFailures
+            Assert.Contains(warnings, w => w.Contains("0x180900000") && w.Contains("MetadataUsageMethodRef"));
+            Assert.Single(pe.MethodMappingFailures);
+            var failure = pe.MethodMappingFailures[0];
+            Assert.Equal("methodMapping", failure.Category);
+            Assert.Equal("0x180900000", failure.RawBytes);
+            Assert.Contains("MetadataUsageMethodRef", failure.Detail);
+        }
+
+        [Fact]
+        public void ConcreteMethod_WithValidPointer_IsExportedConsistently_AcrossAllOutputs()
+        {
+            var (peBytes, validCodeVa, _) = CreateTestPe();
+
+            using var pe = new PE(new MemoryStream(peBytes));
+            pe.Version = 29;
+            pe.types = new[] { new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VOID } };
+            pe.codeGenModuleMethodPointers = new Dictionary<string, ulong[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["TestModule.dll"] = new[] { validCodeVa } // 0x180001000: RVA 0x1000, Offset 0x400
+            };
+
+            using var metadata = CreateTestMetadata(
+                "TestModule.dll",
+                "TestNamespace.ConcreteClass",
+                isInterface: false,
+                new[] { ("Execute", false, 0x06000001u) });
+
+            pe.SetProperties(29, 0, metadata);
+            var executor = new Il2CppExecutor(metadata, pe);
+
+            // 1. Direct engine check: valid pointer in .text is resolved
+            var pointer = pe.GetMethodPointer("TestModule.dll", metadata.methodDefs[0]);
+            Assert.Equal(validCodeVa, pointer);
+
+            var tempDir = Path.Combine(Path.GetTempPath(), "issue88_concrete_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                // 2. StructGenerator: script.json contains ScriptMethod with resolved RVA 0x1000
+                var structGenerator = new StructGenerator(executor);
+                structGenerator.WriteScript(tempDir + Path.DirectorySeparatorChar);
+
+                var scriptJsonPath = Path.Combine(tempDir, "script.json");
+                Assert.True(File.Exists(scriptJsonPath));
+                using (var doc = JsonDocument.Parse(File.ReadAllText(scriptJsonPath)))
+                {
+                    var scriptMethods = doc.RootElement.GetProperty("ScriptMethod");
+                    var matching = scriptMethods.EnumerateArray()
+                        .Where(x => x.GetProperty("Name").GetString()!.Contains("Execute"))
+                        .ToList();
+                    Assert.Single(matching);
+                    Assert.Equal(0x1000ul, matching[0].GetProperty("Address").GetUInt64());
+
+                    var addresses = doc.RootElement.GetProperty("Addresses").EnumerateArray().Select(x => x.GetUInt64()).ToHashSet();
+                    Assert.Contains(0x1000ul, addresses);
+                }
+
+                // 3. Il2CppDecompiler: dump.cs contains RVA: 0x1000 Offset: 0x400 VA: 0x180001000
+                var decompiler = new Il2CppDecompiler(executor);
+                var config = new Config { DumpMethod = true, DumpMethodOffset = true, DumpAttribute = false };
+                decompiler.Decompile(config, tempDir);
+
+                var dumpCsPath = Path.Combine(tempDir, "dump.cs");
+                var dumpCsText = File.ReadAllText(dumpCsPath);
+                Assert.Contains("// RVA: 0x1000 Offset: 0x400 VA: 0x180001000", dumpCsText);
+
+                // 4. DummyAssemblyGenerator: DummyDll attaches AddressAttribute with RVA, Offset, VA
+                var dummyGenerator = new DummyAssemblyGenerator(executor, false);
+                var assembly = dummyGenerator.Assemblies.First(a => a.MainModule.Name == "TestModule.dll");
+                var method = assembly.MainModule.Types.First(t => t.Name == "TestNamespace.ConcreteClass").Methods[0];
+                var addrAttr = method.CustomAttributes.FirstOrDefault(a => a.AttributeType.Name == "AddressAttribute");
+                Assert.NotNull(addrAttr);
+                Assert.Equal("0x1000", addrAttr.Fields.First(f => f.Name == "RVA").Argument.Value);
+                Assert.Equal("0x400", addrAttr.Fields.First(f => f.Name == "Offset").Argument.Value);
+                Assert.Equal("0x180001000", addrAttr.Fields.First(f => f.Name == "VA").Argument.Value);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ConcreteMethod_WithCandidatePointerOutsideExecutableSections_EmitsNoResolvedAddress()
+        {
+            var (peBytes, _, dataVa) = CreateTestPe();
+            var outsideSectionVa = 6144708780086416ul;
+
+            // Test both: outside all sections AND inside non-executable .data section
+            foreach (var testPointer in new[] { outsideSectionVa, dataVa })
+            {
+                using var pe = new PE(new MemoryStream(peBytes));
+                pe.Version = 29;
+                pe.types = new[] { new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VOID } };
+                pe.codeGenModuleMethodPointers = new Dictionary<string, ulong[]>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["TestModule.dll"] = new[] { testPointer }
+                };
+
+                using var metadata = CreateTestMetadata(
+                    "TestModule.dll",
+                    "TestNamespace.ConcreteClass",
+                    isInterface: false,
+                    new[] { ("Compute", false, 0x06000001u) });
+
+                pe.SetProperties(29, 0, metadata);
+                var executor = new Il2CppExecutor(metadata, pe);
+
+                // Must be rejected as invalid method pointer
+                Assert.False(pe.IsValidMethodPointer(testPointer));
+                Assert.Equal(0ul, pe.GetMethodPointer("TestModule.dll", metadata.methodDefs[0]));
+
+                var tempDir = Path.Combine(Path.GetTempPath(), "issue88_invalid_concrete_" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(tempDir);
+                try
+                {
+                    var structGenerator = new StructGenerator(executor);
+                    structGenerator.WriteScript(tempDir + Path.DirectorySeparatorChar);
+
+                    var scriptJsonPath = Path.Combine(tempDir, "script.json");
+                    using (var doc = JsonDocument.Parse(File.ReadAllText(scriptJsonPath)))
+                    {
+                        var scriptMethods = doc.RootElement.GetProperty("ScriptMethod");
+                        var matching = scriptMethods.EnumerateArray()
+                            .Where(x => x.GetProperty("Name").GetString()!.Contains("Compute"))
+                            .ToList();
+                        Assert.Empty(matching);
+                    }
+
+                    var decompiler = new Il2CppDecompiler(executor);
+                    decompiler.Decompile(new Config { DumpMethod = true, DumpMethodOffset = true, DumpAttribute = false }, tempDir);
+
+                    var dumpCsText = File.ReadAllText(Path.Combine(tempDir, "dump.cs"));
+                    Assert.Contains("// RVA: -1 Offset: -1", dumpCsText);
+
+                    var dummyGenerator = new DummyAssemblyGenerator(executor, false);
+                    var assembly = dummyGenerator.Assemblies.First(a => a.MainModule.Name == "TestModule.dll");
+                    var method = assembly.MainModule.Types.First(t => t.Name == "TestNamespace.ConcreteClass").Methods[0];
+                    Assert.DoesNotContain(method.CustomAttributes, a => a.AttributeType.Name == "AddressAttribute");
+                }
+                finally
+                {
+                    if (Directory.Exists(tempDir))
+                    {
+                        try { Directory.Delete(tempDir, true); } catch { }
+                    }
+                }
+            }
+        }
+
+        [Fact]
+        public void DumpedPeMemoryPath_ValidPointerInExecutableSection_ExportsResolvedAddress()
+        {
+            var (peBytes, _, _) = CreateTestPe();
+
+            // In a dumped binary, memory spans virtual space so bytes are effectively present at RVA 0x1000
+            var dumpedMemoryBytes = new byte[0x2000];
+            Array.Copy(peBytes, dumpedMemoryBytes, peBytes.Length);
+
+            using var pe = new PE(new MemoryStream(dumpedMemoryBytes));
+            // Simulate dumped binary loaded at base address 0x200000000
+            pe.LoadFromMemory(0x200000000ul);
+            pe.Version = 29;
+            pe.types = new[] { new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VOID } };
+
+            var dumpedCodeVa = 0x200001000ul; // RVA 0x1000 in .text
+            pe.codeGenModuleMethodPointers = new Dictionary<string, ulong[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["DumpedModule.dll"] = new[] { dumpedCodeVa }
+            };
+
+            using var metadata = CreateTestMetadata(
+                "DumpedModule.dll",
+                "DumpedNamespace.DumpedClass",
+                isInterface: false,
+                new[] { ("DumpedMethod", false, 0x06000001u) });
+
+            pe.SetProperties(29, 0, metadata);
+            var executor = new Il2CppExecutor(metadata, pe);
+
+            Assert.True(pe.IsValidMethodPointer(dumpedCodeVa));
+            Assert.Equal(dumpedCodeVa, pe.GetMethodPointer("DumpedModule.dll", metadata.methodDefs[0]));
+            Assert.Equal(0x1000ul, pe.GetRVA(dumpedCodeVa));
+            Assert.Equal(0x1000ul, pe.MapVATR(dumpedCodeVa)); // In memory dump, MapVATR = RVA
+        }
+
+        [Fact]
+        public void RealTargetIssue88Regression_AllThreeICustomSerializerMethods_OmittedFromScriptJsonAndUnresolvedInDumpCs()
+        {
+            var (peBytes, _, _) = CreateTestPe();
+
+            // The exact three methods and candidate pointers reported in Issue #88
+            var candidatePointers = new ulong[]
+            {
+                6144708780086416ul,  // SupportedTypes
+                6144751835038524ul,  // Serialize
+                451243860565546221ul // Deserialize
+            };
+
+            using var pe = new PE(new MemoryStream(peBytes));
+            pe.Version = 39;
+            pe.types = new[] { new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VOID } };
+            pe.codeGenModuleMethodPointers = new Dictionary<string, ulong[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["gdio.plugin.serializer.dll"] = candidatePointers
+            };
+
+            using var metadata = CreateTestMetadata(
+                "gdio.plugin.serializer.dll",
+                "gdio.plugin.serializer.ICustomSerializer",
+                isInterface: true,
+                new[]
+                {
+                    ("SupportedTypes", true, 0x06000001u),
+                    ("Serialize", true, 0x06000002u),
+                    ("Deserialize", true, 0x06000003u)
+                });
+
+            pe.SetProperties(39, 0, metadata);
+            var executor = new Il2CppExecutor(metadata, pe);
+
+            for (int i = 0; i < 3; i++)
+            {
+                Assert.Equal(0ul, pe.GetMethodPointer("gdio.plugin.serializer.dll", metadata.methodDefs[i]));
+            }
+
+            var tempDir = Path.Combine(Path.GetTempPath(), "issue88_real_regression_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                // Verify script.json contains NONE of the three declarations in ScriptMethod OR in Addresses
+                var structGenerator = new StructGenerator(executor);
+                structGenerator.WriteScript(tempDir + Path.DirectorySeparatorChar);
+
+                var scriptJsonPath = Path.Combine(tempDir, "script.json");
+                using (var doc = JsonDocument.Parse(File.ReadAllText(scriptJsonPath)))
+                {
+                    var scriptMethods = doc.RootElement.GetProperty("ScriptMethod");
+                    var matched = scriptMethods.EnumerateArray()
+                        .Where(x => x.GetProperty("Name").GetString()!.StartsWith("gdio.plugin.serializer.ICustomSerializer$$"))
+                        .ToList();
+                    Assert.Empty(matched);
+
+                    var addresses = doc.RootElement.GetProperty("Addresses").EnumerateArray().Select(x => x.GetUInt64()).ToHashSet();
+                    foreach (var ptr in candidatePointers)
+                    {
+                        Assert.DoesNotContain(ptr, addresses);
+                        Assert.DoesNotContain(pe.GetRVA(ptr), addresses);
+                    }
+                }
+
+                // Verify dump.cs marks all three as unresolved: // RVA: -1 Offset: -1
+                var decompiler = new Il2CppDecompiler(executor);
+                decompiler.Decompile(new Config { DumpMethod = true, DumpMethodOffset = true, DumpAttribute = false }, tempDir);
+
+                var dumpCsLines = File.ReadAllLines(Path.Combine(tempDir, "dump.cs"));
+                var methodLines = dumpCsLines.Where(l => l.Contains("SupportedTypes()") || l.Contains("Serialize(") || l.Contains("Deserialize(")).ToList();
+                Assert.Equal(3, methodLines.Count);
+
+                // Verify DummyDll contains no AddressAttribute on any of the three
+                var dummyGenerator = new DummyAssemblyGenerator(executor, false);
+                var assembly = dummyGenerator.Assemblies.First(a => a.MainModule.Name == "gdio.plugin.serializer.dll");
+                var typeDef = assembly.MainModule.Types.First(t => t.Name == "gdio.plugin.serializer.ICustomSerializer");
+                foreach (var m in typeDef.Methods)
+                {
+                    Assert.DoesNotContain(m.CustomAttributes, a => a.AttributeType.Name == "AddressAttribute");
+                }
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+        [Fact]
+        public void PE_Disk_PhysicalRawSizeZero_IsRejected_AndMapVATRReturnsZero_WhileDumpedMemorySucceeds()
+        {
+            // P2: .text with VirtualSize=0x100 and SizeOfRawData=0 (physical raw data size is zero)
+            var sections = new (string, byte[], uint, uint)[]
+            {
+                (".text", Array.Empty<byte>(), 0x100, 0x60000020), // RVA 0x1000, VirtualSize 0x100, RawSize 0
+                (".data", new byte[512], 512, 0xC0000040)
+            };
+            var peBytes = ProtectionReportTests.CreateSyntheticPe(sections);
+
+            // 1. On disk: candidate RVA 0x1040 must be rejected and MapVATR returns 0
+            using (var pe = new PE(new MemoryStream(peBytes)))
+            {
+                var candidateVa = 0x180001040ul; // RVA 0x1040
+                Assert.False(pe.IsValidMethodPointer(candidateVa));
+                Assert.Equal(0ul, pe.MapVATR(candidateVa));
+            }
+
+            // 2. Dumped memory positive control: bytes present at RVA 0x1000 up to VirtualSize 0x100
+            var dumpedBytes = new byte[0x2000];
+            Array.Copy(peBytes, dumpedBytes, peBytes.Length);
+            dumpedBytes[0x1040] = 0x90; // valid byte in memory at offset 0x1040
+
+            using (var dumpedPe = new PE(new MemoryStream(dumpedBytes)))
+            {
+                dumpedPe.LoadFromMemory(0x180000000ul);
+                var candidateVa = 0x180001040ul;
+                Assert.True(dumpedPe.IsValidMethodPointer(candidateVa));
+                Assert.Equal(0x1040ul, dumpedPe.MapVATR(candidateVa));
+            }
+        }
+
+        [Fact]
+        public void ELF64_PhysicalFileszZero_IsRejected_AndMapVATRThrows_WhileDumpedMemorySucceeds()
+        {
+            // P2: PT_LOAD executable segment with p_vaddr=0x1400, p_offset=0x400, p_memsz=0x400, p_filesz=0
+            var elfBytes = CreateSyntheticElf64WithSegment(p_vaddr: 0x1400, p_offset: 0x400, p_memsz: 0x400, p_filesz: 0);
+
+            // 1. On disk: candidate VA 0x1600 must be rejected and MapVATR throws InvalidOperationException
+            using (var elf = new Elf64(new MemoryStream(elfBytes)))
+            {
+                var candidateVa = 0x1600ul;
+                Assert.False(elf.IsValidMethodPointer(candidateVa));
+                Assert.Throws<InvalidOperationException>(() => elf.MapVATR(candidateVa));
+            }
+
+            // 2. Dumped memory positive control: segment with p_filesz = p_memsz = 0x400
+            var dumpedElfBytes = CreateSyntheticElf64WithSegment(p_vaddr: 0x1400, p_offset: 0x400, p_memsz: 0x400, p_filesz: 0x400);
+            using (var dumpedElf = new Elf64(new MemoryStream(dumpedElfBytes)))
+            {
+                var candidateVa = 0x1500ul;
+                Assert.True(dumpedElf.IsValidMethodPointer(candidateVa));
+                Assert.Equal(0x500ul, dumpedElf.MapVATR(candidateVa));
+            }
+        }
+
+        [Fact]
+        public void PE_Init_UnbackedCodeGenModuleMethodPointersTable_FallsBackToZeroTable_WithoutReadingHeaderBytes()
+        {
+            // P1: When codeGenModule.methodPointers points to unbacked virtual tail (like Dofus 0x18712FA60),
+            // MapVATR returns 0. TryMapVATR must treat 0 in PE as mapping failure and fall back to zeroed table,
+            // never reading the PE DOS header bytes (0x300905A4D, etc.) as candidate pointers.
+            var (peBytes, _, _) = CreateTestPe(textVirtualSize: 0x1000, textRawSize: 0x1000);
+
+            using (var ms = new MemoryStream(peBytes))
+            using (var w = new BinaryWriter(ms))
+            {
+                // pCodeRegistration at RVA 0x1000 -> raw offset 0x400 (Version 29 has 15 fields)
+                ms.Position = 0x400;
+                for (int i = 0; i < 13; i++)
+                {
+                    w.Write((ulong)0); // fields 0..12: reversePInvoke, genericMethods, invokers, etc.
+                }
+                w.Write((ulong)1);          // field 13: codeGenModulesCount = 1
+                w.Write(0x180001200ul);     // field 14: codeGenModules -> RVA 0x1200 (raw offset 0x600)
+
+                // pCodeGenModules array at RVA 0x1200 -> raw offset 0x600
+                ms.Position = 0x600;
+                w.Write(0x180001220ul);     // pointer to Il2CppCodeGenModule at RVA 0x1220 (raw offset 0x620)
+
+                // Il2CppCodeGenModule at RVA 0x1220 -> raw offset 0x620
+                ms.Position = 0x620;
+                w.Write(0x180001280ul);     // 0: moduleName -> RVA 0x1280 (raw offset 0x680)
+                w.Write((long)3);           // 1: methodPointerCount = 3
+                w.Write(0x18712FA60ul);     // 2: methodPointers -> unbacked VA in virtual tail!
+                for (int i = 0; i < 10; i++)
+                {
+                    w.Write((ulong)0);     // 3..12: adjustor, invokers, rgctx, etc.
+                }
+
+                // Module name string at RVA 0x1280 -> raw offset 0x680
+                ms.Position = 0x680;
+                w.Write(Encoding.ASCII.GetBytes("UnbackedModule.dll\0"));
+
+                // pMetadataRegistration at RVA 0x1300 -> raw offset 0x700
+                ms.Position = 0x700;
+                for (int i = 0; i < 20; i++)
+                {
+                    w.Write((ulong)0);
+                }
+            }
+
+            using var pe = new PE(new MemoryStream(peBytes));
+            pe.Version = 29;
+
+            pe.Init(codeRegistration: 0x180001000ul, metadataRegistration: 0x180001300ul);
+
+            Assert.True(pe.codeGenModuleMethodPointers.TryGetValue("UnbackedModule.dll", out var pointers));
+            Assert.Equal(3, pointers.Length);
+            Assert.All(pointers, p => Assert.Equal(0ul, p));
+            Assert.Equal(1, pe.MethodMappingFailuresCount);
+            var failure = Assert.Single(pe.MethodMappingFailures);
+            Assert.Equal("methodMapping", failure.Category);
+            Assert.Equal("UnbackedModule.dll", failure.Member);
+            Assert.Equal("0x18712FA60", failure.RawBytes);
+            Assert.Contains("MethodPointersTable", failure.Detail);
+        }
+
+        [Fact]
+        public void GenericMethodInstance_WithInvalidPointer_WhenGenerateStructFalse_EmitsStructuredWarningInDumpCs_AndDeduplicatesWhenBothEnabled()
+        {
+            var (peBytes, _, _) = CreateTestPe();
+            using var pe = new PE(new MemoryStream(peBytes));
+            pe.Version = 29;
+            pe.types = new[] { new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VOID } };
+
+            var invalidGenericMethodPointer = 0x180900000ul;
+            var testMethodSpec = new Il2CppMethodSpec { methodDefinitionIndex = 0, classIndexIndex = -1, methodIndexIndex = -1 };
+            pe.methodSpecs = new[] { testMethodSpec };
+            pe.methodSpecGenericMethodPointers = new Dictionary<Il2CppMethodSpec, ulong>
+            {
+                [testMethodSpec] = invalidGenericMethodPointer
+            };
+            pe.methodDefinitionMethodSpecs = new Dictionary<int, List<Il2CppMethodSpec>>
+            {
+                [0] = new List<Il2CppMethodSpec> { testMethodSpec }
+            };
+
+            using var metadata = CreateTestMetadata(
+                "TestModule.dll",
+                "TestNamespace.GenericContainer",
+                isInterface: false,
+                new[] { ("GenericMethod", false, 0x06000001u) });
+
+            pe.SetProperties(29, 0, metadata);
+            var executor = new Il2CppExecutor(metadata, pe);
+
+            var tempDir = Path.Combine(Path.GetTempPath(), "issue88_gen_dump_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                // 1. Case A: GenerateStruct = false, only Il2CppDecompiler runs
+                var decompiler = new Il2CppDecompiler(executor);
+                var warningsA = new List<string>();
+                using (CoreLogger.Scope(null, warningsA))
+                {
+                    decompiler.Decompile(new Config { DumpMethod = true, DumpMethodOffset = true, GenerateStruct = false }, tempDir);
+                }
+
+                var dumpCsPath = Path.Combine(tempDir, "dump.cs");
+                Assert.True(File.Exists(dumpCsPath));
+                var dumpCsText = File.ReadAllText(dumpCsPath);
+                Assert.Contains("|-RVA: -1 Offset: -1", dumpCsText);
+
+                // Warning must be captured in CoreLogger and recorded in MethodMappingFailures
+                Assert.Contains(warningsA, w => w.Contains("0x180900000") && w.Contains("GenericMethodInstance"));
+                Assert.Equal(1, pe.MethodMappingFailuresCount);
+
+                // 2. Case B: StructGenerator also runs on the same instance - must deduplicate (count remains 1)
+                var structGenerator = new StructGenerator(executor);
+                var warningsB = new List<string>();
+                using (CoreLogger.Scope(null, warningsB))
+                {
+                    structGenerator.WriteScript(tempDir + Path.DirectorySeparatorChar);
+                }
+
+                Assert.Equal(1, pe.MethodMappingFailuresCount);
+                Assert.DoesNotContain(warningsB, w => w.Contains("0x180900000") && w.Contains("GenericMethodInstance"));
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+        [Fact]
+        public void PE_MethodPointersTable_CrossingSectionBoundary_IsRejectedAndFallsBackToZeroTable_WhileContiguousTableSucceeds()
+        {
+            // Negative Case: Table starts at RVA 0x1FF8 (offset 0x13F8, last 8-byte slot backed by .text).
+            // Second slot is at RVA 0x2000 (unbacked virtual tail).
+            // Offset 0x1400 is the physical start of .data (RVA 0x3000), containing executable code pointer 0x180001510.
+            // Contiguous range validation must reject the table, record MethodPointersTable failure,
+            // fall back to zeroed array, and NOT publish ReviewType$$Second with RVA 0x1510 in script.json.
+            var sections = new (string, byte[], uint, uint)[]
+            {
+                (".text", new byte[0x1000], 0x2000, 0x60000020), // RVA 0x1000, backed 0x1000, unbacked tail 0x2000..0x3000
+                (".data", new byte[0x1000], 0x1000, 0xC0000040)  // RVA 0x3000, backed 0x1000
+            };
+            var peBytes = ProtectionReportTests.CreateSyntheticPe(sections);
+
+            const ulong imageBase = 0x180000000ul;
+            const ulong validCodeVa1 = imageBase + 0x1500ul;
+            const ulong validCodeVa2 = imageBase + 0x1510ul;
+            const ulong boundaryCrossingTableVa = imageBase + 0x1FF8ul; // RVA 0x1FF8, raw 0x13F8
+
+            using (var ms = new MemoryStream(peBytes))
+            using (var w = new BinaryWriter(ms))
+            {
+                // pCodeRegistration at RVA 0x1000 -> raw offset 0x400 (Version 29 has 15 fields)
+                ms.Position = 0x400;
+                for (int i = 0; i < 13; i++)
+                {
+                    w.Write((ulong)0);
+                }
+                w.Write((ulong)1);          // field 13: codeGenModulesCount = 1
+                w.Write(imageBase + 0x1200ul); // field 14: codeGenModules -> RVA 0x1200 (raw offset 0x600)
+
+                // pCodeGenModules array at RVA 0x1200 -> raw offset 0x600
+                ms.Position = 0x600;
+                w.Write(imageBase + 0x1220ul); // pointer to Il2CppCodeGenModule at RVA 0x1220 (raw offset 0x620)
+
+                // Il2CppCodeGenModule at RVA 0x1220 -> raw offset 0x620
+                ms.Position = 0x620;
+                w.Write(imageBase + 0x1280ul);     // 0: moduleName -> RVA 0x1280 (raw offset 0x680)
+                w.Write((long)2);                  // 1: methodPointerCount = 2
+                w.Write(boundaryCrossingTableVa);  // 2: methodPointers -> RVA 0x1FF8 (crosses into unbacked RVA 0x2000)
+                for (int i = 0; i < 10; i++)
+                {
+                    w.Write((ulong)0);             // 3..12: adjustor, invokers, rgctx, etc.
+                }
+
+                // Module name string at RVA 0x1280 -> raw offset 0x680
+                ms.Position = 0x680;
+                w.Write(Encoding.ASCII.GetBytes("ReviewModule.dll\0"));
+
+                // pMetadataRegistration at RVA 0x1300 -> raw offset 0x700
+                ms.Position = 0x700;
+                for (int i = 0; i < 20; i++)
+                {
+                    w.Write((ulong)0);
+                }
+
+                // Slot 0 at raw offset 0x13F8 (RVA 0x1FF8)
+                ms.Position = 0x13F8;
+                w.Write(validCodeVa1);
+
+                // Slot 1: in physical stream this is offset 0x1400 (start of .data, RVA 0x3000), containing valid executable code pointer
+                ms.Position = 0x1400;
+                w.Write(validCodeVa2);
+            }
+
+            var tempDir = Path.Combine(Path.GetTempPath(), "il2cpp_boundary_test_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                using var pe = new PE(new MemoryStream(peBytes));
+                pe.Version = 29;
+                pe.Init(codeRegistration: imageBase + 0x1000ul, metadataRegistration: imageBase + 0x1300ul);
+
+                Assert.True(pe.codeGenModuleMethodPointers.TryGetValue("ReviewModule.dll", out var pointers));
+                Assert.Equal(2, pointers.Length);
+                Assert.All(pointers, p => Assert.Equal(0ul, p));
+
+                Assert.Equal(1, pe.MethodMappingFailuresCount);
+                var failure = Assert.Single(pe.MethodMappingFailures);
+                Assert.Equal("methodMapping", failure.Category);
+                Assert.Equal("ReviewModule.dll", failure.Member);
+                Assert.Equal($"0x{boundaryCrossingTableVa:X}", failure.RawBytes);
+                Assert.Contains("MethodPointersTable", failure.Detail);
+
+                using var metadata = CreateTestMetadata(
+                    "ReviewModule.dll",
+                    "ReviewNamespace.ReviewType",
+                    isInterface: false,
+                    new[] { ("First", false, 0x06000001u), ("Second", false, 0x06000002u) });
+
+                pe.types = new[] { new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VOID } };
+                pe.SetProperties(29, 0, metadata);
+                var executor = new Il2CppExecutor(metadata, pe);
+
+                var structGenerator = new StructGenerator(executor);
+                structGenerator.WriteScript(tempDir + Path.DirectorySeparatorChar);
+
+                var scriptJsonPath = Path.Combine(tempDir, "script.json");
+                Assert.True(File.Exists(scriptJsonPath));
+                var scriptJsonText = File.ReadAllText(scriptJsonPath);
+                using (var doc = JsonDocument.Parse(scriptJsonText))
+                {
+                    var scriptMethods = doc.RootElement.GetProperty("ScriptMethod");
+                    var matchingSecond = scriptMethods.EnumerateArray()
+                        .Where(x => x.GetProperty("Name").GetString()!.Contains("Second"))
+                        .ToList();
+                    Assert.Empty(matchingSecond);
+
+                    var addresses = doc.RootElement.GetProperty("Addresses").EnumerateArray().Select(x => x.GetUInt64()).ToHashSet();
+                    Assert.DoesNotContain(0x1510ul, addresses);
+                    Assert.DoesNotContain(validCodeVa2, addresses);
+                }
+
+                // Positive Control: Entire table mapped contiguously in .text at RVA 0x1FE0 (raw offset 0x13E0)
+                const ulong contiguousTableVa = imageBase + 0x1FE0ul;
+                using (var msPos = new MemoryStream(peBytes))
+                using (var wPos = new BinaryWriter(msPos))
+                {
+                    // Point methodPointers to RVA 0x1FE0
+                    msPos.Position = 0x620 + 16;
+                    wPos.Write(contiguousTableVa);
+
+                    // Write 2 valid method pointers at raw offset 0x13E0 (RVA 0x1FE0)
+                    msPos.Position = 0x13E0;
+                    wPos.Write(validCodeVa1);
+                    wPos.Write(validCodeVa2);
+                }
+
+                var tempDirPos = Path.Combine(Path.GetTempPath(), "il2cpp_contiguous_pos_" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(tempDirPos);
+                try
+                {
+                    using var pePos = new PE(new MemoryStream(peBytes));
+                    pePos.Version = 29;
+                    pePos.Init(codeRegistration: imageBase + 0x1000ul, metadataRegistration: imageBase + 0x1300ul);
+
+                    Assert.True(pePos.codeGenModuleMethodPointers.TryGetValue("ReviewModule.dll", out var pointersPos));
+                    Assert.Equal(2, pointersPos.Length);
+                    Assert.Equal(validCodeVa1, pointersPos[0]);
+                    Assert.Equal(validCodeVa2, pointersPos[1]);
+                    Assert.Equal(0, pePos.MethodMappingFailuresCount);
+
+                    using var metadataPos = CreateTestMetadata(
+                        "ReviewModule.dll",
+                        "ReviewNamespace.ReviewType",
+                        isInterface: false,
+                        new[] { ("First", false, 0x06000001u), ("Second", false, 0x06000002u) });
+
+                    pePos.types = new[] { new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VOID } };
+                    pePos.SetProperties(29, 0, metadataPos);
+                    var executorPos = new Il2CppExecutor(metadataPos, pePos);
+
+                    var structGeneratorPos = new StructGenerator(executorPos);
+                    structGeneratorPos.WriteScript(tempDirPos + Path.DirectorySeparatorChar);
+
+                    var scriptJsonPosPath = Path.Combine(tempDirPos, "script.json");
+                    Assert.True(File.Exists(scriptJsonPosPath));
+                    using (var docPos = JsonDocument.Parse(File.ReadAllText(scriptJsonPosPath)))
+                    {
+                        var scriptMethods = docPos.RootElement.GetProperty("ScriptMethod");
+                        var matchingSecond = scriptMethods.EnumerateArray()
+                            .Where(x => x.GetProperty("Name").GetString()!.Contains("Second"))
+                            .ToList();
+                        Assert.Single(matchingSecond);
+                        Assert.Equal(0x1510ul, matchingSecond[0].GetProperty("Address").GetUInt64());
+
+                        var addresses = docPos.RootElement.GetProperty("Addresses").EnumerateArray().Select(x => x.GetUInt64()).ToHashSet();
+                        Assert.Contains(0x1510ul, addresses);
+                    }
+                }
+                finally
+                {
+                    if (Directory.Exists(tempDirPos))
+                    {
+                        try { Directory.Delete(tempDirPos, true); } catch { }
+                    }
+                }
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+        private static byte[] CreateSyntheticMacho64Custom(
+            (string segName, string secName, ulong vmaddr, ulong vmsize, uint fileoff, ulong filesize, uint secFlags)[] items)
+        {
+            uint maxFileEnd = 0x400;
+            foreach (var item in items)
+            {
+                var end = item.fileoff + (uint)item.filesize;
+                if (end > maxFileEnd) maxFileEnd = end;
+            }
+            var bytes = new byte[maxFileEnd + 0x400];
+            using var ms = new MemoryStream(bytes);
+            using var w = new BinaryWriter(ms);
+
+            w.Write((uint)0xFEEDFACF); // magic
+            w.Write((uint)0x01000007); // cputype (x86_64)
+            w.Write((uint)0x03);       // cpusubtype
+            w.Write((uint)0x02);       // filetype (MH_EXECUTE)
+            w.Write((uint)items.Length); // ncmds
+            uint cmdSize = 72 + 80;    // 152 bytes per segment with 1 section
+            w.Write((uint)(cmdSize * items.Length)); // sizeofcmds
+            w.Write((uint)0);          // flags
+            w.Write((uint)0);          // reserved
+
+            foreach (var item in items)
+            {
+                w.Write((uint)0x19);   // LC_SEGMENT_64
+                w.Write(cmdSize);
+                var segBytes = new byte[16];
+                Encoding.ASCII.GetBytes(item.segName).CopyTo(segBytes, 0);
+                w.Write(segBytes);
+                w.Write(item.vmaddr);
+                w.Write(item.vmsize);
+                w.Write((ulong)item.fileoff);
+                w.Write(item.filesize);
+                w.Write((uint)7);      // maxprot
+                w.Write((uint)5);      // initprot
+                w.Write((uint)1);      // nsects = 1
+                w.Write((uint)0);      // flags
+
+                var sectBytes = new byte[16];
+                Encoding.ASCII.GetBytes(item.secName).CopyTo(sectBytes, 0);
+                w.Write(sectBytes);
+                w.Write(segBytes);
+                w.Write(item.vmaddr);
+                w.Write(item.vmsize);
+                w.Write(item.fileoff);
+                w.Write((uint)3);      // align
+                w.Write((uint)0);      // reloff
+                w.Write((uint)0);      // nreloc
+                w.Write(item.secFlags);// flags
+                w.Write((uint)0);
+                w.Write((uint)0);
+                w.Write((uint)0);
+            }
+
+            return bytes;
+        }
+
+        [Fact]
+        public void Macho_ZeroFillSection_WithNonBssName_IsRejected_WhileRegularSectionSucceeds()
+        {
+            // P2 Point 1: Mach-O section with S_ZEROFILL (1) and name '__common' (different from '__bss'), segment filesize = 0.
+            // Both candidate pointer validation (IsValidMethodPointer) and table validation (TryMapContiguousRange)
+            // must reject addresses in this zero-fill section, while a regular section succeeds.
+            var machoBytes = CreateSyntheticMacho64Custom(new[]
+            {
+                ("__TEXT", "__text", 0x1000ul, 0x1000ul, 0x600u, 0x1000ul, 0x80000400u), // regular code
+                ("__DATA", "__common", 0x2000ul, 0x1000ul, 0x0u, 0ul, 0x1u)              // S_ZEROFILL (1) with name '__common'
+            });
+
+            using var macho = new Macho64(new MemoryStream(machoBytes));
+
+            // Candidate pointers in zero-fill section must be rejected
+            var zeroFillVa = 0x2600ul;
+            Assert.False(macho.IsValidMethodPointer(zeroFillVa));
+            Assert.False(macho.TryMapContiguousRange(zeroFillVa, 16, out _));
+            Assert.Throws<Exception>(() => macho.MapVATR(zeroFillVa));
+
+            // Regular section control
+            var regularVa = 0x1500ul;
+            Assert.True(macho.IsValidMethodPointer(regularVa));
+            Assert.True(macho.TryMapContiguousRange(regularVa, 16, out var regOffset));
+            Assert.Equal(0xB00ul, regOffset); // 0x600 + (0x1500 - 0x1000)
+            Assert.Equal(0xB00ul, macho.MapVATR(regularVa));
+
+            // S_GB_ZEROFILL (0xC) and S_THREAD_LOCAL_ZEROFILL (0x12) must also be recognized as zero-fill
+            Assert.True(Macho64.IsZeroFillSection(0x1));
+            Assert.True(Macho64.IsZeroFillSection(0xC));
+            Assert.True(Macho64.IsZeroFillSection(0x12));
+            Assert.True(Macho64.IsZeroFillSection(0x80000001u));
+            Assert.False(Macho64.IsZeroFillSection(0x0));
+            Assert.False(Macho64.IsZeroFillSection(0x80000400u));
+        }
+
+        [Fact]
+        public void TryMapContiguousRange_BoundaryArithmetic_RejectsOverflow_AndAcceptsExactEnd()
+        {
+            // P2 Point 2: byteSize = ulong.MaxValue must NOT overflow and must return false.
+            // Exact end of section (byteSize = remainingBytes) must return true.
+            // Exceeding section by 1 byte (byteSize = remainingBytes + 1) must return false.
+
+            // 1. PE Format
+            var (peBytes, _, _) = CreateTestPe(textVirtualSize: 0x1000, textRawSize: 0x1000);
+            using var pe = new PE(new MemoryStream(peBytes));
+            var peStartVa = 0x180001000ul; // Start of .text, remaining = 0x1000
+            var peEndSlotVa = 0x180001FF8ul; // Last 8 bytes of .text, remaining = 8
+
+            // Overflow protection
+            Assert.False(pe.TryMapContiguousRange(peStartVa, ulong.MaxValue, out _));
+            Assert.False(pe.TryMapContiguousRange(peEndSlotVa, ulong.MaxValue, out _));
+
+            // Exact end
+            Assert.True(pe.TryMapContiguousRange(peStartVa, 0x1000, out var peOffset));
+            Assert.Equal(0x400ul, peOffset);
+            Assert.True(pe.TryMapContiguousRange(peEndSlotVa, 8, out var peEndOffset));
+            Assert.Equal(0x13F8ul, peEndOffset);
+
+            // Exceed by 1 byte
+            Assert.False(pe.TryMapContiguousRange(peStartVa, 0x1001, out _));
+            Assert.False(pe.TryMapContiguousRange(peEndSlotVa, 9, out _));
+
+            // 2. ELF64 Format
+            var elfBytes = CreateSyntheticElf64WithSegment(p_vaddr: 0x1000, p_offset: 0x600, p_memsz: 0x1000, p_filesz: 0x1000);
+            using var elf = new Elf64(new MemoryStream(elfBytes));
+            var elfStartVa = 0x1000ul;
+            var elfEndSlotVa = 0x1FF8ul;
+
+            // Overflow protection
+            Assert.False(elf.TryMapContiguousRange(elfStartVa, ulong.MaxValue, out _));
+            Assert.False(elf.TryMapContiguousRange(elfEndSlotVa, ulong.MaxValue, out _));
+
+            // Exact end
+            Assert.True(elf.TryMapContiguousRange(elfStartVa, 0x1000, out var elfOffset));
+            Assert.Equal(0x600ul, elfOffset);
+            Assert.True(elf.TryMapContiguousRange(elfEndSlotVa, 8, out var elfEndOffset));
+            Assert.Equal(0x15F8ul, elfEndOffset);
+
+            // Exceed by 1 byte
+            Assert.False(elf.TryMapContiguousRange(elfStartVa, 0x1001, out _));
+            Assert.False(elf.TryMapContiguousRange(elfEndSlotVa, 9, out _));
+
+            // 3. Mach-O 64 Format
+            var machoBytes = CreateSyntheticMacho64Custom(new[]
+            {
+                ("__TEXT", "__text", 0x1000ul, 0x1000ul, 0x600u, 0x1000ul, 0x80000400u)
+            });
+            using var macho = new Macho64(new MemoryStream(machoBytes));
+            var machoStartVa = 0x1000ul;
+            var machoEndSlotVa = 0x1FF8ul;
+
+            // Overflow protection
+            Assert.False(macho.TryMapContiguousRange(machoStartVa, ulong.MaxValue, out _));
+            Assert.False(macho.TryMapContiguousRange(machoEndSlotVa, ulong.MaxValue, out _));
+
+            // Exact end
+            Assert.True(macho.TryMapContiguousRange(machoStartVa, 0x1000, out var machoOffset));
+            Assert.Equal(0x600ul, machoOffset);
+            Assert.True(macho.TryMapContiguousRange(machoEndSlotVa, 8, out var machoEndOffset));
+            Assert.Equal(0x15F8ul, machoEndOffset);
+
+            // Exceed by 1 byte
+            Assert.False(macho.TryMapContiguousRange(machoStartVa, 0x1001, out _));
+            Assert.False(macho.TryMapContiguousRange(machoEndSlotVa, 9, out _));
+        }
+
+        [Fact]
+        public void PE_Init_MethodPointerCountOverflow_DoesNotThrowAndRecordsStructuredWarning()
+        {
+            // P2 Point 2: Protect multiplication of count by pointer size before reading or allocating.
+            // When methodPointerCount is invalid/astronomical (e.g. long.MaxValue), Init must fall back
+            // to empty table and record structured diagnostic without crashing.
+            var (peBytes, _, _) = CreateTestPe(textVirtualSize: 0x1000, textRawSize: 0x1000);
+
+            using (var ms = new MemoryStream(peBytes))
+            using (var w = new BinaryWriter(ms))
+            {
+                // pCodeRegistration at RVA 0x1000 -> raw offset 0x400
+                ms.Position = 0x400;
+                for (int i = 0; i < 13; i++) w.Write((ulong)0);
+                w.Write((ulong)1);          // codeGenModulesCount = 1
+                w.Write(0x180001200ul);     // codeGenModules -> RVA 0x1200 (raw offset 0x600)
+
+                // pCodeGenModules array at RVA 0x1200 -> raw offset 0x600
+                ms.Position = 0x600;
+                w.Write(0x180001220ul);     // pointer to Il2CppCodeGenModule at RVA 0x1220 (raw offset 0x620)
+
+                // Il2CppCodeGenModule at RVA 0x1220 -> raw offset 0x620
+                ms.Position = 0x620;
+                w.Write(0x180001280ul);     // moduleName -> RVA 0x1280
+                w.Write(long.MaxValue);     // astronomical count: long.MaxValue!
+                w.Write(0x180001000ul);     // methodPointers VA
+                for (int i = 0; i < 10; i++) w.Write((ulong)0);
+
+                ms.Position = 0x680;
+                w.Write(Encoding.ASCII.GetBytes("OverflowModule.dll\0"));
+
+                ms.Position = 0x700;
+                for (int i = 0; i < 20; i++) w.Write((ulong)0);
+            }
+
+            using var pe = new PE(new MemoryStream(peBytes));
+            pe.Version = 29;
+
+            // Must NOT throw OverflowException or OutOfMemoryException
+            pe.Init(codeRegistration: 0x180001000ul, metadataRegistration: 0x180001300ul);
+
+            Assert.True(pe.codeGenModuleMethodPointers.TryGetValue("OverflowModule.dll", out var pointers));
+            Assert.Empty(pointers);
+            Assert.Equal(1, pe.MethodMappingFailuresCount);
+            var failure = Assert.Single(pe.MethodMappingFailures);
+            Assert.Equal("methodMapping", failure.Category);
+            Assert.Equal("OverflowModule.dll", failure.Member);
+            Assert.Contains("invalid or exceeds addressable bounds", failure.Detail);
+        }
+
+        private static byte[] CreateSyntheticElf64WithCustomSegment(ulong p_vaddr, ulong p_offset, ulong p_memsz, ulong p_filesz, int streamSize = 0x2000, uint p_flags = 7)
+        {
+            var data = new byte[streamSize];
+            using var ms = new MemoryStream(data);
+            using var w = new BinaryWriter(ms);
+
+            w.Write(new byte[] { 0x7F, (byte)'E', (byte)'L', (byte)'F' }); // e_ident[0..3]
+            w.Write((byte)2); // EI_CLASS: ELFCLASS64
+            w.Write((byte)1); // EI_DATA: ELFDATA2LSB
+            w.Write((byte)1); // EI_VERSION: EV_CURRENT
+            w.Write(new byte[9]); // padding
+
+            w.Write((ushort)3); // e_type: ET_DYN
+            w.Write((ushort)183); // e_machine: EM_AARCH64
+            w.Write((uint)1); // e_version: EV_CURRENT
+            w.Write((ulong)0); // e_entry
+            w.Write((ulong)64); // e_phoff = 64
+            w.Write((ulong)0x1000); // e_shoff = 0x1000 (non-zero so IsDumped is false)
+            w.Write((uint)0); // e_flags
+            w.Write((ushort)64); // e_ehsize = 64
+            w.Write((ushort)56); // e_phentsize = 56
+            w.Write((ushort)2); // e_phnum = 2 (PT_LOAD and PT_DYNAMIC)
+            w.Write((ushort)64); // e_shentsize = 64
+            w.Write((ushort)0); // e_shnum = 0
+            w.Write((ushort)0); // e_shstrndx = 0
+
+            // Program header 0: PT_LOAD
+            w.Write((uint)1); // p_type: PT_LOAD
+            w.Write(p_flags); // p_flags: PF_X | PF_W | PF_R
+            w.Write(p_offset); // p_offset
+            w.Write(p_vaddr); // p_vaddr
+            w.Write(p_vaddr); // p_paddr
+            w.Write(p_filesz); // p_filesz
+            w.Write(p_memsz); // p_memsz
+            w.Write((ulong)4096); // p_align
+
+            // Program header 1: PT_DYNAMIC
+            var dynamicOffset = 0x200ul;
+            var dynamicVaddr = 0x5000ul;
+            w.Write((uint)2); // p_type: PT_DYNAMIC
+            w.Write((uint)6); // p_flags: PF_R | PF_W
+            w.Write(dynamicOffset); // p_offset
+            w.Write(dynamicVaddr); // p_vaddr
+            w.Write(dynamicVaddr); // p_paddr
+            w.Write((ulong)16); // p_filesz (1 entry = 16 bytes)
+            w.Write((ulong)16); // p_memsz
+            w.Write((ulong)8); // p_align
+
+            // Dynamic table entry: DT_NULL
+            ms.Position = (long)dynamicOffset;
+            w.Write((long)0); // d_tag = DT_NULL
+            w.Write((ulong)0); // d_un = 0
+
+            return data;
+        }
+
+        [Fact]
+        public void PE_Init_LegacyIl2Cpp241_MethodPointersPopulated_AndPublishedInScriptJson()
+        {
+            // P1: In IL2CPP <= 24.1, methodPointers was shadowed by a local variable in Il2Cpp.Init,
+            // leaving this.methodPointers null and dropping all ScriptMethod / Addresses entries.
+            // Verify this.methodPointers is properly populated and exported into script.json.
+            var (peBytes, validCodeVa, _) = CreateTestPe(textVirtualSize: 0x1000, textRawSize: 0x1000);
+
+            using (var ms = new MemoryStream(peBytes))
+            using (var w = new BinaryWriter(ms))
+            {
+                // Il2CppCodeRegistration at RVA 0x1100 -> raw offset 0x500
+                ms.Position = 0x500;
+                w.Write((ulong)1);             // methodPointersCount = 1
+                w.Write(0x180001200ul);        // methodPointers -> RVA 0x1200 (raw offset 0x600)
+                for (int i = 0; i < 20; i++) w.Write((ulong)0);
+
+                // methodPointers table at RVA 0x1200 -> raw offset 0x600
+                ms.Position = 0x600;
+                w.Write(validCodeVa);          // slot 0 points to valid code VA (0x180001000)
+
+                // Il2CppMetadataRegistration at RVA 0x1300 -> raw offset 0x700
+                ms.Position = 0x700;
+                for (int i = 0; i < 20; i++) w.Write((ulong)0);
+            }
+
+            using var pe = new PE(new MemoryStream(peBytes));
+            pe.Version = 24.1;
+            pe.Init(codeRegistration: 0x180001100ul, metadataRegistration: 0x180001300ul);
+            pe.types = new[] { new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VOID } };
+
+            Assert.NotNull(pe.methodPointers);
+            Assert.Single(pe.methodPointers);
+            Assert.Equal(validCodeVa, pe.methodPointers[0]);
+
+            using var metadata = CreateTestMetadata(
+                "LegacyModule.dll",
+                "LegacyNamespace.LegacyClass",
+                isInterface: false,
+                new[] { ("LegacyExecute", false, 0x06000001u) });
+
+            pe.SetProperties(24.1, 0, metadata);
+            var executor = new Il2CppExecutor(metadata, pe);
+
+            var ptr = pe.GetMethodPointer("LegacyModule.dll", metadata.methodDefs[0]);
+            Assert.Equal(validCodeVa, ptr);
+
+            var tempDir = Path.Combine(Path.GetTempPath(), "issue88_legacy241_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var structGenerator = new StructGenerator(executor);
+                structGenerator.WriteScript(tempDir + Path.DirectorySeparatorChar);
+
+                var scriptJsonPath = Path.Combine(tempDir, "script.json");
+                Assert.True(File.Exists(scriptJsonPath));
+                using var doc = JsonDocument.Parse(File.ReadAllText(scriptJsonPath));
+                var scriptMethods = doc.RootElement.GetProperty("ScriptMethod");
+                var matching = scriptMethods.EnumerateArray()
+                    .Where(x => x.GetProperty("Name").GetString()!.Contains("LegacyExecute"))
+                    .ToList();
+                Assert.Single(matching);
+                Assert.Equal(0x1000ul, matching[0].GetProperty("Address").GetUInt64());
+
+                var addresses = doc.RootElement.GetProperty("Addresses").EnumerateArray().Select(x => x.GetUInt64()).ToHashSet();
+                Assert.Contains(0x1000ul, addresses);
+            }
+            finally
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+
+        [Fact]
+        public void Elf64_InitialOffsetWrapAround_RejectsOutOfStreamSegment_AndAcceptsRealOffsetZero()
+        {
+            // P2: Wrap-around attack where p_offset = 0xFFFFFFFFFFFFFF00 and delta = 0x100 wraps to 0x0.
+            // Out-of-stream segment must be rejected in TryMapContiguousRange, IsValidMethodPointer, and MapVATR.
+            // Conversely, a valid segment with real offset 0 (p_offset = 0) must succeed and resolve offset 0x100.
+
+            // 1. Wrap-around segment (p_offset = 0xFFFFFFFFFFFFFF00, p_vaddr = 0x1400)
+            var malformedElfBytes = CreateSyntheticElf64WithCustomSegment(
+                p_vaddr: 0x1400,
+                p_offset: 0xFFFFFFFFFFFFFF00ul,
+                p_memsz: 0x400,
+                p_filesz: 0x400,
+                streamSize: 0x2000);
+
+            using (var malformedElf = new Elf64(new MemoryStream(malformedElfBytes)))
+            {
+                var candidateVa = 0x1500ul; // delta = 0x100 -> p_offset + delta wraps to 0x0!
+                Assert.False(malformedElf.IsValidMethodPointer(candidateVa));
+                Assert.False(malformedElf.TryMapContiguousRange(candidateVa, 8, out _));
+                Assert.Throws<InvalidOperationException>(() => malformedElf.MapVATR(candidateVa));
+            }
+
+            // 2. Control segment with real offset 0 (p_offset = 0, p_vaddr = 0x1000)
+            var validElfBytes = CreateSyntheticElf64WithCustomSegment(
+                p_vaddr: 0x1000,
+                p_offset: 0ul,
+                p_memsz: 0x400,
+                p_filesz: 0x400,
+                streamSize: 0x2000);
+
+            using (var validElf = new Elf64(new MemoryStream(validElfBytes)))
+            {
+                var candidateVa = 0x1100ul; // delta = 0x100 -> rawOffset = 0x100
+                Assert.True(validElf.IsValidMethodPointer(candidateVa));
+                Assert.True(validElf.TryMapContiguousRange(candidateVa, 8, out var resolvedOffset));
+                Assert.Equal(0x100ul, resolvedOffset);
+                Assert.Equal(0x100ul, validElf.MapVATR(candidateVa));
+            }
+        }
+    }
+}

@@ -200,10 +200,83 @@ namespace Il2CppDumper
             }
         }
 
+        public override bool IsValidMethodPointer(ulong pointer)
+        {
+            if (pointer == 0 || segments == null || segments.Count == 0)
+            {
+                return false;
+            }
+            var segment = segments.FirstOrDefault(x => pointer >= x.MemoryOffset && pointer < x.MemoryOffset + x.DecompressedSize);
+            if (segment == null)
+            {
+                return false;
+            }
+            if (header.TextSegment != null && segment.MemoryOffset != header.TextSegment.MemoryOffset)
+            {
+                return false;
+            }
+            if ((ulong)segment.FileOffset >= (ulong)Length)
+            {
+                return false;
+            }
+            var delta = pointer - segment.MemoryOffset;
+            if (delta >= (ulong)Length - (ulong)segment.FileOffset)
+            {
+                return false;
+            }
+            return true;
+        }
+
         public override ulong MapVATR(ulong addr)
         {
             var segment = segments.First(x => addr >= x.MemoryOffset && addr <= x.MemoryOffset + x.DecompressedSize);
-            return addr - segment.MemoryOffset + segment.FileOffset;
+            if ((ulong)segment.FileOffset >= (ulong)Length)
+            {
+                throw new InvalidOperationException();
+            }
+            var delta = addr - segment.MemoryOffset;
+            if (delta >= (ulong)Length - (ulong)segment.FileOffset)
+            {
+                throw new InvalidOperationException();
+            }
+            return (ulong)segment.FileOffset + delta;
+        }
+
+        public override bool TryMapContiguousRange(ulong addr, ulong byteSize, out ulong offset)
+        {
+            offset = 0;
+            var segment = segments.FirstOrDefault(x => addr >= x.MemoryOffset && addr < x.MemoryOffset + x.DecompressedSize);
+            if (segment == null)
+            {
+                return false;
+            }
+            var segmentEndVa = (ulong)segment.MemoryOffset + segment.DecompressedSize;
+            if (addr >= segmentEndVa)
+            {
+                return false;
+            }
+            var remainingSegmentBytes = segmentEndVa - addr;
+            if (byteSize > remainingSegmentBytes)
+            {
+                return false;
+            }
+            if ((ulong)segment.FileOffset >= (ulong)Length)
+            {
+                return false;
+            }
+            var delta = addr - segment.MemoryOffset;
+            if (delta >= (ulong)Length - (ulong)segment.FileOffset)
+            {
+                return false;
+            }
+            var rawOffset = (ulong)segment.FileOffset + delta;
+            var remainingStreamBytes = (ulong)Length - rawOffset;
+            if (byteSize > remainingStreamBytes)
+            {
+                return false;
+            }
+            offset = rawOffset;
+            return true;
         }
 
         public override ulong MapRTVA(ulong addr)

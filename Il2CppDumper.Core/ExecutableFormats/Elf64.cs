@@ -70,8 +70,63 @@ namespace Il2CppDumper
 
         public override ulong MapVATR(ulong addr)
         {
-            var phdr = programSegment.First(x => addr >= x.p_vaddr && addr <= x.p_vaddr + x.p_memsz);
-            return addr - phdr.p_vaddr + phdr.p_offset;
+            var phdr = programSegment.First(x =>
+            {
+                var maxLen = Math.Min(x.p_memsz, x.p_filesz);
+                return addr >= x.p_vaddr && addr < x.p_vaddr + maxLen;
+            });
+            if (phdr.p_offset >= (ulong)Length)
+            {
+                throw new InvalidOperationException();
+            }
+            var delta = addr - phdr.p_vaddr;
+            if (delta >= (ulong)Length - phdr.p_offset)
+            {
+                throw new InvalidOperationException();
+            }
+            return phdr.p_offset + delta;
+        }
+
+        public override bool TryMapContiguousRange(ulong addr, ulong byteSize, out ulong offset)
+        {
+            offset = 0;
+            var phdr = programSegment.FirstOrDefault(x =>
+            {
+                var maxLen = Math.Min(x.p_memsz, x.p_filesz);
+                return addr >= x.p_vaddr && addr < x.p_vaddr + maxLen;
+            });
+            if (phdr == null)
+            {
+                return false;
+            }
+            var backedLen = Math.Min(phdr.p_memsz, phdr.p_filesz);
+            var segmentEndVa = phdr.p_vaddr + backedLen;
+            if (addr >= segmentEndVa)
+            {
+                return false;
+            }
+            var remainingSegmentBytes = segmentEndVa - addr;
+            if (byteSize > remainingSegmentBytes)
+            {
+                return false;
+            }
+            if (phdr.p_offset >= (ulong)Length)
+            {
+                return false;
+            }
+            var delta = addr - phdr.p_vaddr;
+            if (delta >= (ulong)Length - phdr.p_offset)
+            {
+                return false;
+            }
+            var rawOffset = phdr.p_offset + delta;
+            var remainingStreamBytes = (ulong)Length - rawOffset;
+            if (byteSize > remainingStreamBytes)
+            {
+                return false;
+            }
+            offset = rawOffset;
+            return true;
         }
 
         public override ulong MapRTVA(ulong addr)
@@ -248,6 +303,38 @@ namespace Il2CppDumper
                 // ignored
             }
             return false;
+        }
+
+        public override bool IsValidMethodPointer(ulong pointer)
+        {
+            if (pointer == 0 || programSegment == null || programSegment.Length == 0)
+            {
+                return false;
+            }
+            var phdr = programSegment.FirstOrDefault(x =>
+            {
+                var maxLen = Math.Min(x.p_memsz, x.p_filesz);
+                return pointer >= x.p_vaddr && pointer < x.p_vaddr + maxLen;
+            });
+            if (phdr == null)
+            {
+                return false;
+            }
+            var hasExec = programSegment.Any(x => (x.p_flags & PF_X) != 0);
+            if (hasExec && (phdr.p_flags & PF_X) == 0)
+            {
+                return false;
+            }
+            if (phdr.p_offset >= (ulong)Length)
+            {
+                return false;
+            }
+            var delta = pointer - phdr.p_vaddr;
+            if (delta >= (ulong)Length - phdr.p_offset)
+            {
+                return false;
+            }
+            return true;
         }
 
         public override ulong GetRVA(ulong pointer)

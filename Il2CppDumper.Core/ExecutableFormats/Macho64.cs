@@ -66,26 +66,79 @@ namespace Il2CppDumper
             }
         }
 
+        private const uint SECTION_TYPE = 0x000000FF;
+        private const uint S_ZEROFILL = 0x1;
+        private const uint S_GB_ZEROFILL = 0xC;
+        private const uint S_THREAD_LOCAL_ZEROFILL = 0x12;
+
+        public static bool IsZeroFillSection(uint flags)
+        {
+            var secType = flags & SECTION_TYPE;
+            return secType == S_ZEROFILL || secType == S_GB_ZEROFILL || secType == S_THREAD_LOCAL_ZEROFILL;
+        }
+
         public override ulong MapVATR(ulong addr)
         {
-            var section = sections.First(x => addr >= x.addr && addr <= x.addr + x.size);
-            if (section.sectname == "__bss")
+            var section = sections.First(x => addr >= x.addr && addr < x.addr + x.size);
+            if (section.sectname == "__bss" || IsZeroFillSection(section.flags))
             {
                 throw new Exception();
             }
-            return addr - section.addr + section.offset;
+            if ((ulong)section.offset >= (ulong)Length)
+            {
+                throw new Exception();
+            }
+            var delta = addr - section.addr;
+            if (delta >= (ulong)Length - (ulong)section.offset)
+            {
+                throw new Exception();
+            }
+            return (ulong)section.offset + delta;
+        }
+
+        public override bool TryMapContiguousRange(ulong addr, ulong byteSize, out ulong offset)
+        {
+            offset = 0;
+            var sec = sections.FirstOrDefault(x => addr >= x.addr && addr < x.addr + x.size);
+            if (sec == null || sec.sectname == "__bss" || IsZeroFillSection(sec.flags))
+            {
+                return false;
+            }
+            var secEndVa = sec.addr + sec.size;
+            if (addr >= secEndVa)
+            {
+                return false;
+            }
+            var remainingSectionBytes = secEndVa - addr;
+            if (byteSize > remainingSectionBytes)
+            {
+                return false;
+            }
+            if ((ulong)sec.offset >= (ulong)Length)
+            {
+                return false;
+            }
+            var delta = addr - sec.addr;
+            if (delta >= (ulong)Length - (ulong)sec.offset)
+            {
+                return false;
+            }
+            var rawOffset = (ulong)sec.offset + delta;
+            var remainingStreamBytes = (ulong)Length - rawOffset;
+            if (byteSize > remainingStreamBytes)
+            {
+                return false;
+            }
+            offset = rawOffset;
+            return true;
         }
 
         public override ulong MapRTVA(ulong addr)
         {
             var section = sections.FirstOrDefault(x => addr >= x.offset && addr <= x.offset + x.size);
-            if (section == null)
+            if (section == null || section.sectname == "__bss" || IsZeroFillSection(section.flags))
             {
                 return 0;
-            }
-            if (section.sectname == "__bss")
-            {
-                throw new Exception();
             }
             return addr - section.offset + section.addr;
         }
@@ -247,6 +300,34 @@ namespace Il2CppDumper
         public override bool SymbolSearch()
         {
             return false;
+        }
+
+        public override bool IsValidMethodPointer(ulong pointer)
+        {
+            if (pointer == 0 || sections == null || sections.Count == 0)
+            {
+                return false;
+            }
+            var sec = sections.FirstOrDefault(x => pointer >= x.addr && pointer < x.addr + x.size);
+            if (sec == null || sec.sectname == "__bss" || IsZeroFillSection(sec.flags))
+            {
+                return false;
+            }
+            var hasExec = sections.Any(x => x.flags == 0x80000400);
+            if (hasExec && sec.flags != 0x80000400)
+            {
+                return false;
+            }
+            if ((ulong)sec.offset >= (ulong)Length)
+            {
+                return false;
+            }
+            var delta = pointer - sec.addr;
+            if (delta >= (ulong)Length - (ulong)sec.offset)
+            {
+                return false;
+            }
+            return true;
         }
 
         public override ulong GetRVA(ulong pointer)

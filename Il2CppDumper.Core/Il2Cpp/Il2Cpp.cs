@@ -252,20 +252,41 @@ namespace Il2CppDumper
                     codeGenModules[moduleName] = codeGenModule;
                     AddNormalizedModule(normalizedCodeGenModules, moduleName, codeGenModule);
                     ulong[] methodPointers;
-                    if (codeGenModule.methodPointers != 0 && TryMapVATR(codeGenModule.methodPointers, out var methodPointersOffset) && methodPointersOffset < Length)
+                    var pointerCount = codeGenModule.methodPointerCount;
+                    if (pointerCount > 0 && pointerCount <= Array.MaxLength &&
+                        (ulong)pointerCount <= ulong.MaxValue / PointerSize)
                     {
-                        try
+                        var byteSize = (ulong)pointerCount * PointerSize;
+                        if (codeGenModule.methodPointers != 0 && TryMapContiguousRange(codeGenModule.methodPointers, byteSize, out var methodPointersOffset))
                         {
-                            methodPointers = ReadClassArray<ulong>(methodPointersOffset, codeGenModule.methodPointerCount);
+                            try
+                            {
+                                methodPointers = ReadClassArray<ulong>(methodPointersOffset, pointerCount);
+                            }
+                            catch
+                            {
+                                methodPointers = new ulong[pointerCount];
+                                RecordMappingFailure("MethodPointersTable", codeGenModule.methodPointers, "table range could not be read from stream", member: moduleName);
+                            }
                         }
-                        catch
+                        else if (codeGenModule.methodPointers != 0)
                         {
-                            methodPointers = new ulong[codeGenModule.methodPointerCount];
+                            methodPointers = new ulong[pointerCount];
+                            RecordMappingFailure("MethodPointersTable", codeGenModule.methodPointers, "table range crosses section boundary or exceeds stream bounds", member: moduleName);
                         }
+                        else
+                        {
+                            methodPointers = new ulong[pointerCount];
+                        }
+                    }
+                    else if (pointerCount > 0)
+                    {
+                        methodPointers = Array.Empty<ulong>();
+                        RecordMappingFailure("MethodPointersTable", codeGenModule.methodPointers, "table count is invalid or exceeds addressable bounds", member: moduleName);
                     }
                     else
                     {
-                        methodPointers = new ulong[codeGenModule.methodPointerCount];
+                        methodPointers = Array.Empty<ulong>();
                     }
                     codeGenModuleMethodPointers[moduleName] = methodPointers;
                     AddNormalizedModule(normalizedCodeGenModuleMethodPointers, moduleName, methodPointers);
@@ -322,7 +343,42 @@ namespace Il2CppDumper
             }
             else
             {
-                methodPointers = MapVATR<ulong>(pCodeRegistration.methodPointers, pCodeRegistration.methodPointersCount);
+                var pointerCount = pCodeRegistration.methodPointersCount;
+                if (pointerCount > 0 && pointerCount <= (ulong)Array.MaxLength &&
+                    pointerCount <= ulong.MaxValue / PointerSize)
+                {
+                    var byteSize = pointerCount * PointerSize;
+                    if (pCodeRegistration.methodPointers != 0 && TryMapContiguousRange(pCodeRegistration.methodPointers, byteSize, out var methodPointersOffset))
+                    {
+                        try
+                        {
+                            methodPointers = ReadClassArray<ulong>(methodPointersOffset, pointerCount);
+                        }
+                        catch
+                        {
+                            methodPointers = new ulong[pointerCount];
+                            RecordMappingFailure("MethodPointersTable", pCodeRegistration.methodPointers, "table range could not be read from stream", member: "global");
+                        }
+                    }
+                    else if (pCodeRegistration.methodPointers != 0)
+                    {
+                        methodPointers = new ulong[pointerCount];
+                        RecordMappingFailure("MethodPointersTable", pCodeRegistration.methodPointers, "table range crosses section boundary or exceeds stream bounds", member: "global");
+                    }
+                    else
+                    {
+                        methodPointers = new ulong[pointerCount];
+                    }
+                }
+                else if (pointerCount > 0)
+                {
+                    methodPointers = Array.Empty<ulong>();
+                    RecordMappingFailure("MethodPointersTable", pCodeRegistration.methodPointers, "table count is invalid or exceeds addressable bounds", member: "global");
+                }
+                else
+                {
+                    methodPointers = Array.Empty<ulong>();
+                }
             }
             if (Version >= 108 && metadata != null)
             {
@@ -459,8 +515,62 @@ namespace Il2CppDumper
             return normalizedRGCTXDataDictionary != null && normalizedRGCTXDataDictionary.TryGetValue(NormalizeModuleName(imageName), out rgctxs);
         }
 
+        private readonly HashSet<string> reportedMappingFailureKeys = new(StringComparer.Ordinal);
+        public List<RunManifestWarningItem> MethodMappingFailures { get; } = new();
+        public int MethodMappingFailuresCount => MethodMappingFailures.Count;
+
+        public void RecordMappingFailure(string origin, ulong candidatePointer, string reason, int? typeDefIndex = null, string typeName = null, string member = null)
+        {
+            var key = $"{origin}|{candidatePointer}|{member}";
+            if (reportedMappingFailureKeys.Add(key))
+            {
+                var detail = $"candidate pointer 0x{candidatePointer:X} {reason}";
+                var item = new RunManifestWarningItem
+                {
+                    Category = "methodMapping",
+                    TypeDefIndex = typeDefIndex,
+                    TypeName = typeName,
+                    Member = member,
+                    RawBytes = $"0x{candidatePointer:X}",
+                    Count = 1,
+                    Detail = $"{origin}: {detail}"
+                };
+                MethodMappingFailures.Add(item);
+                CoreLogger.LogWarning($"WARNING: Method mapping failure in {origin}: {member ?? $"0x{candidatePointer:X}"} - {detail}");
+            }
+        }
+
+        public bool IsMethodAbstract(Il2CppMethodDefinition methodDef)
+        {
+            if (methodDef == null)
+            {
+                return false;
+            }
+            return (methodDef.flags & Il2CppConstants.METHOD_ATTRIBUTE_ABSTRACT) != 0;
+        }
+
+        public virtual bool IsValidMethodPointer(ulong pointer)
+        {
+            if (pointer == 0)
+            {
+                return false;
+            }
+            try
+            {
+                return MapVATR(pointer) > 0 || pointer < (ulong)Length;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public ulong GetMethodPointer(string imageName, Il2CppMethodDefinition methodDef)
         {
+            if (IsMethodAbstract(methodDef))
+            {
+                return 0;
+            }
             if (Version >= 24.2)
             {
                 if (methodDef.methodIndex < 0)
@@ -477,14 +587,56 @@ namespace Il2CppDumper
                 {
                     return 0;
                 }
-                return ptrs[methodPointerIndex - 1];
+                var ptr = ptrs[methodPointerIndex - 1];
+                if (ptr == 0)
+                {
+                    return 0;
+                }
+                if (!IsValidMethodPointer(ptr))
+                {
+                    var typeDef = (metadata != null && methodDef.declaringType >= 0 && methodDef.declaringType < metadata.typeDefs.Length)
+                        ? metadata.typeDefs[methodDef.declaringType]
+                        : null;
+                    var tName = typeDef != null && metadata != null ? metadata.GetStringFromIndex(typeDef.nameIndex) : null;
+                    var mName = metadata != null ? metadata.GetStringFromIndex(methodDef.nameIndex) : null;
+                    RecordMappingFailure(
+                        "GetMethodPointer",
+                        ptr,
+                        "is outside executable sections or stream bounds",
+                        typeDefIndex: methodDef.declaringType,
+                        typeName: tName,
+                        member: mName != null && tName != null ? $"{tName}.{mName}" : null);
+                    return 0;
+                }
+                return ptr;
             }
             else
             {
                 var methodIndex = methodDef.methodIndex;
-                if (methodIndex >= 0 && methodIndex < methodPointers.Length)
+                if (methodIndex >= 0 && methodPointers != null && methodIndex < methodPointers.Length)
                 {
-                    return methodPointers[methodIndex];
+                    var ptr = methodPointers[methodIndex];
+                    if (ptr == 0)
+                    {
+                        return 0;
+                    }
+                    if (!IsValidMethodPointer(ptr))
+                    {
+                        var typeDef = (metadata != null && methodDef.declaringType >= 0 && methodDef.declaringType < metadata.typeDefs.Length)
+                            ? metadata.typeDefs[methodDef.declaringType]
+                            : null;
+                        var tName = typeDef != null && metadata != null ? metadata.GetStringFromIndex(typeDef.nameIndex) : null;
+                        var mName = metadata != null ? metadata.GetStringFromIndex(methodDef.nameIndex) : null;
+                        RecordMappingFailure(
+                            "GetMethodPointer",
+                            ptr,
+                            "is outside executable sections or stream bounds",
+                            typeDefIndex: methodDef.declaringType,
+                            typeName: tName,
+                            member: mName != null && tName != null ? $"{tName}.{mName}" : null);
+                        return 0;
+                    }
+                    return ptr;
                 }
             }
             return 0;
@@ -505,6 +657,10 @@ namespace Il2CppDumper
             try
             {
                 offset = MapVATR(addr);
+                if (this is PE && offset == 0)
+                {
+                    return false;
+                }
                 return true;
             }
             catch
@@ -512,6 +668,19 @@ namespace Il2CppDumper
                 offset = 0;
                 return false;
             }
+        }
+
+        public virtual bool TryMapContiguousRange(ulong addr, ulong byteSize, out ulong offset)
+        {
+            if (TryMapVATR(addr, out offset))
+            {
+                if (offset <= (ulong)Length && byteSize <= (ulong)Length - offset)
+                {
+                    return true;
+                }
+            }
+            offset = 0;
+            return false;
         }
 
         private static void AddNormalizedModule<T>(Dictionary<string, T> dictionary, string moduleName, T value)

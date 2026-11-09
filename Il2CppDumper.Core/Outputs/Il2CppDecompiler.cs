@@ -308,7 +308,7 @@ namespace Il2CppDumper
                                 if (config.DumpMethodOffset)
                                 {
                                     var methodPointer = il2Cpp.GetMethodPointer(imageName, methodDef);
-                                    if (!isAbstract && methodPointer > 0)
+                                    if (methodPointer > 0)
                                     {
                                         var fixedMethodPointer = il2Cpp.GetRVA(methodPointer);
                                         writer.Write("\t// RVA: 0x{0:X} Offset: 0x{1:X} VA: 0x{2:X}", fixedMethodPointer, il2Cpp.MapVATR(methodPointer), methodPointer);
@@ -421,7 +421,7 @@ namespace Il2CppDumper
                                     {
                                         writer.Write("\t|\n");
                                         var genericMethodPointer = group.Key;
-                                        if (genericMethodPointer > 0)
+                                        if (genericMethodPointer > 0 && il2Cpp.IsValidMethodPointer(genericMethodPointer))
                                         {
                                             var fixedPointer = il2Cpp.GetRVA(genericMethodPointer);
                                             writer.Write($"\t|-RVA: 0x{fixedPointer:X} Offset: 0x{il2Cpp.MapVATR(genericMethodPointer):X} VA: 0x{genericMethodPointer:X}\n");
@@ -429,6 +429,15 @@ namespace Il2CppDumper
                                         else
                                         {
                                             writer.Write("\t|-RVA: -1 Offset: -1\n");
+                                            if (genericMethodPointer > 0)
+                                            {
+                                                foreach (var methodSpec in group)
+                                                {
+                                                    (var methodSpecTypeName, var methodSpecMethodName) = executor.GetMethodSpecName(methodSpec, true);
+                                                    var methodFullName = methodSpecTypeName + "$$" + methodSpecMethodName;
+                                                    il2Cpp.RecordMappingFailure("GenericMethodInstance", genericMethodPointer, "is outside executable sections or stream bounds", member: methodFullName);
+                                                }
+                                            }
                                         }
                                         foreach (var methodSpec in group)
                                         {

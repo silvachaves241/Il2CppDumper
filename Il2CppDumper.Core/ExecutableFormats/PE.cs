@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -57,12 +57,72 @@ namespace Il2CppDumper
         public override ulong MapVATR(ulong absAddr)
         {
             var addr = absAddr - ImageBase;
-            var section = sections.FirstOrDefault(x => addr >= x.VirtualAddress && addr <= x.VirtualAddress + x.VirtualSize);
+            var section = sections.FirstOrDefault(x =>
+            {
+                var maxLen = Math.Min(x.VirtualSize, x.SizeOfRawData);
+                return addr >= x.VirtualAddress && addr < x.VirtualAddress + maxLen;
+            });
             if (section == null)
             {
                 return 0ul;
             }
-            return addr - section.VirtualAddress + section.PointerToRawData;
+            if ((ulong)section.PointerToRawData >= (ulong)Length)
+            {
+                return 0ul;
+            }
+            var delta = addr - section.VirtualAddress;
+            if (delta >= (ulong)Length - (ulong)section.PointerToRawData)
+            {
+                return 0ul;
+            }
+            return (ulong)section.PointerToRawData + delta;
+        }
+
+        public override bool TryMapContiguousRange(ulong absAddr, ulong byteSize, out ulong offset)
+        {
+            offset = 0;
+            if (absAddr < ImageBase)
+            {
+                return false;
+            }
+            var addr = absAddr - ImageBase;
+            var section = sections.FirstOrDefault(x =>
+            {
+                var maxLen = Math.Min(x.VirtualSize, x.SizeOfRawData);
+                return addr >= x.VirtualAddress && addr < x.VirtualAddress + maxLen;
+            });
+            if (section == null)
+            {
+                return false;
+            }
+            var backedLen = Math.Min(section.VirtualSize, section.SizeOfRawData);
+            var sectionEndRva = section.VirtualAddress + backedLen;
+            if (addr >= sectionEndRva)
+            {
+                return false;
+            }
+            var remainingSectionBytes = sectionEndRva - addr;
+            if (byteSize > remainingSectionBytes)
+            {
+                return false;
+            }
+            if ((ulong)section.PointerToRawData >= (ulong)Length)
+            {
+                return false;
+            }
+            var delta = addr - section.VirtualAddress;
+            if (delta >= (ulong)Length - (ulong)section.PointerToRawData)
+            {
+                return false;
+            }
+            var rawOffset = (ulong)section.PointerToRawData + delta;
+            var remainingStreamBytes = (ulong)Length - rawOffset;
+            if (byteSize > remainingStreamBytes)
+            {
+                return false;
+            }
+            offset = rawOffset;
+            return true;
         }
 
         public override ulong MapRTVA(ulong addr)
@@ -91,6 +151,39 @@ namespace Il2CppDumper
         public override bool SymbolSearch()
         {
             return false;
+        }
+
+        public override bool IsValidMethodPointer(ulong pointer)
+        {
+            if (pointer == 0 || sections == null || sections.Length == 0 || pointer < ImageBase)
+            {
+                return false;
+            }
+            var addr = pointer - ImageBase;
+            var section = sections.FirstOrDefault(x =>
+            {
+                var maxLen = Math.Min(x.VirtualSize, x.SizeOfRawData);
+                return addr >= x.VirtualAddress && addr < x.VirtualAddress + maxLen;
+            });
+            if (section == null)
+            {
+                return false;
+            }
+            var hasExecSections = sections.Any(x => (x.Characteristics & 0x20000000) != 0);
+            if (hasExecSections && (section.Characteristics & 0x20000000) == 0)
+            {
+                return false;
+            }
+            if ((ulong)section.PointerToRawData >= (ulong)Length)
+            {
+                return false;
+            }
+            var delta = addr - section.VirtualAddress;
+            if (delta >= (ulong)Length - (ulong)section.PointerToRawData)
+            {
+                return false;
+            }
+            return true;
         }
 
         public override ulong GetRVA(ulong pointer)

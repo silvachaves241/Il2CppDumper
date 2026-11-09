@@ -701,6 +701,14 @@ namespace Il2CppDumper.Core
             {
                 CoreLogger.LogWarning($"WARNING: Constant default value decoding completed with {executor.ConstantDecodeFailedCount} failure(s) taking the metadata-offset fallback path. First failure: {executor.ConstantDecodeFirstFailureDetails}");
             }
+            manifestWarnings.ByCategory.MethodMapping = il2Cpp.MethodMappingFailuresCount;
+            foreach (var failure in il2Cpp.MethodMappingFailures)
+            {
+                if (!manifestWarnings.Items.Contains(failure))
+                {
+                    manifestWarnings.Items.Add(failure);
+                }
+            }
             manifestWarnings.SyncFromItems();
             errorMessage = errors.Count > 0 ? string.Join(Environment.NewLine, errors) : null;
             return success;

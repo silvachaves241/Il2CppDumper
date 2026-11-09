@@ -961,7 +961,9 @@ namespace Il2CppDumper
         {
             if (Version > 24)
             {
-                if (attributeTypeRangesDic[imageDef].TryGetValue(token, out var index))
+                if (attributeTypeRangesDic != null &&
+                    attributeTypeRangesDic.TryGetValue(imageDef, out var dic) &&
+                    dic.TryGetValue(token, out var index))
                 {
                     return index;
                 }
