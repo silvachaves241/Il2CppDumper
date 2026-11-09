@@ -1552,5 +1552,203 @@ namespace Il2CppDumper.Tests
             Assert.Contains(warnings2, w => w.Contains("Cyclic fallback parent detected for 'AsyncPolicy'") && w.Contains("PolicyBuilder"));
             Assert.Contains(warnings2, w => w.Contains("Cyclic fallback parent detected for 'PolicyBuilder'") && w.Contains("AsyncPolicy"));
         }
+
+        [Fact]
+        public void PollyDump_DeepDeclaredCycle_30000Definitions_ExecutesIterativelyWithoutStackOverflow()
+        {
+            // Reproduces issue 1:
+            // Synthetic cycle of 30,000 definitions executed in a separate thread with a 1 MiB stack size.
+            // The iterative DFS on declared edges must evaluate without StackOverflowException,
+            // preserving all definitions as unparented root definitions.
+            const int count = 30000;
+            var m = CreateEmptyMetadata();
+            uint strPos = 0;
+            AddString(m, "", ref strPos);
+            var imgName = AddString(m, "LargeAssembly.dll", ref strPos);
+            var asmName = AddString(m, "LargeAssembly", ref strPos);
+            var nsName = AddString(m, "LargeNs", ref strPos);
+
+            m.assemblyDefs = new[]
+            {
+                new Il2CppAssemblyDefinition { aname = new Il2CppAssemblyNameDefinition { nameIndex = asmName } }
+            };
+            m.imageDefs = new[]
+            {
+                new Il2CppImageDefinition { nameIndex = imgName, assemblyIndex = 0, typeStart = 0, typeCount = count }
+            };
+
+            var typeDefs = new Il2CppTypeDefinition[count];
+            var il2CppTypes = new Il2CppType[count];
+            var typeName = AddString(m, "RingType", ref strPos);
+
+            for (int i = 0; i < count; i++)
+            {
+                int nextIndex = (i + 1) % count; // Cycle of length 30,000!
+                typeDefs[i] = new Il2CppTypeDefinition
+                {
+                    nameIndex = typeName,
+                    namespaceIndex = nsName,
+                    declaringTypeIndex = nextIndex,
+                    parentIndex = -1,
+                    genericContainerIndex = -1,
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                };
+                il2CppTypes[i] = new Il2CppType
+                {
+                    type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS,
+                    data = new Il2CppType.Union { dummy = (ulong)i }
+                };
+            }
+
+            m.typeDefs = typeDefs;
+            m.nestedTypeIndices = Array.Empty<int>();
+            m.genericContainers = Array.Empty<Il2CppGenericContainer>();
+            m.genericParameters = Array.Empty<Il2CppGenericParameter>();
+            m.methodDefs = Array.Empty<Il2CppMethodDefinition>();
+            m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
+            m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
+            m.fieldDefs = Array.Empty<Il2CppFieldDefinition>();
+
+            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[8192]), 0)
+            {
+                Version = 16,
+                methodPointers = Array.Empty<ulong>(),
+                types = il2CppTypes
+            };
+
+            using (m) using (il2Cpp)
+            {
+                var exec = new Il2CppExecutor(m, il2Cpp);
+                Exception? threadException = null;
+                Il2CppTypeDefinition? resolvedParent = null;
+
+                // Execute on a thread with a 1 MiB stack size (standard stack size)
+                var thread = new System.Threading.Thread(() =>
+                {
+                    try
+                    {
+                        resolvedParent = exec.GetParentTypeDefinition(typeDefs[0]);
+                    }
+                    catch (Exception ex)
+                    {
+                        threadException = ex;
+                    }
+                }, 1024 * 1024);
+
+                thread.Start();
+                thread.Join();
+
+                Assert.Null(threadException);
+                Assert.Null(resolvedParent); // Cyclic declared chain successfully detected and preserved at root
+            }
+        }
+
+        [Fact]
+        public void PollyDump_CyclicDeclaredParentsWithMutualFallbackCycle_DiagnosticsMatchFinalExportedRoots()
+        {
+            // Reproduces issue 2:
+            // AsyncPolicy and PolicyBuilder declare themselves (declaringTypeIndex points to self, a cyclic declared parent).
+            // Each offers the other as a candidate parent in nestedTypeIndices (mutual fallback cycle).
+            // In the final dump, both definitions MUST be at root (parent = null).
+            // The emitted diagnostic warnings MUST correspond strictly to the exported outcome:
+            // - MUST NOT announce "Falling back to candidate parent".
+            // - MUST announce "Cyclic declaring type detected for ... with no unique acyclic parent candidate. Preserving as unparented root definition."
+            var m = CreateEmptyMetadata();
+            uint strPos = 0;
+            AddString(m, "", ref strPos);
+            var imgName = AddString(m, "Polly.dll", ref strPos);
+            var asmName = AddString(m, "Polly", ref strPos);
+            var nsPolly = AddString(m, "Polly", ref strPos);
+
+            var asyncPolicyName = AddString(m, "AsyncPolicy", ref strPos);
+            var policyBuilderName = AddString(m, "PolicyBuilder", ref strPos);
+
+            m.assemblyDefs = new[]
+            {
+                new Il2CppAssemblyDefinition { aname = new Il2CppAssemblyNameDefinition { nameIndex = asmName } }
+            };
+            m.imageDefs = new[]
+            {
+                new Il2CppImageDefinition { nameIndex = imgName, assemblyIndex = 0, typeStart = 0, typeCount = 2 }
+            };
+
+            // Index 0: AsyncPolicy (declaringTypeIndex = 0, self-reference)
+            // Index 1: PolicyBuilder (declaringTypeIndex = 1, self-reference)
+            var typeDefs = new[]
+            {
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = asyncPolicyName,
+                    namespaceIndex = nsPolly,
+                    declaringTypeIndex = 0, // Self-cycle
+                    parentIndex = -1,
+                    genericContainerIndex = -1,
+                    nestedTypesStart = 0,
+                    nested_type_count = 1, // Claims PolicyBuilder (1)
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                },
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = policyBuilderName,
+                    namespaceIndex = nsPolly,
+                    declaringTypeIndex = 1, // Self-cycle
+                    parentIndex = -1,
+                    genericContainerIndex = -1,
+                    nestedTypesStart = 1,
+                    nested_type_count = 1, // Claims AsyncPolicy (0)
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                }
+            };
+
+            m.typeDefs = typeDefs;
+            m.nestedTypeIndices = new[] { 1, 0 }; // Mutual fallback candidates
+            m.genericParameters = Array.Empty<Il2CppGenericParameter>();
+            m.genericContainers = Array.Empty<Il2CppGenericContainer>();
+            m.methodDefs = Array.Empty<Il2CppMethodDefinition>();
+            m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
+            m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
+            m.fieldDefs = Array.Empty<Il2CppFieldDefinition>();
+
+            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[8192]), 0)
+            {
+                Version = 16,
+                methodPointers = Array.Empty<ulong>(),
+                types = new[]
+                {
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 0 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 1 } }
+                }
+            };
+
+            using (m) using (il2Cpp)
+            {
+                var exec = new Il2CppExecutor(m, il2Cpp);
+                var warnings = new List<string>();
+                JsonDumpModel model;
+                using var sw = new StringWriter();
+                using (CoreLogger.Scope(sw, warnings))
+                {
+                    var parentAsync = exec.GetParentTypeDefinition(typeDefs[0]);
+                    var parentPolicy = exec.GetParentTypeDefinition(typeDefs[1]);
+
+                    Assert.Null(parentAsync);
+                    Assert.Null(parentPolicy);
+
+                    model = JsonDumpGenerator.Create(exec, new Config());
+                }
+
+                // Both definitions must be roots in the exported model
+                Assert.Equal(2, model.types.Count);
+                Assert.Contains(model.types, t => t.fullName == "Polly.AsyncPolicy");
+                Assert.Contains(model.types, t => t.fullName == "Polly.PolicyBuilder");
+
+                // Diagnostics MUST NOT announce a fallback that was discarded
+                Assert.DoesNotContain(warnings, w => w.Contains("Falling back to candidate parent"));
+
+                // Diagnostics MUST announce preservation as unparented root
+                Assert.Contains(warnings, w => w.Contains("Cyclic declaring type detected for 'AsyncPolicy' with no unique acyclic parent candidate. Preserving as unparented root definition."));
+                Assert.Contains(warnings, w => w.Contains("Cyclic declaring type detected for 'PolicyBuilder' with no unique acyclic parent candidate. Preserving as unparented root definition."));
+            }
+        }
     }
 }
