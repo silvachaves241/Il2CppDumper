@@ -215,6 +215,11 @@ namespace Il2CppDumper
             {
                 return false;
             }
+            var offset = pointer - segment.MemoryOffset + segment.FileOffset;
+            if (offset >= Length)
+            {
+                return false;
+            }
             return true;
         }
 

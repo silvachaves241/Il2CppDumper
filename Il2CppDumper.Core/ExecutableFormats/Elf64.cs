@@ -266,6 +266,11 @@ namespace Il2CppDumper
             {
                 return false;
             }
+            var offset = pointer - phdr.p_vaddr + phdr.p_offset;
+            if (offset >= Length)
+            {
+                return false;
+            }
             return true;
         }
 

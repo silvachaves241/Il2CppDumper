@@ -308,7 +308,7 @@ namespace Il2CppDumper
                                 if (config.DumpMethodOffset)
                                 {
                                     var methodPointer = il2Cpp.GetMethodPointer(imageName, methodDef);
-                                    if (!isAbstract && methodPointer > 0 && il2Cpp.IsValidMethodPointer(methodPointer))
+                                    if (methodPointer > 0)
                                     {
                                         var fixedMethodPointer = il2Cpp.GetRVA(methodPointer);
                                         writer.Write("\t// RVA: 0x{0:X} Offset: 0x{1:X} VA: 0x{2:X}", fixedMethodPointer, il2Cpp.MapVATR(methodPointer), methodPointer);

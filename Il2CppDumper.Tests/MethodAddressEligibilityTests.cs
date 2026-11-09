@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using Il2CppDumper;
@@ -12,12 +13,12 @@ namespace Il2CppDumper.Tests
 {
     public class MethodAddressEligibilityTests
     {
-        private static (byte[] peBytes, ulong validCodeVa, ulong dataVa) CreateTestPe()
+        private static (byte[] peBytes, ulong validCodeVa, ulong dataVa) CreateTestPe(uint textVirtualSize = 512, uint textRawSize = 512)
         {
             var sections = new (string, byte[], uint, uint)[]
             {
-                (".text", new byte[512], 512, 0x60000020), // RVA 0x1000, raw 0x400, executable
-                (".data", new byte[512], 512, 0xC0000040)  // RVA 0x2000, raw 0x600, non-executable data
+                (".text", new byte[textRawSize], textVirtualSize, 0x60000020), // RVA 0x1000, executable
+                (".data", new byte[512], 512, 0xC0000040)                      // RVA 0x2000, non-executable data
             };
             var peBytes = ProtectionReportTests.CreateSyntheticPe(sections);
             // ImageBase in CreateSyntheticPe is 0x180000000
@@ -135,7 +136,7 @@ namespace Il2CppDumper.Tests
             pe.SetProperties(29, 0, metadata);
             var executor = new Il2CppExecutor(metadata, pe);
 
-            // 1. Direct engine check: GetMethodPointer must return 0 for abstract/interface declarations
+            // 1. Direct engine check: GetMethodPointer must return 0 for abstract declarations
             var pointer = pe.GetMethodPointer("gdio.plugin.serializer.dll", metadata.methodDefs[0]);
             Assert.Equal(0ul, pointer);
 
@@ -143,7 +144,7 @@ namespace Il2CppDumper.Tests
             Directory.CreateDirectory(tempDir);
             try
             {
-                // 2. StructGenerator: script.json must NOT contain ScriptMethod entry for abstract method
+                // 2. StructGenerator: script.json must NOT contain ScriptMethod entry or invalid Address
                 var structGenerator = new StructGenerator(executor);
                 structGenerator.WriteScript(tempDir + Path.DirectorySeparatorChar);
 
@@ -157,6 +158,11 @@ namespace Il2CppDumper.Tests
                         .Where(x => x.GetProperty("Name").GetString()!.Contains("SupportedTypes"))
                         .ToList();
                     Assert.Empty(matching);
+
+                    // P1: script.json.Addresses must also be filtered by IsValidMethodPointer
+                    var addresses = doc.RootElement.GetProperty("Addresses").EnumerateArray().Select(x => x.GetUInt64()).ToHashSet();
+                    Assert.DoesNotContain(invalidCandidatePointer, addresses);
+                    Assert.DoesNotContain(pe.GetRVA(invalidCandidatePointer), addresses);
                 }
 
                 // 3. Il2CppDecompiler: dump.cs must emit '// RVA: -1 Offset: -1'
@@ -183,6 +189,155 @@ namespace Il2CppDumper.Tests
                     try { Directory.Delete(tempDir, true); } catch { }
                 }
             }
+        }
+
+        [Fact]
+        public void InterfaceMethod_WithConcreteBody_E_g_StaticConstructor_IsExportedConsistently_AcrossAllOutputs()
+        {
+            // P1: Interface type does NOT imply abstract method; non-abstract interface methods (e.g. .cctor) have valid bodies
+            var (peBytes, validCodeVa, _) = CreateTestPe();
+
+            using var pe = new PE(new MemoryStream(peBytes));
+            pe.Version = 29;
+            pe.types = new[] { new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VOID } };
+            pe.codeGenModuleMethodPointers = new Dictionary<string, ulong[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["InterfaceModule.dll"] = new[] { validCodeVa } // 0x180001000
+            };
+
+            using var metadata = CreateTestMetadata(
+                "InterfaceModule.dll",
+                "InterfaceModule.IFoo",
+                isInterface: true,
+                new[] { (".cctor", false, 0x06000001u) }); // non-abstract method on interface
+
+            pe.SetProperties(29, 0, metadata);
+            var executor = new Il2CppExecutor(metadata, pe);
+
+            // Engine check: non-abstract method on interface resolves valid pointer
+            var pointer = pe.GetMethodPointer("InterfaceModule.dll", metadata.methodDefs[0]);
+            Assert.Equal(validCodeVa, pointer);
+
+            var tempDir = Path.Combine(Path.GetTempPath(), "issue88_interface_concrete_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var structGenerator = new StructGenerator(executor);
+                structGenerator.WriteScript(tempDir + Path.DirectorySeparatorChar);
+
+                var scriptJsonPath = Path.Combine(tempDir, "script.json");
+                using (var doc = JsonDocument.Parse(File.ReadAllText(scriptJsonPath)))
+                {
+                    var scriptMethods = doc.RootElement.GetProperty("ScriptMethod");
+                    var matching = scriptMethods.EnumerateArray()
+                        .Where(x => x.GetProperty("Name").GetString()!.Contains(".cctor"))
+                        .ToList();
+                    Assert.Single(matching);
+                    Assert.Equal(0x1000ul, matching[0].GetProperty("Address").GetUInt64());
+
+                    var addresses = doc.RootElement.GetProperty("Addresses").EnumerateArray().Select(x => x.GetUInt64()).ToHashSet();
+                    Assert.Contains(0x1000ul, addresses);
+                }
+
+                var decompiler = new Il2CppDecompiler(executor);
+                decompiler.Decompile(new Config { DumpMethod = true, DumpMethodOffset = true, DumpAttribute = false }, tempDir);
+
+                var dumpCsText = File.ReadAllText(Path.Combine(tempDir, "dump.cs"));
+                Assert.Contains("// RVA: 0x1000 Offset: 0x400 VA: 0x180001000", dumpCsText);
+
+                var dummyGenerator = new DummyAssemblyGenerator(executor, false);
+                var assembly = dummyGenerator.Assemblies.First(a => a.MainModule.Name == "InterfaceModule.dll");
+                var method = assembly.MainModule.Types.First(t => t.Name == "InterfaceModule.IFoo").Methods[0];
+                var addrAttr = method.CustomAttributes.FirstOrDefault(a => a.AttributeType.Name == "AddressAttribute");
+                Assert.NotNull(addrAttr);
+                Assert.Equal("0x1000", addrAttr.Fields.First(f => f.Name == "RVA").Argument.Value);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void PE_Disk_CandidatePointerBeyondVirtualSize_IsRejected_AndMapVATRReturnsZero()
+        {
+            // P2: .text at RVA 0x1000 with VirtualSize=0x100 and SizeOfRawData=0x200
+            // Candidate RVA 0x1180 is past VirtualSize (0x1000 + 0x100 = 0x1100)
+            var (peBytes, _, _) = CreateTestPe(textVirtualSize: 0x100, textRawSize: 0x200);
+
+            using var pe = new PE(new MemoryStream(peBytes));
+            var candidateVa = 0x180001180ul; // RVA 0x1180
+
+            Assert.False(pe.IsValidMethodPointer(candidateVa));
+            Assert.Equal(0ul, pe.MapVATR(candidateVa));
+        }
+
+        [Fact]
+        public void PE_DumpedMemory_StreamTruncated_CandidateOffsetOutsideStream_IsRejected()
+        {
+            // P2: Memory dump loaded via LoadFromMemory, where stream length is 0x800 bytes
+            // Candidate pointer at RVA 0x1000 translates to offset 0x1000, which is >= stream Length (0x800)
+            var (peBytes, _, _) = CreateTestPe(textVirtualSize: 0x200, textRawSize: 0x200);
+
+            // Truncate stream to 0x800 bytes
+            var truncatedBytes = new byte[0x800];
+            Array.Copy(peBytes, truncatedBytes, Math.Min(peBytes.Length, 0x800));
+
+            using var pe = new PE(new MemoryStream(truncatedBytes));
+            pe.LoadFromMemory(0x180000000ul);
+
+            var candidateVa = 0x180001000ul; // RVA 0x1000 -> raw offset 0x1000 >= 0x800
+
+            Assert.False(pe.IsValidMethodPointer(candidateVa));
+            Assert.Equal(0ul, pe.MapVATR(candidateVa));
+        }
+
+        [Fact]
+        public void AddMetadataUsageMethodRef_WithInvalidGenericMethodBodyPointer_PreservesSlotAddressAndClearsMethodAddress()
+        {
+            // P2: AddMetadataUsageMethodRef with candidate VA 0x180900000 outside PE bounds
+            var (peBytes, validCodeVa, _) = CreateTestPe();
+
+            using var pe = new PE(new MemoryStream(peBytes));
+            pe.Version = 29;
+            pe.types = new[] { new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VOID } };
+
+            var invalidGenericMethodPointer = 0x180900000ul;
+            var testMethodSpec = new Il2CppMethodSpec { methodDefinitionIndex = 0, classIndexIndex = -1, methodIndexIndex = -1 };
+            pe.methodSpecs = new[] { testMethodSpec };
+            pe.methodSpecGenericMethodPointers = new Dictionary<Il2CppMethodSpec, ulong>
+            {
+                [testMethodSpec] = invalidGenericMethodPointer
+            };
+
+            using var metadata = CreateTestMetadata(
+                "TestModule.dll",
+                "TestNamespace.GenericContainer",
+                isInterface: false,
+                new[] { ("GenericMethod", false, 0x06000001u) });
+
+            pe.SetProperties(29, 0, metadata);
+            var executor = new Il2CppExecutor(metadata, pe);
+
+            var structGenerator = new StructGenerator(executor);
+            var scriptJson = new ScriptJson();
+
+            var addMethodRefMethod = typeof(StructGenerator).GetMethod("AddMetadataUsageMethodRef", BindingFlags.NonPublic | BindingFlags.Instance);
+            Assert.NotNull(addMethodRefMethod);
+
+            var usageSlotVa = 0x180001020ul; // Valid RVA 0x1020 in .text
+            addMethodRefMethod.Invoke(structGenerator, new object[] { scriptJson, 0u, usageSlotVa });
+
+            Assert.Single(scriptJson.ScriptMetadataMethod);
+            var entry = scriptJson.ScriptMetadataMethod[0];
+
+            // Slot address must be preserved (RVA 0x1020)
+            Assert.Equal(0x1020ul, entry.Address);
+            // Native method body pointer must be cleared to 0 (contract absence value) because 0x180900000 is invalid
+            Assert.Equal(0ul, entry.MethodAddress);
         }
 
         [Fact]
@@ -229,6 +384,9 @@ namespace Il2CppDumper.Tests
                         .ToList();
                     Assert.Single(matching);
                     Assert.Equal(0x1000ul, matching[0].GetProperty("Address").GetUInt64());
+
+                    var addresses = doc.RootElement.GetProperty("Addresses").EnumerateArray().Select(x => x.GetUInt64()).ToHashSet();
+                    Assert.Contains(0x1000ul, addresses);
                 }
 
                 // 3. Il2CppDecompiler: dump.cs contains RVA: 0x1000 Offset: 0x400 VA: 0x180001000
@@ -332,7 +490,11 @@ namespace Il2CppDumper.Tests
         {
             var (peBytes, _, _) = CreateTestPe();
 
-            using var pe = new PE(new MemoryStream(peBytes));
+            // In a dumped binary, memory spans virtual space so bytes are effectively present at RVA 0x1000
+            var dumpedMemoryBytes = new byte[0x2000];
+            Array.Copy(peBytes, dumpedMemoryBytes, peBytes.Length);
+
+            using var pe = new PE(new MemoryStream(dumpedMemoryBytes));
             // Simulate dumped binary loaded at base address 0x200000000
             pe.LoadFromMemory(0x200000000ul);
             pe.Version = 29;
@@ -403,7 +565,7 @@ namespace Il2CppDumper.Tests
             Directory.CreateDirectory(tempDir);
             try
             {
-                // Verify script.json contains NONE of the three declarations in ScriptMethod
+                // Verify script.json contains NONE of the three declarations in ScriptMethod OR in Addresses
                 var structGenerator = new StructGenerator(executor);
                 structGenerator.WriteScript(tempDir + Path.DirectorySeparatorChar);
 
@@ -415,6 +577,13 @@ namespace Il2CppDumper.Tests
                         .Where(x => x.GetProperty("Name").GetString()!.StartsWith("gdio.plugin.serializer.ICustomSerializer$$"))
                         .ToList();
                     Assert.Empty(matched);
+
+                    var addresses = doc.RootElement.GetProperty("Addresses").EnumerateArray().Select(x => x.GetUInt64()).ToHashSet();
+                    foreach (var ptr in candidatePointers)
+                    {
+                        Assert.DoesNotContain(ptr, addresses);
+                        Assert.DoesNotContain(pe.GetRVA(ptr), addresses);
+                    }
                 }
 
                 // Verify dump.cs marks all three as unresolved: // RVA: -1 Offset: -1

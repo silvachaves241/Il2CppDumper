@@ -194,12 +194,17 @@ namespace Il2CppDumper
                 return false;
             }
             var sec = sections.FirstOrDefault(x => pointer >= x.addr && pointer < x.addr + x.size);
-            if (sec == null)
+            if (sec == null || sec.sectname == "__bss")
             {
                 return false;
             }
             var hasExec = sections.Any(x => x.flags == 0x80000400);
             if (hasExec && sec.flags != 0x80000400)
+            {
+                return false;
+            }
+            var offset = pointer - sec.addr + sec.offset;
+            if (offset >= Length)
             {
                 return false;
             }

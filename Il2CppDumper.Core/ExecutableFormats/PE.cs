@@ -57,12 +57,17 @@ namespace Il2CppDumper
         public override ulong MapVATR(ulong absAddr)
         {
             var addr = absAddr - ImageBase;
-            var section = sections.FirstOrDefault(x => addr >= x.VirtualAddress && addr <= x.VirtualAddress + x.VirtualSize);
+            var section = sections.FirstOrDefault(x => addr >= x.VirtualAddress && addr < x.VirtualAddress + x.VirtualSize);
             if (section == null)
             {
                 return 0ul;
             }
-            return addr - section.VirtualAddress + section.PointerToRawData;
+            var offset = addr - section.VirtualAddress + section.PointerToRawData;
+            if (offset >= Length)
+            {
+                return 0ul;
+            }
+            return offset;
         }
 
         public override ulong MapRTVA(ulong addr)
@@ -100,13 +105,18 @@ namespace Il2CppDumper
                 return false;
             }
             var addr = pointer - ImageBase;
-            var section = sections.FirstOrDefault(x => addr >= x.VirtualAddress && addr < x.VirtualAddress + Math.Max(x.VirtualSize, x.SizeOfRawData));
+            var section = sections.FirstOrDefault(x => addr >= x.VirtualAddress && addr < x.VirtualAddress + x.VirtualSize);
             if (section == null)
             {
                 return false;
             }
             var hasExecSections = sections.Any(x => (x.Characteristics & 0x20000000) != 0);
             if (hasExecSections && (section.Characteristics & 0x20000000) == 0)
+            {
+                return false;
+            }
+            var rawOffset = addr - section.VirtualAddress + section.PointerToRawData;
+            if (rawOffset >= Length)
             {
                 return false;
             }

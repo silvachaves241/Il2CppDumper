@@ -95,18 +95,15 @@ namespace Il2CppDumper
                         var i = metadata.GetMethodIndexFromTypeDefinition(typeIndex, methodIndexInType);
                         var methodDef = metadata.methodDefs[i];
                         var methodName = metadata.GetStringFromIndex(methodDef.nameIndex);
-                        var isAbstract = il2Cpp.IsMethodAbstract(methodDef);
-                        if (!isAbstract)
+                        var methodPointer = il2Cpp.GetMethodPointer(imageName, methodDef);
+                        if (methodPointer > 0)
                         {
-                            var methodPointer = il2Cpp.GetMethodPointer(imageName, methodDef);
-                            if (methodPointer > 0 && il2Cpp.IsValidMethodPointer(methodPointer))
-                            {
-                                var methodTypeSignature = new List<Il2CppTypeEnum>();
-                                var scriptMethod = new ScriptMethod();
-                                json.ScriptMethod.Add(scriptMethod);
-                                scriptMethod.Address = il2Cpp.GetRVA(methodPointer);
-                                var methodFullName = typeName + "$$" + methodName;
-                                scriptMethod.Name = methodFullName;
+                            var methodTypeSignature = new List<Il2CppTypeEnum>();
+                            var scriptMethod = new ScriptMethod();
+                            json.ScriptMethod.Add(scriptMethod);
+                            scriptMethod.Address = il2Cpp.GetRVA(methodPointer);
+                            var methodFullName = typeName + "$$" + methodName;
+                            scriptMethod.Name = methodFullName;
 
                                 var methodReturnType = il2Cpp.types[methodDef.returnType];
                                 var returnType = ParseType(methodReturnType);
@@ -148,7 +145,6 @@ namespace Il2CppDumper
                                 scriptMethod.Signature = signature;
                                 scriptMethod.TypeSignature = GetMethodTypeSignature(methodTypeSignature);
                             }
-                        }
                         //泛型实例函数
                         if (il2Cpp.methodDefinitionMethodSpecs.TryGetValue(i, out var methodSpecs))
                         {
@@ -270,8 +266,11 @@ namespace Il2CppDumper
                     orderedPointers.AddRange(il2Cpp.unresolvedVirtualCallPointers);
             }
             //TODO interopData内也包含函数
-            orderedPointers = orderedPointers.Distinct().OrderBy(x => x).ToList();
-            orderedPointers.Remove(0);
+            orderedPointers = orderedPointers
+                .Where(x => x > 0 && il2Cpp.IsValidMethodPointer(x))
+                .Distinct()
+                .OrderBy(x => x)
+                .ToList();
             json.Addresses = new ulong[orderedPointers.Count];
             for (int i = 0; i < orderedPointers.Count; i++)
             {
@@ -517,15 +516,11 @@ namespace Il2CppDumper
             json.ScriptMetadataMethod.Add(scriptMetadataMethod);
             scriptMetadataMethod.Address = il2Cpp.GetRVA(address);
             scriptMetadataMethod.Name = "Method$" + methodName;
-            var isAbstract = il2Cpp.IsMethodAbstract(methodDef);
-            if (!isAbstract)
+            var imageName = typeDefImageNames[typeDef];
+            var methodPointer = il2Cpp.GetMethodPointer(imageName, methodDef);
+            if (methodPointer > 0)
             {
-                var imageName = typeDefImageNames[typeDef];
-                var methodPointer = il2Cpp.GetMethodPointer(imageName, methodDef);
-                if (methodPointer > 0 && il2Cpp.IsValidMethodPointer(methodPointer))
-                {
-                    scriptMetadataMethod.MethodAddress = il2Cpp.GetRVA(methodPointer);
-                }
+                scriptMetadataMethod.MethodAddress = il2Cpp.GetRVA(methodPointer);
             }
         }
 
@@ -572,10 +567,9 @@ namespace Il2CppDumper
             scriptMetadataMethod.Address = il2Cpp.GetRVA(address);
             (var methodSpecTypeName, var methodSpecMethodName) = executor.GetMethodSpecName(methodSpec, true);
             scriptMetadataMethod.Name = "Method$" + methodSpecTypeName + "." + methodSpecMethodName + "()";
-            if (il2Cpp.methodSpecGenericMethodPointers.ContainsKey(methodSpec))
+            if (il2Cpp.methodSpecGenericMethodPointers.TryGetValue(methodSpec, out var genericMethodPointer))
             {
-                var genericMethodPointer = il2Cpp.methodSpecGenericMethodPointers[methodSpec];
-                if (genericMethodPointer > 0)
+                if (genericMethodPointer > 0 && il2Cpp.IsValidMethodPointer(genericMethodPointer))
                 {
                     scriptMetadataMethod.MethodAddress = il2Cpp.GetRVA(genericMethodPointer);
                 }

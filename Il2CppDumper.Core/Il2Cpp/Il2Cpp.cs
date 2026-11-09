@@ -459,25 +459,15 @@ namespace Il2CppDumper
             return normalizedRGCTXDataDictionary != null && normalizedRGCTXDataDictionary.TryGetValue(NormalizeModuleName(imageName), out rgctxs);
         }
 
+        private readonly HashSet<ulong> rejectedMethodPointers = new();
+
         public bool IsMethodAbstract(Il2CppMethodDefinition methodDef)
         {
             if (methodDef == null)
             {
                 return false;
             }
-            if ((methodDef.flags & Il2CppConstants.METHOD_ATTRIBUTE_ABSTRACT) != 0)
-            {
-                return true;
-            }
-            if (metadata != null && methodDef.declaringType >= 0 && methodDef.declaringType < metadata.typeDefs.Length)
-            {
-                var declaringTypeDef = metadata.typeDefs[methodDef.declaringType];
-                if ((declaringTypeDef.flags & Il2CppConstants.TYPE_ATTRIBUTE_INTERFACE) != 0)
-                {
-                    return true;
-                }
-            }
-            return false;
+            return (methodDef.flags & Il2CppConstants.METHOD_ATTRIBUTE_ABSTRACT) != 0;
         }
 
         public virtual bool IsValidMethodPointer(ulong pointer)
@@ -519,15 +509,39 @@ namespace Il2CppDumper
                     return 0;
                 }
                 var ptr = ptrs[methodPointerIndex - 1];
-                return IsValidMethodPointer(ptr) ? ptr : 0;
+                if (ptr == 0)
+                {
+                    return 0;
+                }
+                if (!IsValidMethodPointer(ptr))
+                {
+                    if (rejectedMethodPointers.Add(ptr))
+                    {
+                        CoreLogger.LogWarning($"WARNING: Method '{imageName}' token 0x{methodToken:X8} candidate pointer 0x{ptr:X} is outside executable sections and was omitted.");
+                    }
+                    return 0;
+                }
+                return ptr;
             }
             else
             {
                 var methodIndex = methodDef.methodIndex;
-                if (methodIndex >= 0 && methodIndex < methodPointers.Length)
+                if (methodIndex >= 0 && methodPointers != null && methodIndex < methodPointers.Length)
                 {
                     var ptr = methodPointers[methodIndex];
-                    return IsValidMethodPointer(ptr) ? ptr : 0;
+                    if (ptr == 0)
+                    {
+                        return 0;
+                    }
+                    if (!IsValidMethodPointer(ptr))
+                    {
+                        if (rejectedMethodPointers.Add(ptr))
+                        {
+                            CoreLogger.LogWarning($"WARNING: Method '{imageName}' index {methodIndex} candidate pointer 0x{ptr:X} is outside executable sections and was omitted.");
+                        }
+                        return 0;
+                    }
+                    return ptr;
                 }
             }
             return 0;

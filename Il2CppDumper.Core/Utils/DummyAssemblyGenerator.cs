@@ -332,7 +332,7 @@ namespace Il2CppDumper
                         if (!methodDefinition.IsAbstract)
                         {
                             var methodPointer = il2Cpp.GetMethodPointer(imageName, methodDef);
-                            if (methodPointer > 0 && il2Cpp.IsValidMethodPointer(methodPointer))
+                            if (methodPointer > 0)
                             {
                                 var customAttribute = new CustomAttribute(typeDefinition.Module.ImportReference(addressAttribute));
                                 var fixedMethodPointer = il2Cpp.GetRVA(methodPointer);
