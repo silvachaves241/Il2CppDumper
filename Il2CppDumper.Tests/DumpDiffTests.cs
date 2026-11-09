@@ -1264,15 +1264,13 @@ namespace Il2CppDumper.Tests
                 var diff1 = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(out1Path))!;
                 var diff2 = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(out2Path))!;
 
-                Assert.NotNull(diff1.methods.addressChanged);
-                Assert.Single(diff1.methods.addressChanged);
-                Assert.Equal("0x1000", diff1.methods.addressChanged[0].left);
-                Assert.Equal("0x3000", diff1.methods.addressChanged[0].right);
-
-                Assert.NotNull(diff2.methods.addressChanged);
-                Assert.Single(diff2.methods.addressChanged);
-                Assert.Equal("0x1000", diff2.methods.addressChanged[0].left);
-                Assert.Equal("0x3000", diff2.methods.addressChanged[0].right);
+                Assert.True(diff1.hasAmbiguousMethodAddresses);
+                Assert.True(diff2.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff1.methods.addressChanged!);
+                Assert.Empty(diff2.methods.addressChanged!);
+                Assert.NotNull(diff1.methods.note);
+                Assert.NotNull(diff2.methods.note);
+                Assert.Equal(diff1.methods.note, diff2.methods.note);
             }
             finally
             {

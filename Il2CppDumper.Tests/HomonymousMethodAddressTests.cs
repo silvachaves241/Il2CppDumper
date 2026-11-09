@@ -716,5 +716,319 @@ namespace Il2CppDumper.Tests
                 }
             }
         }
+
+        [Fact]
+        public void ReviewerRound2_P2_GenericInstances_DistinctTypeArgs_BoxIntVsBoxString_DoNotPair()
+        {
+            // Review 2, Point 1: Distinct generic instantiations must not be treated as the same method.
+            // With declaration Ns.Box<T> in A.dll, compare Ns.Box<int>$$Run at 0x1000 and Ns.Box<string>$$Run at 0x2000.
+            // Must NOT emit Ns.Box<int>.Run 0x1000 -> 0x2000.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer2-box-distinct-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "A",
+                            fullName = "Ns.Box<T>",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter>() }
+                            }
+                        }
+                    }
+                };
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Box<int>$$Run", Signature = "void Run()", Address = 0x1000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Box<string>$$Run", Signature = "void Run()", Address = 0x2000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+
+                // Distinct concrete type arguments must not be paired as an address change
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound2_P2_GenericInstances_SameTypeArg_BoxInt_ReportsAddressChange()
+        {
+            // Review 2, Point 1: Same generic instantiation Ns.Box<int> with changed RVA must report the change.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer2-box-same-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "A",
+                            fullName = "Ns.Box<T>",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter>() }
+                            }
+                        }
+                    }
+                };
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Box<int>$$Run", Signature = "void Run()", Address = 0x1000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Box<int>$$Run", Signature = "void Run()", Address = 0x2000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.NotNull(diff.methods.addressChanged);
+                Assert.Single(diff.methods.addressChanged);
+                Assert.Equal("Ns.Box<int>", diff.methods.addressChanged[0].type);
+                Assert.Equal("0x1000", diff.methods.addressChanged[0].left);
+                Assert.Equal("0x2000", diff.methods.addressChanged[0].right);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound2_P2_UnmatchedOverload_CarriedToPhase2_BothDirections()
+        {
+            // Review 2, Point 2: Premature marking in Phase 1 must not consume overloads that have no match in Phase 1.
+            // In A.dll: Run() is qualified on both sides. Run(int) is legacy on left, qualified as A.dll on right.
+            // RVA of Run(int) changes from 0x2000 to 0x3000.
+            // Must NOT exit 0 with 0 changes!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer2-unmatched-overload-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = CreateTwoImagesModel();
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000, Image = "A.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(int v)", Address = 0x2000 } // legacy / unparented
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000, Image = "A.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(int v)", Address = 0x3000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+
+                // Direction 1: Left has legacy Run(int), Right has qualified Run(int)
+                var dir1 = Path.Combine(tempDir, "run1");
+                var left1 = Path.Combine(dir1, "left");
+                var right1 = Path.Combine(dir1, "right");
+                var out1 = Path.Combine(dir1, "diff.json");
+                CreateFixtures(left1, model, leftScript);
+                CreateFixtures(right1, model, rightScript);
+
+                var exit1 = DumpDiffer.Execute(left1, right1, out1);
+                Assert.Equal(1, exit1);
+                var diff1 = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(out1))!;
+                Assert.True(diff1.HasDifferences);
+
+                // Direction 2: Inverted
+                var dir2 = Path.Combine(tempDir, "run2");
+                var left2 = Path.Combine(dir2, "left");
+                var right2 = Path.Combine(dir2, "right");
+                var out2 = Path.Combine(dir2, "diff.json");
+                CreateFixtures(left2, model, rightScript);
+                CreateFixtures(right2, model, leftScript);
+
+                var exit2 = DumpDiffer.Execute(left2, right2, out2);
+                Assert.Equal(1, exit2);
+                var diff2 = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(out2))!;
+                Assert.True(diff2.HasDifferences);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound2_P2_IndeterminateOwner_SignalsAmbiguityWithoutFalsePairing()
+        {
+            // Review 2, Point 3: When dump.json declares Ns.Player.Run in both A and B:
+            // Left provides ONLY legacy record of A at 0x1000 without owner.
+            // Right provides ONLY record of B qualified at 0x2000.
+            // An absent owner with multiple candidate declarations is indeterminate.
+            // Must NOT assert address change in B! Must signal ambiguity.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer2-indeterminate-owner-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = CreateTwoImagesModel();
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000 } // no owner, indeterminate
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x2000, Image = "B.dll", Assembly = "B" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound2_P2_CollidingSignaturesInSameImage_CancellingRVAsPreservesAmbiguity()
+        {
+            // Review 2, Point 4: In mscorlib.dll, System.Enum.ToObject has two entries with colliding C signature "uint16_t value".
+            // Left: [0x42D6D50, 0x42D7190].
+            // Right: [0x1000, 0x42D7190].
+            // Must NOT report 0x42D6D50 -> 0x1000 without ambiguity! Must detect ambiguity.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer2-dofus-colliding-sig-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "mscorlib.dll",
+                            assembly = "mscorlib",
+                            fullName = "System.Enum",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "ToObject", returnType = "object" },
+                                new() { name = "ToObject", returnType = "object" }
+                            }
+                        }
+                    }
+                };
+
+                var sigColliding = "object System.Enum$$ToObject (uint16_t value)";
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = sigColliding, Address = 0x42D6D50, Image = "mscorlib.dll", Assembly = "mscorlib" },
+                        new() { Name = "System.Enum$$ToObject", Signature = sigColliding, Address = 0x42D7190, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = sigColliding, Address = 0x1000, Image = "mscorlib.dll", Assembly = "mscorlib" },
+                        new() { Name = "System.Enum$$ToObject", Signature = sigColliding, Address = 0x42D7190, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+                Assert.NotNull(diff.methods.note);
+                Assert.Contains(sigColliding, diff.methods.note);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
     }
 }

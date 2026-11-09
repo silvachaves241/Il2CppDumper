@@ -259,11 +259,10 @@ namespace Il2CppDumper.Diff
                     var leftEntries = leftQualified[qKey];
                     var rightEntries = rightQualified[qKey];
 
-                    foreach (var e in leftEntries) e.Handled = true;
-                    foreach (var e in rightEntries) e.Handled = true;
-
                     if (leftEntries.Count == 1 && rightEntries.Count == 1)
                     {
+                        leftEntries[0].Handled = true;
+                        rightEntries[0].Handled = true;
                         var lm = leftEntries[0];
                         var rm = rightEntries[0];
                         if (lm.Entry.Address != rm.Entry.Address)
@@ -300,6 +299,9 @@ namespace Il2CppDumper.Diff
                             var leftSig = leftBySig[sig];
                             var rightSig = rightBySig[sig];
 
+                            foreach (var e in leftSig) e.Handled = true;
+                            foreach (var e in rightSig) e.Handled = true;
+
                             if (leftSig.Count == 1 && rightSig.Count == 1)
                             {
                                 var lm = leftSig[0];
@@ -333,44 +335,9 @@ namespace Il2CppDumper.Diff
                                 }
                                 else
                                 {
-                                    var unmatchedLeft = new List<ulong>();
-                                    var remainingRight = new List<ulong>(sortedRight);
-                                    foreach (var lAddr in sortedLeft)
-                                    {
-                                        var rIndex = remainingRight.IndexOf(lAddr);
-                                        if (rIndex >= 0) remainingRight.RemoveAt(rIndex);
-                                        else unmatchedLeft.Add(lAddr);
-                                    }
-                                    var unmatchedRight = remainingRight;
-
-                                    if (unmatchedLeft.Count == 1 && unmatchedRight.Count == 1)
-                                    {
-                                        var displayMethod = !string.IsNullOrEmpty(sig) ? sig : qKey.MethodName;
-                                        var displayImage = leftSig.FirstOrDefault(e => e.Identity.Image != null)?.Identity.Image
-                                            ?? rightSig.FirstOrDefault(e => e.Identity.Image != null)?.Identity.Image
-                                            ?? leftSig.FirstOrDefault(e => e.Entry.Image != null)?.Entry.Image
-                                            ?? rightSig.FirstOrDefault(e => e.Entry.Image != null)?.Entry.Image;
-                                        var displayAssembly = leftSig.FirstOrDefault(e => e.Identity.Assembly != null)?.Identity.Assembly
-                                            ?? rightSig.FirstOrDefault(e => e.Identity.Assembly != null)?.Identity.Assembly
-                                            ?? leftSig.FirstOrDefault(e => e.Entry.Assembly != null)?.Entry.Assembly
-                                            ?? rightSig.FirstOrDefault(e => e.Entry.Assembly != null)?.Entry.Assembly;
-
-                                        addressChanges.Add(new DumpDiffAddressChange
-                                        {
-                                            type = leftSig[0].Entry.TypeName,
-                                            image = displayImage,
-                                            assembly = displayAssembly,
-                                            method = displayMethod,
-                                            left = $"0x{unmatchedLeft[0]:X}",
-                                            right = $"0x{unmatchedRight[0]:X}"
-                                        });
-                                    }
-                                    else
-                                    {
-                                        result.hasAmbiguousMethodAddresses = true;
-                                        var desc = !string.IsNullOrEmpty(sig) ? sig : $"{leftSig[0].Entry.TypeName}.{qKey.MethodName}";
-                                        ambiguityNotes.Add(desc);
-                                    }
+                                    result.hasAmbiguousMethodAddresses = true;
+                                    var desc = !string.IsNullOrEmpty(sig) ? sig : $"{leftSig[0].Entry.TypeName}.{qKey.MethodName}";
+                                    ambiguityNotes.Add(desc);
                                 }
                             }
                         }
@@ -419,7 +386,14 @@ namespace Il2CppDumper.Diff
                             var l = leftSig[0];
                             var r = rightSig[0];
 
-                            if (AreOwnersCompatible(l, r))
+                            if (l.Identity.IsIndeterminate || r.Identity.IsIndeterminate)
+                            {
+                                // Owner is indeterminate because multiple candidate declarations exist in dump.json
+                                result.hasAmbiguousMethodAddresses = true;
+                                var desc = !string.IsNullOrEmpty(sig) ? sig : remKey.MethodName;
+                                ambiguityNotes.Add(desc);
+                            }
+                            else if (AreOwnersCompatible(l, r))
                             {
                                 if (l.Entry.Address != r.Entry.Address)
                                 {
@@ -589,6 +563,7 @@ namespace Il2CppDumper.Diff
             public string? Image { get; set; }
             public string? Assembly { get; set; }
             public bool IsAttributed { get; set; }
+            public bool IsIndeterminate { get; set; }
         }
 
         private class MethodDiffItem
@@ -717,7 +692,8 @@ namespace Il2CppDumper.Diff
                         var m = matches[0];
                         identity.Image = m.Image ?? (isLeft ? m.Left?.image : m.Right?.image) ?? entry.Image;
                         identity.Assembly = m.Assembly ?? (isLeft ? m.Left?.assembly : m.Right?.assembly) ?? entry.Assembly;
-                        identity.QualifiedKey = m.Key;
+                        // Preserve concrete exported type name in qualified key
+                        identity.QualifiedKey = JsonDumpType.FormatKey(identity.Image, identity.Assembly, entry.TypeName);
                         identity.IsAttributed = true;
                         return identity;
                     }
@@ -751,7 +727,7 @@ namespace Il2CppDumper.Diff
                         var m = matches[0];
                         identity.Image = m.Image ?? (isLeft ? m.Left?.image : m.Right?.image);
                         identity.Assembly = m.Assembly ?? (isLeft ? m.Left?.assembly : m.Right?.assembly) ?? entry.Assembly;
-                        identity.QualifiedKey = m.Key;
+                        identity.QualifiedKey = JsonDumpType.FormatKey(identity.Image, identity.Assembly, entry.TypeName);
                         identity.IsAttributed = true;
                         return identity;
                     }
@@ -761,6 +737,7 @@ namespace Il2CppDumper.Diff
                     identity.Assembly = entry.Assembly;
                     identity.QualifiedKey = null;
                     identity.IsAttributed = false;
+                    identity.IsIndeterminate = matches != null && matches.Count > 1;
                     return identity;
                 }
 
@@ -776,7 +753,7 @@ namespace Il2CppDumper.Diff
                     var m = nameMatches[0];
                     identity.Image = m.Image ?? (isLeft ? m.Left?.image : m.Right?.image);
                     identity.Assembly = m.Assembly ?? (isLeft ? m.Left?.assembly : m.Right?.assembly);
-                    identity.QualifiedKey = m.Key;
+                    identity.QualifiedKey = JsonDumpType.FormatKey(identity.Image, identity.Assembly, entry.TypeName);
                     identity.IsAttributed = true;
                     return identity;
                 }
@@ -785,6 +762,7 @@ namespace Il2CppDumper.Diff
                 identity.Assembly = null;
                 identity.QualifiedKey = null;
                 identity.IsAttributed = false;
+                identity.IsIndeterminate = nameMatches != null && nameMatches.Count > 1;
                 return identity;
             }
         }
