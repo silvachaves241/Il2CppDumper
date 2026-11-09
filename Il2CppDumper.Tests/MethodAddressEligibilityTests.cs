@@ -889,7 +889,12 @@ namespace Il2CppDumper.Tests
             Assert.True(pe.codeGenModuleMethodPointers.TryGetValue("UnbackedModule.dll", out var pointers));
             Assert.Equal(3, pointers.Length);
             Assert.All(pointers, p => Assert.Equal(0ul, p));
-            Assert.Equal(0, pe.MethodMappingFailuresCount);
+            Assert.Equal(1, pe.MethodMappingFailuresCount);
+            var failure = Assert.Single(pe.MethodMappingFailures);
+            Assert.Equal("methodMapping", failure.Category);
+            Assert.Equal("UnbackedModule.dll", failure.Member);
+            Assert.Equal("0x18712FA60", failure.RawBytes);
+            Assert.Contains("MethodPointersTable", failure.Detail);
         }
 
         [Fact]
@@ -952,6 +957,193 @@ namespace Il2CppDumper.Tests
 
                 Assert.Equal(1, pe.MethodMappingFailuresCount);
                 Assert.DoesNotContain(warningsB, w => w.Contains("0x180900000") && w.Contains("GenericMethodInstance"));
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+        [Fact]
+        public void PE_MethodPointersTable_CrossingSectionBoundary_IsRejectedAndFallsBackToZeroTable_WhileContiguousTableSucceeds()
+        {
+            // Negative Case: Table starts at RVA 0x1FF8 (offset 0x13F8, last 8-byte slot backed by .text).
+            // Second slot is at RVA 0x2000 (unbacked virtual tail).
+            // Offset 0x1400 is the physical start of .data (RVA 0x3000), containing executable code pointer 0x180001510.
+            // Contiguous range validation must reject the table, record MethodPointersTable failure,
+            // fall back to zeroed array, and NOT publish ReviewType$$Second with RVA 0x1510 in script.json.
+            var sections = new (string, byte[], uint, uint)[]
+            {
+                (".text", new byte[0x1000], 0x2000, 0x60000020), // RVA 0x1000, backed 0x1000, unbacked tail 0x2000..0x3000
+                (".data", new byte[0x1000], 0x1000, 0xC0000040)  // RVA 0x3000, backed 0x1000
+            };
+            var peBytes = ProtectionReportTests.CreateSyntheticPe(sections);
+
+            const ulong imageBase = 0x180000000ul;
+            const ulong validCodeVa1 = imageBase + 0x1500ul;
+            const ulong validCodeVa2 = imageBase + 0x1510ul;
+            const ulong boundaryCrossingTableVa = imageBase + 0x1FF8ul; // RVA 0x1FF8, raw 0x13F8
+
+            using (var ms = new MemoryStream(peBytes))
+            using (var w = new BinaryWriter(ms))
+            {
+                // pCodeRegistration at RVA 0x1000 -> raw offset 0x400 (Version 29 has 15 fields)
+                ms.Position = 0x400;
+                for (int i = 0; i < 13; i++)
+                {
+                    w.Write((ulong)0);
+                }
+                w.Write((ulong)1);          // field 13: codeGenModulesCount = 1
+                w.Write(imageBase + 0x1200ul); // field 14: codeGenModules -> RVA 0x1200 (raw offset 0x600)
+
+                // pCodeGenModules array at RVA 0x1200 -> raw offset 0x600
+                ms.Position = 0x600;
+                w.Write(imageBase + 0x1220ul); // pointer to Il2CppCodeGenModule at RVA 0x1220 (raw offset 0x620)
+
+                // Il2CppCodeGenModule at RVA 0x1220 -> raw offset 0x620
+                ms.Position = 0x620;
+                w.Write(imageBase + 0x1280ul);     // 0: moduleName -> RVA 0x1280 (raw offset 0x680)
+                w.Write((long)2);                  // 1: methodPointerCount = 2
+                w.Write(boundaryCrossingTableVa);  // 2: methodPointers -> RVA 0x1FF8 (crosses into unbacked RVA 0x2000)
+                for (int i = 0; i < 10; i++)
+                {
+                    w.Write((ulong)0);             // 3..12: adjustor, invokers, rgctx, etc.
+                }
+
+                // Module name string at RVA 0x1280 -> raw offset 0x680
+                ms.Position = 0x680;
+                w.Write(Encoding.ASCII.GetBytes("ReviewModule.dll\0"));
+
+                // pMetadataRegistration at RVA 0x1300 -> raw offset 0x700
+                ms.Position = 0x700;
+                for (int i = 0; i < 20; i++)
+                {
+                    w.Write((ulong)0);
+                }
+
+                // Slot 0 at raw offset 0x13F8 (RVA 0x1FF8)
+                ms.Position = 0x13F8;
+                w.Write(validCodeVa1);
+
+                // Slot 1: in physical stream this is offset 0x1400 (start of .data, RVA 0x3000), containing valid executable code pointer
+                ms.Position = 0x1400;
+                w.Write(validCodeVa2);
+            }
+
+            var tempDir = Path.Combine(Path.GetTempPath(), "il2cpp_boundary_test_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                using var pe = new PE(new MemoryStream(peBytes));
+                pe.Version = 29;
+                pe.Init(codeRegistration: imageBase + 0x1000ul, metadataRegistration: imageBase + 0x1300ul);
+
+                Assert.True(pe.codeGenModuleMethodPointers.TryGetValue("ReviewModule.dll", out var pointers));
+                Assert.Equal(2, pointers.Length);
+                Assert.All(pointers, p => Assert.Equal(0ul, p));
+
+                Assert.Equal(1, pe.MethodMappingFailuresCount);
+                var failure = Assert.Single(pe.MethodMappingFailures);
+                Assert.Equal("methodMapping", failure.Category);
+                Assert.Equal("ReviewModule.dll", failure.Member);
+                Assert.Equal($"0x{boundaryCrossingTableVa:X}", failure.RawBytes);
+                Assert.Contains("MethodPointersTable", failure.Detail);
+
+                using var metadata = CreateTestMetadata(
+                    "ReviewModule.dll",
+                    "ReviewNamespace.ReviewType",
+                    isInterface: false,
+                    new[] { ("First", false, 0x06000001u), ("Second", false, 0x06000002u) });
+
+                pe.types = new[] { new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VOID } };
+                pe.SetProperties(29, 0, metadata);
+                var executor = new Il2CppExecutor(metadata, pe);
+
+                var structGenerator = new StructGenerator(executor);
+                structGenerator.WriteScript(tempDir + Path.DirectorySeparatorChar);
+
+                var scriptJsonPath = Path.Combine(tempDir, "script.json");
+                Assert.True(File.Exists(scriptJsonPath));
+                var scriptJsonText = File.ReadAllText(scriptJsonPath);
+                using (var doc = JsonDocument.Parse(scriptJsonText))
+                {
+                    var scriptMethods = doc.RootElement.GetProperty("ScriptMethod");
+                    var matchingSecond = scriptMethods.EnumerateArray()
+                        .Where(x => x.GetProperty("Name").GetString()!.Contains("Second"))
+                        .ToList();
+                    Assert.Empty(matchingSecond);
+
+                    var addresses = doc.RootElement.GetProperty("Addresses").EnumerateArray().Select(x => x.GetUInt64()).ToHashSet();
+                    Assert.DoesNotContain(0x1510ul, addresses);
+                    Assert.DoesNotContain(validCodeVa2, addresses);
+                }
+
+                // Positive Control: Entire table mapped contiguously in .text at RVA 0x1FE0 (raw offset 0x13E0)
+                const ulong contiguousTableVa = imageBase + 0x1FE0ul;
+                using (var msPos = new MemoryStream(peBytes))
+                using (var wPos = new BinaryWriter(msPos))
+                {
+                    // Point methodPointers to RVA 0x1FE0
+                    msPos.Position = 0x620 + 16;
+                    wPos.Write(contiguousTableVa);
+
+                    // Write 2 valid method pointers at raw offset 0x13E0 (RVA 0x1FE0)
+                    msPos.Position = 0x13E0;
+                    wPos.Write(validCodeVa1);
+                    wPos.Write(validCodeVa2);
+                }
+
+                var tempDirPos = Path.Combine(Path.GetTempPath(), "il2cpp_contiguous_pos_" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(tempDirPos);
+                try
+                {
+                    using var pePos = new PE(new MemoryStream(peBytes));
+                    pePos.Version = 29;
+                    pePos.Init(codeRegistration: imageBase + 0x1000ul, metadataRegistration: imageBase + 0x1300ul);
+
+                    Assert.True(pePos.codeGenModuleMethodPointers.TryGetValue("ReviewModule.dll", out var pointersPos));
+                    Assert.Equal(2, pointersPos.Length);
+                    Assert.Equal(validCodeVa1, pointersPos[0]);
+                    Assert.Equal(validCodeVa2, pointersPos[1]);
+                    Assert.Equal(0, pePos.MethodMappingFailuresCount);
+
+                    using var metadataPos = CreateTestMetadata(
+                        "ReviewModule.dll",
+                        "ReviewNamespace.ReviewType",
+                        isInterface: false,
+                        new[] { ("First", false, 0x06000001u), ("Second", false, 0x06000002u) });
+
+                    pePos.types = new[] { new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VOID } };
+                    pePos.SetProperties(29, 0, metadataPos);
+                    var executorPos = new Il2CppExecutor(metadataPos, pePos);
+
+                    var structGeneratorPos = new StructGenerator(executorPos);
+                    structGeneratorPos.WriteScript(tempDirPos + Path.DirectorySeparatorChar);
+
+                    var scriptJsonPosPath = Path.Combine(tempDirPos, "script.json");
+                    Assert.True(File.Exists(scriptJsonPosPath));
+                    using (var docPos = JsonDocument.Parse(File.ReadAllText(scriptJsonPosPath)))
+                    {
+                        var scriptMethods = docPos.RootElement.GetProperty("ScriptMethod");
+                        var matchingSecond = scriptMethods.EnumerateArray()
+                            .Where(x => x.GetProperty("Name").GetString()!.Contains("Second"))
+                            .ToList();
+                        Assert.Single(matchingSecond);
+                        Assert.Equal(0x1510ul, matchingSecond[0].GetProperty("Address").GetUInt64());
+
+                        var addresses = docPos.RootElement.GetProperty("Addresses").EnumerateArray().Select(x => x.GetUInt64()).ToHashSet();
+                        Assert.Contains(0x1510ul, addresses);
+                    }
+                }
+                finally
+                {
+                    if (Directory.Exists(tempDirPos))
+                    {
+                        try { Directory.Delete(tempDirPos, true); } catch { }
+                    }
+                }
             }
             finally
             {

@@ -76,6 +76,27 @@ namespace Il2CppDumper
             return addr - section.addr + section.offset;
         }
 
+        public override bool TryMapContiguousRange(ulong addr, ulong byteSize, out ulong offset)
+        {
+            offset = 0;
+            var sec = sections.FirstOrDefault(x => addr >= x.addr && addr < x.addr + x.size);
+            if (sec == null || sec.sectname == "__bss")
+            {
+                return false;
+            }
+            if (addr + byteSize > sec.addr + sec.size)
+            {
+                return false;
+            }
+            var rawOffset = addr - sec.addr + sec.offset;
+            if (rawOffset + byteSize > Length)
+            {
+                return false;
+            }
+            offset = rawOffset;
+            return true;
+        }
+
         public override ulong MapRTVA(ulong addr)
         {
             var section = sections.FirstOrDefault(x => addr >= x.offset && addr <= x.offset + x.size);

@@ -252,20 +252,30 @@ namespace Il2CppDumper
                     codeGenModules[moduleName] = codeGenModule;
                     AddNormalizedModule(normalizedCodeGenModules, moduleName, codeGenModule);
                     ulong[] methodPointers;
-                    if (codeGenModule.methodPointers != 0 && TryMapVATR(codeGenModule.methodPointers, out var methodPointersOffset) && methodPointersOffset < Length)
+                    if (codeGenModule.methodPointerCount > 0 && codeGenModule.methodPointers != 0)
                     {
-                        try
+                        var byteSize = (ulong)codeGenModule.methodPointerCount * PointerSize;
+                        if (TryMapContiguousRange(codeGenModule.methodPointers, byteSize, out var methodPointersOffset))
                         {
-                            methodPointers = ReadClassArray<ulong>(methodPointersOffset, codeGenModule.methodPointerCount);
+                            try
+                            {
+                                methodPointers = ReadClassArray<ulong>(methodPointersOffset, codeGenModule.methodPointerCount);
+                            }
+                            catch
+                            {
+                                methodPointers = new ulong[codeGenModule.methodPointerCount];
+                                RecordMappingFailure("MethodPointersTable", codeGenModule.methodPointers, "table range could not be read from stream", member: moduleName);
+                            }
                         }
-                        catch
+                        else
                         {
                             methodPointers = new ulong[codeGenModule.methodPointerCount];
+                            RecordMappingFailure("MethodPointersTable", codeGenModule.methodPointers, "table range crosses section boundary or exceeds stream bounds", member: moduleName);
                         }
                     }
                     else
                     {
-                        methodPointers = new ulong[codeGenModule.methodPointerCount];
+                        methodPointers = new ulong[Math.Max(0, codeGenModule.methodPointerCount)];
                     }
                     codeGenModuleMethodPointers[moduleName] = methodPointers;
                     AddNormalizedModule(normalizedCodeGenModuleMethodPointers, moduleName, methodPointers);
@@ -322,15 +332,25 @@ namespace Il2CppDumper
             }
             else
             {
-                if (pCodeRegistration.methodPointers != 0 && TryMapVATR(pCodeRegistration.methodPointers, out var methodPointersOffset) && methodPointersOffset < Length)
+                if (pCodeRegistration.methodPointersCount > 0 && pCodeRegistration.methodPointers != 0)
                 {
-                    try
+                    var byteSize = pCodeRegistration.methodPointersCount * PointerSize;
+                    if (TryMapContiguousRange(pCodeRegistration.methodPointers, byteSize, out var methodPointersOffset))
                     {
-                        methodPointers = ReadClassArray<ulong>(methodPointersOffset, pCodeRegistration.methodPointersCount);
+                        try
+                        {
+                            methodPointers = ReadClassArray<ulong>(methodPointersOffset, pCodeRegistration.methodPointersCount);
+                        }
+                        catch
+                        {
+                            methodPointers = new ulong[pCodeRegistration.methodPointersCount];
+                            RecordMappingFailure("MethodPointersTable", pCodeRegistration.methodPointers, "table range could not be read from stream", member: "global");
+                        }
                     }
-                    catch
+                    else
                     {
                         methodPointers = new ulong[pCodeRegistration.methodPointersCount];
+                        RecordMappingFailure("MethodPointersTable", pCodeRegistration.methodPointers, "table range crosses section boundary or exceeds stream bounds", member: "global");
                     }
                 }
                 else
@@ -626,6 +646,19 @@ namespace Il2CppDumper
                 offset = 0;
                 return false;
             }
+        }
+
+        public virtual bool TryMapContiguousRange(ulong addr, ulong byteSize, out ulong offset)
+        {
+            if (TryMapVATR(addr, out offset))
+            {
+                if (offset <= (ulong)Length && byteSize <= (ulong)Length - offset)
+                {
+                    return true;
+                }
+            }
+            offset = 0;
+            return false;
         }
 
         private static void AddNormalizedModule<T>(Dictionary<string, T> dictionary, string moduleName, T value)
