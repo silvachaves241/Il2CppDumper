@@ -259,17 +259,99 @@ namespace Il2CppDumper.Diff
                     var leftEntries = leftQualified[qKey];
                     var rightEntries = rightQualified[qKey];
 
-                    if (leftEntries.Count == 1 && rightEntries.Count == 1)
+                    // Step 1: Correlate by explicit managed identity (MethodSignature) first
+                    var leftByMethodSig = leftEntries
+                        .Where(m => !string.IsNullOrEmpty(m.Entry.MethodSignature))
+                        .GroupBy(m => m.Entry.MethodSignature!)
+                        .ToDictionary(g => g.Key, g => g.ToList());
+
+                    var rightByMethodSig = rightEntries
+                        .Where(m => !string.IsNullOrEmpty(m.Entry.MethodSignature))
+                        .GroupBy(m => m.Entry.MethodSignature!)
+                        .ToDictionary(g => g.Key, g => g.ToList());
+
+                    var commonMethodSigs = leftByMethodSig.Keys.Intersect(rightByMethodSig.Keys)
+                        .OrderBy(s => s, StringComparer.Ordinal);
+
+                    foreach (var msig in commonMethodSigs)
                     {
-                        var lm = leftEntries[0];
-                        var rm = rightEntries[0];
+                        var leftMs = leftByMethodSig[msig];
+                        var rightMs = rightByMethodSig[msig];
+
+                        foreach (var e in leftMs) e.Handled = true;
+                        foreach (var e in rightMs) e.Handled = true;
+
+                        if (leftMs.Count == 1 && rightMs.Count == 1)
+                        {
+                            var lm = leftMs[0];
+                            var rm = rightMs[0];
+                            if (lm.Entry.Address != rm.Entry.Address)
+                            {
+                                var displayMethod = !string.IsNullOrEmpty(lm.Entry.Signature)
+                                    ? lm.Entry.Signature
+                                    : (!string.IsNullOrEmpty(rm.Entry.Signature) ? rm.Entry.Signature : msig);
+                                var displayImage = rm.Identity.Image ?? lm.Identity.Image ?? rm.Entry.Image ?? lm.Entry.Image;
+                                var displayAssembly = rm.Identity.Assembly ?? lm.Identity.Assembly ?? rm.Entry.Assembly ?? lm.Entry.Assembly;
+                                addressChanges.Add(new DumpDiffAddressChange
+                                {
+                                    type = lm.Entry.TypeName,
+                                    image = displayImage,
+                                    assembly = displayAssembly,
+                                    method = displayMethod,
+                                    left = $"0x{lm.Entry.Address:X}",
+                                    right = $"0x{rm.Entry.Address:X}"
+                                });
+                            }
+                        }
+                        else
+                        {
+                            var sortedLeft = leftMs.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+                            var sortedRight = rightMs.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+
+                            if (sortedLeft.Count == sortedRight.Count &&
+                                sortedLeft.Distinct().Count() <= 1 &&
+                                sortedLeft.SequenceEqual(sortedRight))
+                            {
+                                // Shared native implementation across all entries: unchanged
+                            }
+                            else
+                            {
+                                result.hasAmbiguousMethodAddresses = true;
+                                ambiguityNotes.Add(msig);
+                            }
+                        }
+                    }
+
+                    // Step 2: Correlate remaining unhandled entries in this qKey (where at least one side lacks MethodSignature)
+                    var remLeft = leftEntries.Where(e => !e.Handled).ToList();
+                    var remRight = rightEntries.Where(e => !e.Handled).ToList();
+
+                    if (remLeft.Count == 0 || remRight.Count == 0)
+                        continue;
+
+                    // If all remaining entries on both sides have explicit MethodSignature, they are incompatible managed overloads
+                    if (remLeft.All(e => !string.IsNullOrEmpty(e.Entry.MethodSignature)) &&
+                        remRight.All(e => !string.IsNullOrEmpty(e.Entry.MethodSignature)))
+                    {
+                        continue;
+                    }
+
+                    if (remLeft.Count == 1 && remRight.Count == 1)
+                    {
+                        var lm = remLeft[0];
+                        var rm = remRight[0];
+
+                        if (!string.IsNullOrEmpty(lm.Entry.MethodSignature) && !string.IsNullOrEmpty(rm.Entry.MethodSignature))
+                        {
+                            continue;
+                        }
+
                         var leftHasSig = !string.IsNullOrEmpty(lm.Entry.Signature);
                         var rightHasSig = !string.IsNullOrEmpty(rm.Entry.Signature);
 
                         if (leftHasSig && rightHasSig && !AreSignaturesCompatible(lm, rm, qKey.MethodName))
                         {
                             // Distinct overloads with different signatures: do not pair.
-                            // Leave unhandled so unshared overloads pass to Phase 2.
                             continue;
                         }
 
@@ -291,7 +373,7 @@ namespace Il2CppDumper.Diff
                             var displayAssembly = rm.Identity.Assembly ?? lm.Identity.Assembly ?? rm.Entry.Assembly ?? lm.Entry.Assembly;
                             addressChanges.Add(new DumpDiffAddressChange
                             {
-                                type = lm.Entry.TypeName, // simple type name
+                                type = lm.Entry.TypeName,
                                 image = displayImage,
                                 assembly = displayAssembly,
                                 method = qKey.MethodName,
@@ -303,12 +385,14 @@ namespace Il2CppDumper.Diff
                     else
                     {
                         // Overloads within the same qualified type
-                        var leftBySig = leftEntries
-                            .GroupBy(m => m.Entry.Signature ?? "")
+                        var leftBySig = remLeft
+                            .Where(m => !string.IsNullOrEmpty(m.Entry.Signature))
+                            .GroupBy(m => m.Entry.Signature!)
                             .ToDictionary(g => g.Key, g => g.ToList());
 
-                        var rightBySig = rightEntries
-                            .GroupBy(m => m.Entry.Signature ?? "")
+                        var rightBySig = remRight
+                            .Where(m => !string.IsNullOrEmpty(m.Entry.Signature))
+                            .GroupBy(m => m.Entry.Signature!)
                             .ToDictionary(g => g.Key, g => g.ToList());
 
                         var commonSigs = leftBySig.Keys.Intersect(rightBySig.Keys)
@@ -319,6 +403,12 @@ namespace Il2CppDumper.Diff
                             var leftSig = leftBySig[sig];
                             var rightSig = rightBySig[sig];
 
+                            if (leftSig.All(e => !string.IsNullOrEmpty(e.Entry.MethodSignature)) &&
+                                rightSig.All(e => !string.IsNullOrEmpty(e.Entry.MethodSignature)))
+                            {
+                                continue;
+                            }
+
                             foreach (var e in leftSig) e.Handled = true;
                             foreach (var e in rightSig) e.Handled = true;
 
@@ -326,6 +416,12 @@ namespace Il2CppDumper.Diff
                             {
                                 var lm = leftSig[0];
                                 var rm = rightSig[0];
+
+                                if (!string.IsNullOrEmpty(lm.Entry.MethodSignature) && !string.IsNullOrEmpty(rm.Entry.MethodSignature))
+                                {
+                                    continue;
+                                }
+
                                 if (IsSignatureColliding(lm, qKey.MethodName) || IsSignatureColliding(rm, qKey.MethodName))
                                 {
                                     result.hasAmbiguousMethodAddresses = true;
@@ -394,13 +490,89 @@ namespace Il2CppDumper.Diff
                     var leftMatched = new HashSet<MethodDiffItem>();
                     var rightMatched = new HashSet<MethodDiffItem>();
 
-                    // Step 1: Process exact non-empty signature matches
-                    var leftBySig = leftEntries
+                    // Step 1: Process matches by explicit managed identity (MethodSignature) first
+                    var leftByMethodSig = leftEntries
+                        .Where(m => !string.IsNullOrEmpty(m.Entry.MethodSignature))
+                        .GroupBy(m => m.Entry.MethodSignature!)
+                        .ToDictionary(g => g.Key, g => g.ToList());
+
+                    var rightByMethodSig = rightEntries
+                        .Where(m => !string.IsNullOrEmpty(m.Entry.MethodSignature))
+                        .GroupBy(m => m.Entry.MethodSignature!)
+                        .ToDictionary(g => g.Key, g => g.ToList());
+
+                    var commonMethodSigs = leftByMethodSig.Keys.Intersect(rightByMethodSig.Keys)
+                        .OrderBy(s => s, StringComparer.Ordinal);
+
+                    foreach (var msig in commonMethodSigs)
+                    {
+                        var leftMs = leftByMethodSig[msig];
+                        var rightMs = rightByMethodSig[msig];
+
+                        foreach (var e in leftMs) leftMatched.Add(e);
+                        foreach (var e in rightMs) rightMatched.Add(e);
+
+                        if (leftMs.Count == 1 && rightMs.Count == 1)
+                        {
+                            var l = leftMs[0];
+                            var r = rightMs[0];
+
+                            bool isIndeterminate = IsUnitPairIndeterminate(l, r);
+                            if (isIndeterminate)
+                            {
+                                result.hasAmbiguousMethodAddresses = true;
+                                ambiguityNotes.Add(msig);
+                            }
+                            else if (AreOwnersCompatible(l, r))
+                            {
+                                if (l.Entry.Address != r.Entry.Address)
+                                {
+                                    var displayMethod = !string.IsNullOrEmpty(l.Entry.Signature)
+                                        ? l.Entry.Signature
+                                        : (!string.IsNullOrEmpty(r.Entry.Signature) ? r.Entry.Signature : msig);
+                                    var displayImage = r.Identity.Image ?? l.Identity.Image ?? r.Entry.Image ?? l.Entry.Image;
+                                    var displayAssembly = r.Identity.Assembly ?? l.Identity.Assembly ?? r.Entry.Assembly ?? l.Entry.Assembly;
+                                    addressChanges.Add(new DumpDiffAddressChange
+                                    {
+                                        type = remKey.TypeName,
+                                        image = displayImage,
+                                        assembly = displayAssembly,
+                                        method = displayMethod,
+                                        left = $"0x{l.Entry.Address:X}",
+                                        right = $"0x{r.Entry.Address:X}"
+                                    });
+                                }
+                            }
+                        }
+                        else
+                        {
+                            var sortedLeft = leftMs.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+                            var sortedRight = rightMs.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+
+                            if (sortedLeft.Count == sortedRight.Count &&
+                                sortedLeft.Distinct().Count() <= 1 &&
+                                sortedLeft.SequenceEqual(sortedRight))
+                            {
+                                // Shared native implementation across all entries: unchanged
+                            }
+                            else
+                            {
+                                result.hasAmbiguousMethodAddresses = true;
+                                ambiguityNotes.Add(msig);
+                            }
+                        }
+                    }
+
+                    // Step 2: Process exact non-empty signature matches for entries without managed match
+                    var remLeftEntries = leftEntries.Where(e => !leftMatched.Contains(e)).ToList();
+                    var remRightEntries = rightEntries.Where(e => !rightMatched.Contains(e)).ToList();
+
+                    var leftBySig = remLeftEntries
                         .Where(m => !string.IsNullOrEmpty(m.Entry.Signature))
                         .GroupBy(m => m.Entry.Signature!)
                         .ToDictionary(g => g.Key, g => g.ToList());
 
-                    var rightBySig = rightEntries
+                    var rightBySig = remRightEntries
                         .Where(m => !string.IsNullOrEmpty(m.Entry.Signature))
                         .GroupBy(m => m.Entry.Signature!)
                         .ToDictionary(g => g.Key, g => g.ToList());
@@ -413,6 +585,12 @@ namespace Il2CppDumper.Diff
                         var leftSig = leftBySig[sig];
                         var rightSig = rightBySig[sig];
 
+                        if (leftSig.All(e => !string.IsNullOrEmpty(e.Entry.MethodSignature)) &&
+                            rightSig.All(e => !string.IsNullOrEmpty(e.Entry.MethodSignature)))
+                        {
+                            continue;
+                        }
+
                         foreach (var e in leftSig) leftMatched.Add(e);
                         foreach (var e in rightSig) rightMatched.Add(e);
 
@@ -420,6 +598,11 @@ namespace Il2CppDumper.Diff
                         {
                             var l = leftSig[0];
                             var r = rightSig[0];
+
+                            if (!string.IsNullOrEmpty(l.Entry.MethodSignature) && !string.IsNullOrEmpty(r.Entry.MethodSignature))
+                            {
+                                continue;
+                            }
 
                             if (IsSignatureColliding(l, remKey.MethodName) || IsSignatureColliding(r, remKey.MethodName))
                             {
@@ -507,7 +690,7 @@ namespace Il2CppDumper.Diff
                         }
                     }
 
-                    // Step 2: Process remaining entries (treating absent signature as unknown information)
+                    // Step 3: Process remaining entries (treating absent signature as unknown information)
                     var remainingLeft = leftEntries.Where(e => !leftMatched.Contains(e)).ToList();
                     var remainingRight = rightEntries.Where(e => !rightMatched.Contains(e)).ToList();
 
@@ -520,6 +703,12 @@ namespace Il2CppDumper.Diff
                     {
                         var l = remainingLeft[0];
                         var r = remainingRight[0];
+
+                        if (!string.IsNullOrEmpty(l.Entry.MethodSignature) && !string.IsNullOrEmpty(r.Entry.MethodSignature))
+                        {
+                            continue; // Incompatible explicit managed signatures
+                        }
+
                         var leftHasSig = !string.IsNullOrEmpty(l.Entry.Signature);
                         var rightHasSig = !string.IsNullOrEmpty(r.Entry.Signature);
 

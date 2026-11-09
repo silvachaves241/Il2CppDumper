@@ -2256,5 +2256,365 @@ namespace Il2CppDumper.Tests
                 }
             }
         }
+        [Fact]
+        public void ReviewerRound7_P2_ToObject_MultipleEntries_SameCSig_OneRvaChanged_ReportsDeltaWithoutAmbiguity()
+        {
+            // Review 7, Point 1: ToObject(Type, char) and ToObject(Type, ushort) in the same image with shared C signature.
+            // When char RVA changes (0x1000 -> 0x2000) and ushort is unchanged (0x3000), must report 1 delta and NO ambiguity!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer7-toobject-delta-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "mscorlib.dll",
+                            assembly = "mscorlib",
+                            fullName = "System.Enum",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "char" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "ushort" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var cSig = "Il2CppObject* System_Enum__ToObject (System_Type_o* enumType, uint16_t value, const MethodInfo* method);";
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "ToObject(System.Type, char)", Address = 0x1000, Image = "mscorlib.dll", Assembly = "mscorlib" },
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "ToObject(System.Type, ushort)", Address = 0x3000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "ToObject(System.Type, char)", Address = 0x2000, Image = "mscorlib.dll", Assembly = "mscorlib" },
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "ToObject(System.Type, ushort)", Address = 0x3000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Single(diff.methods.addressChanged!);
+                Assert.Equal("0x1000", diff.methods.addressChanged![0].left);
+                Assert.Equal("0x2000", diff.methods.addressChanged![0].right);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound7_P2_ToObject_SelfComparison_ReturnsZeroWithoutAmbiguity()
+        {
+            // Review 7, Point 1: Comparing the qualified map containing multiple overloads with shared C signature against itself
+            // must return exit code 0, 0 address changes and false ambiguity!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer7-toobject-self-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "mscorlib.dll",
+                            assembly = "mscorlib",
+                            fullName = "System.Enum",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "char" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "ushort" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var cSig = "Il2CppObject* System_Enum__ToObject (System_Type_o* enumType, uint16_t value, const MethodInfo* method);";
+                var script = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "ToObject(System.Type, char)", Address = 0x1000, Image = "mscorlib.dll", Assembly = "mscorlib" },
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "ToObject(System.Type, ushort)", Address = 0x3000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, script);
+                CreateFixtures(rightDir, model, script);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(0, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound7_P2_ToObject_DisjointEntries_CharLeft_UshortRight_IntCommon_DoesNotEmitFalseDelta()
+        {
+            // Review 7, Point 1: char only on left, ushort only on right, int common on both.
+            // Shared C signature for char and ushort must NOT fabricate 0x42D7190 -> 0x42D6D50 delta!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer7-toobject-disjoint-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "mscorlib.dll",
+                            assembly = "mscorlib",
+                            fullName = "System.Enum",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "char" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "ushort" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "int" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var cSigCharUshort = "Il2CppObject* System_Enum__ToObject (System_Type_o* enumType, uint16_t value, const MethodInfo* method);";
+                var cSigInt = "Il2CppObject* System_Enum__ToObject_int (System_Type_o* enumType, int32_t value, const MethodInfo* method);";
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = cSigCharUshort, MethodSignature = "ToObject(System.Type, char)", Address = 0x42D7190, Image = "mscorlib.dll", Assembly = "mscorlib" },
+                        new() { Name = "System.Enum$$ToObject", Signature = cSigInt, MethodSignature = "ToObject(System.Type, int)", Address = 0x4000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = cSigCharUshort, MethodSignature = "ToObject(System.Type, ushort)", Address = 0x42D6D50, Image = "mscorlib.dll", Assembly = "mscorlib" },
+                        new() { Name = "System.Enum$$ToObject", Signature = cSigInt, MethodSignature = "ToObject(System.Type, int)", Address = 0x4000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(0, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound7_P2_ArrayHelpers_Clear_ValVsRef_PreservesByref_DoesNotEmitFalseDelta()
+        {
+            // Review 7, Point 2: Dofus real case
+            // Clear<TValue>(TValue[], int) vs Clear<TValue>(TValue[], ref int)
+            // Left has val overload at 0x3460310, Right has ref overload at 0x34602E0.
+            // With MethodSignature preserving 'ref int', they must NOT be paired into a false delta!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer7-clear-byref-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "UnityEngine.InputSystem.dll",
+                            assembly = "UnityEngine.InputSystem",
+                            fullName = "UnityEngine.InputSystem.Utilities.ArrayHelpers",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "Clear",
+                                    returnType = "void",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "array", type = "TValue[]" },
+                                        new() { name = "count", type = "int" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "Clear",
+                                    returnType = "void",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "array", type = "TValue[]" },
+                                        new() { name = "count", type = "ref int" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new()
+                        {
+                            Name = "UnityEngine.InputSystem.Utilities.ArrayHelpers$$Clear",
+                            Signature = "void ArrayHelpers_Clear (Il2CppArray* array, int32_t count, const MethodInfo* method);",
+                            MethodSignature = "Clear<TValue>(TValue[], int)",
+                            Address = 0x3460310,
+                            Image = "UnityEngine.InputSystem.dll",
+                            Assembly = "UnityEngine.InputSystem"
+                        }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new()
+                        {
+                            Name = "UnityEngine.InputSystem.Utilities.ArrayHelpers$$Clear",
+                            Signature = "void ArrayHelpers_Clear_ref (Il2CppArray* array, int32_t* count, const MethodInfo* method);",
+                            MethodSignature = "Clear<TValue>(TValue[], ref int)",
+                            Address = 0x34602E0,
+                            Image = "UnityEngine.InputSystem.dll",
+                            Assembly = "UnityEngine.InputSystem"
+                        }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(0, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
     }
 }
