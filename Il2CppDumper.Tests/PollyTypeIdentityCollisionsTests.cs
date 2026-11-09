@@ -986,5 +986,147 @@ namespace Il2CppDumper.Tests
                 Assert.Equal("TestNs.Outer<T>.Middle<U>.Inner<V>", executor.GetTypeDefName(m.typeDefs[2], true, true));
             }
         }
+
+        [Fact]
+        public void PollyDump_IndirectCycle_OppositeQueryOrders_ProduceIdenticalModelWithoutOrderDependence()
+        {
+            // Reproduces: AsyncPolicy (def 0) <-> AsyncPolicy`1 (def 1) forming an indirect cycle.
+            // Querying def 0 first or def 1 first must produce identical models without order dependence,
+            // preserving all 12 definitions and zero diffs between the two models.
+            static int CountTypes(IEnumerable<JsonDumpType> types)
+            {
+                int count = 0;
+                foreach (var t in types)
+                {
+                    count += 1 + CountTypes(t.nested);
+                }
+                return count;
+            }
+
+            JsonDumpModel modelA;
+            JsonDumpModel modelB;
+
+            // Run A: Query def 0 first
+            {
+                var (m, il2Cpp, exec, typeDefs) = CreatePollyEnvironment();
+                using (m) using (il2Cpp)
+                {
+                    typeDefs[0].declaringTypeIndex = 1;
+                    typeDefs[1].declaringTypeIndex = 0;
+
+                    var p0 = exec.GetParentTypeDefinition(typeDefs[0]);
+                    Assert.Null(p0);
+
+                    modelA = JsonDumpGenerator.Create(exec, new Config());
+                }
+            }
+
+            // Run B: Query def 1 first
+            {
+                var (m, il2Cpp, exec, typeDefs) = CreatePollyEnvironment();
+                using (m) using (il2Cpp)
+                {
+                    typeDefs[0].declaringTypeIndex = 1;
+                    typeDefs[1].declaringTypeIndex = 0;
+
+                    var p1 = exec.GetParentTypeDefinition(typeDefs[1]);
+                    Assert.Null(p1);
+
+                    modelB = JsonDumpGenerator.Create(exec, new Config());
+                }
+            }
+
+            // Both models must preserve all 12 definitions
+            Assert.Equal(12, CountTypes(modelA.types));
+            Assert.Equal(12, CountTypes(modelB.types));
+
+            // Both models must be strictly identical: HasDifferences = false
+            var diff = DumpDiffer.Compare(modelA, modelB);
+            Assert.False(diff.HasDifferences);
+        }
+
+        [Fact]
+        public void PollyDump_LargeCycleExceedingPreviousLimit_PreservesAllDefinitionsAndEmitsDiagnostics()
+        {
+            // Reproduces: A ring with 257 definitions (exceeding the old 256 depth limit).
+            // All 257 definitions must be preserved in model.types (count does not drop to 0),
+            // and diagnostic warnings must be emitted via CoreLogger.
+            const int count = 257;
+            var m = CreateEmptyMetadata();
+            uint strPos = 0;
+            AddString(m, "", ref strPos);
+            var imgName = AddString(m, "Assembly.dll", ref strPos);
+            var asmName = AddString(m, "Assembly", ref strPos);
+            var nsName = AddString(m, "TestNs", ref strPos);
+
+            m.assemblyDefs = new[]
+            {
+                new Il2CppAssemblyDefinition { aname = new Il2CppAssemblyNameDefinition { nameIndex = asmName } }
+            };
+            m.imageDefs = new[]
+            {
+                new Il2CppImageDefinition { nameIndex = imgName, assemblyIndex = 0, typeStart = 0, typeCount = count }
+            };
+
+            var typeDefs = new Il2CppTypeDefinition[count];
+            var il2CppTypes = new Il2CppType[count];
+
+            for (int i = 0; i < count; i++)
+            {
+                var nameIndex = AddString(m, $"RingType_{i}", ref strPos);
+                int nextIndex = (i + 1) % count; // Forms closed cycle of length 257!
+                typeDefs[i] = new Il2CppTypeDefinition
+                {
+                    nameIndex = nameIndex,
+                    namespaceIndex = nsName,
+                    declaringTypeIndex = nextIndex,
+                    parentIndex = -1,
+                    genericContainerIndex = -1,
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                };
+                il2CppTypes[i] = new Il2CppType
+                {
+                    type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS,
+                    data = new Il2CppType.Union { dummy = (ulong)i }
+                };
+            }
+
+            m.typeDefs = typeDefs;
+            m.nestedTypeIndices = Array.Empty<int>();
+            m.genericContainers = Array.Empty<Il2CppGenericContainer>();
+            m.genericParameters = Array.Empty<Il2CppGenericParameter>();
+            m.methodDefs = Array.Empty<Il2CppMethodDefinition>();
+            m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
+            m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
+            m.fieldDefs = Array.Empty<Il2CppFieldDefinition>();
+
+            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[8192]), 0)
+            {
+                Version = 16,
+                methodPointers = Array.Empty<ulong>(),
+                types = il2CppTypes
+            };
+
+            using (m)
+            using (il2Cpp)
+            {
+                var exec = new Il2CppExecutor(m, il2Cpp);
+                var warnings = new List<string>();
+                using var sw = new StringWriter();
+                JsonDumpModel model;
+                using (CoreLogger.Scope(sw, warnings))
+                {
+                    model = JsonDumpGenerator.Create(exec, new Config());
+                }
+
+                // All 257 definitions MUST be present in model.types (none vanished into an empty dump)
+                Assert.Equal(count, model.types.Count);
+                Assert.Equal(count, warnings.Count);
+                Assert.All(warnings, w => Assert.Contains("Cyclic declaring type detected", w));
+
+                var diff = DumpDiffer.Compare(model, model);
+                Assert.False(diff.HasDifferences);
+            }
+        }
     }
 }
