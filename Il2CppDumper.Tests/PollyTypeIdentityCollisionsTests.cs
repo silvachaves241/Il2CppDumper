@@ -300,7 +300,7 @@ namespace Il2CppDumper.Tests
             m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
             m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
 
-            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[64]), 0)
+            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[8192]), 0)
             {
                 Version = 16,
                 methodPointers = Array.Empty<ulong>()
@@ -412,32 +412,121 @@ namespace Il2CppDumper.Tests
             }
         }
 
-        [Fact]
-        public void PollyDump_CrossBuildDiff_DetectsFieldTypeChangeInGenericNestedClosure()
+        private static void RegisterTypeInTypeDic(Il2Cpp il2Cpp, ulong pointer, Il2CppType type)
         {
-            var tempDir = Path.Combine(Path.GetTempPath(), "polly-cross-build-" + Guid.NewGuid().ToString("N"));
+            var field = typeof(Il2Cpp).GetField("typeDic", BindingFlags.Instance | BindingFlags.NonPublic);
+            var dict = (Dictionary<ulong, Il2CppType>)field!.GetValue(il2Cpp)!;
+            dict[pointer] = type;
+        }
+
+        private static ulong CreateGenericInstanceInMemory(
+            WebAssemblyMemory il2Cpp,
+            uint baseAddr,
+            int targetTypeDefIndex,
+            ulong[] typeArgPointers)
+        {
+            var stream = (MemoryStream)typeof(BinaryStream)
+                .GetField("stream", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(il2Cpp)!;
+
+            var writer = new BinaryWriter(stream);
+
+            // 1. Write argv array (each pointer is 4 bytes in 32-bit)
+            var argvAddr = baseAddr;
+            stream.Position = argvAddr;
+            foreach (var ptr in typeArgPointers)
+            {
+                writer.Write((uint)ptr);
+            }
+            var pos = (uint)stream.Position;
+            if ((pos % 4) != 0) pos += 4 - (pos % 4);
+
+            // 2. Write Il2CppGenericInst
+            var instAddr = pos;
+            stream.Position = instAddr;
+            writer.Write((int)typeArgPointers.Length); // type_argc
+            writer.Write((uint)argvAddr);              // type_argv
+            pos = (uint)stream.Position;
+            if ((pos % 4) != 0) pos += 4 - (pos % 4);
+
+            // 3. Write Il2CppGenericClass
+            var classAddr = pos;
+            stream.Position = classAddr;
+            writer.Write((int)targetTypeDefIndex);     // typeDefinitionIndex
+            writer.Write((uint)instAddr);              // context.class_inst
+            writer.Write((uint)0);                     // context.method_inst
+            writer.Write((uint)0);                     // cached_class
+
+            return classAddr;
+        }
+
+        [Fact]
+        public void PollyDump_CrossBuildDiff_DetectsFieldReferenceSwap_BetweenCorrectedGenericClosures()
+        {
+            // Point 1: A reference swap between AsyncPolicy.<>c__DisplayClass14_0<int>
+            // and AsyncPolicy<int>.<>c__DisplayClass14_0 in metadata field typeIndex
+            // must be detected by DumpDiffer.
+            var tempDir = Path.Combine(Path.GetTempPath(), "polly-field-swap-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempDir);
             try
             {
+                // Left build: field references AsyncPolicy.<>c__DisplayClass14_0<int> (TypeDef 2)
                 var (m1, il2Cpp1, exec1, _) = CreatePollyEnvironment();
                 JsonDumpModel left;
                 using (m1) using (il2Cpp1)
                 {
+                    const ulong intPtr = 0x1000;
+                    RegisterTypeInTypeDic(il2Cpp1, intPtr, il2Cpp1.types[12]); // int type
+
+                    var classAddr1 = CreateGenericInstanceInMemory(il2Cpp1, 2048, 2, new[] { intPtr });
+                    var genType1 = new Il2CppType
+                    {
+                        type = Il2CppTypeEnum.IL2CPP_TYPE_GENERICINST,
+                        data = new Il2CppType.Union { dummy = classAddr1 }
+                    };
+
+                    var types1 = il2Cpp1.types.ToList();
+                    types1.Add(genType1);
+                    il2Cpp1.types = types1.ToArray();
+
+                    // Point field 0 to type 13
+                    m1.fieldDefs[0].typeIndex = 13;
+
+                    // Verify GetTypeName formatting
+                    var leftFieldTypeName = exec1.GetTypeName(genType1, false, false);
+                    Assert.Equal("AsyncPolicy.<>c__DisplayClass14_0<int>", leftFieldTypeName);
+
                     left = JsonDumpGenerator.Create(exec1, new Config { DumpField = true });
                 }
 
+                // Right build: field references AsyncPolicy<int>.<>c__DisplayClass14_0 (TypeDef 5)
                 var (m2, il2Cpp2, exec2, _) = CreatePollyEnvironment();
                 JsonDumpModel right;
                 using (m2) using (il2Cpp2)
                 {
+                    const ulong intPtr = 0x1000;
+                    RegisterTypeInTypeDic(il2Cpp2, intPtr, il2Cpp2.types[12]); // int type
+
+                    var classAddr2 = CreateGenericInstanceInMemory(il2Cpp2, 2048, 5, new[] { intPtr });
+                    var genType2 = new Il2CppType
+                    {
+                        type = Il2CppTypeEnum.IL2CPP_TYPE_GENERICINST,
+                        data = new Il2CppType.Union { dummy = classAddr2 }
+                    };
+
+                    var types2 = il2Cpp2.types.ToList();
+                    types2.Add(genType2);
+                    il2Cpp2.types = types2.ToArray();
+
+                    // Point field 0 to type 13
+                    m2.fieldDefs[0].typeIndex = 13;
+
+                    // Verify GetTypeName formatting
+                    var rightFieldTypeName = exec2.GetTypeName(genType2, false, false);
+                    Assert.Equal("AsyncPolicy<int>.<>c__DisplayClass14_0", rightFieldTypeName);
+
                     right = JsonDumpGenerator.Create(exec2, new Config { DumpField = true });
                 }
-
-                // In right dump, mutate a field in Polly.AsyncPolicy<TResult>.<>c__DisplayClass14_0
-                var rightAsyncPolicyGeneric = right.types.First(t => t.fullName == "Polly.AsyncPolicy<TResult>");
-                var targetNested = rightAsyncPolicyGeneric.nested.First(n => n.fullName == "Polly.AsyncPolicy<TResult>.<>c__DisplayClass14_0");
-                Assert.Single(targetNested.fields);
-                targetNested.fields[0].type = "string"; // changed from int
 
                 var leftPath = Path.Combine(tempDir, "left.json");
                 var rightPath = Path.Combine(tempDir, "right.json");
@@ -449,7 +538,7 @@ namespace Il2CppDumper.Tests
                 using var sw = new StringWriter();
                 var exitCode = DumpDiffer.Execute(leftPath, rightPath, diffPath, sw);
 
-                Assert.Equal(1, exitCode); // Exit code 1 indicates differences found
+                Assert.Equal(1, exitCode); // Differences must be found!
 
                 var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(diffPath));
                 Assert.NotNull(diff);
@@ -457,13 +546,11 @@ namespace Il2CppDumper.Tests
                 Assert.Single(diff.types.changed);
 
                 var changedType = diff.types.changed[0];
-                Assert.Equal("Polly.dll!Polly.AsyncPolicy<TResult>.<>c__DisplayClass14_0", changedType.type);
-                Assert.Equal("Polly.dll", changedType.image);
-                Assert.Equal("Polly", changedType.assembly);
+                Assert.Equal("Polly.dll!Polly.AsyncPolicy.<>c__DisplayClass14_0<TResult>", changedType.type);
                 Assert.Single(changedType.fields.changed);
                 Assert.Equal("action", changedType.fields.changed[0].field);
-                Assert.Equal("int", changedType.fields.changed[0].left.type);
-                Assert.Equal("string", changedType.fields.changed[0].right.type);
+                Assert.Equal("AsyncPolicy.<>c__DisplayClass14_0<int>", changedType.fields.changed[0].left.type);
+                Assert.Equal("AsyncPolicy<int>.<>c__DisplayClass14_0", changedType.fields.changed[0].right.type);
             }
             finally
             {
@@ -475,6 +562,157 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
+        public void PollyDump_DivergentMetadata_UsesUnifiedParentResolution_AndAvoidsArbitraryOrder()
+        {
+            // Point 2: If a child is listed in multiple parents' nestedTypeIndices:
+            // Case A: declaringTypeIndex is valid -> binds strictly to declaringTypeIndex parent, not read order!
+            var (mA, il2CppA, execA, typeDefsA) = CreatePollyEnvironment();
+            using (mA) using (il2CppA)
+            {
+                // Child 5 (<>c__DisplayClass14_0) has declaringTypeIndex = 1 (AsyncPolicy<TResult>)
+                // Add child 5 ALSO into parent 0's (AsyncPolicy) nestedTypeIndices:
+                // Parent 0 originally has indices [2, 3, 4] (nestedTypesStart = 0, nested_type_count = 3)
+                // We expand parent 0 to count 4, pointing to [2, 3, 4, 5]
+                typeDefsA[0].nested_type_count = 4;
+                mA.nestedTypeIndices = new[] { 2, 3, 4, 5, 5, 6, 7, 10, 11 };
+                typeDefsA[1].nestedTypesStart = 4; // points to [5, 6, 7]
+
+                var parent = execA.GetParentTypeDefinition(typeDefsA[5]);
+                Assert.Same(typeDefsA[1], parent); // Must resolve to declaring parent (AsyncPolicy<TResult>), NOT first traversed (AsyncPolicy)!
+
+                var model = JsonDumpGenerator.Create(execA, new Config());
+                var p0 = model.types.First(t => t.fullName == "Polly.AsyncPolicy");
+                var p1 = model.types.First(t => t.fullName == "Polly.AsyncPolicy<TResult>");
+
+                // Child 5 must be nested under p1, NOT p0
+                Assert.DoesNotContain(p0.nested, n => n.fullName == "Polly.AsyncPolicy<TResult>.<>c__DisplayClass14_0");
+                Assert.Contains(p1.nested, n => n.fullName == "Polly.AsyncPolicy<TResult>.<>c__DisplayClass14_0");
+            }
+
+            // Case B: declaringTypeIndex == -1 and multiple candidate parents exist (unresolved conflict)
+            // Explicit diagnostic is emitted and parent returns null (does not arbitrate by read order)
+            var (mB, il2CppB, execB, typeDefsB) = CreatePollyEnvironment();
+            using (mB) using (il2CppB)
+            {
+                typeDefsB[5].declaringTypeIndex = -1; // No declared parent
+                typeDefsB[0].nested_type_count = 4;
+                mB.nestedTypeIndices = new[] { 2, 3, 4, 5, 5, 6, 7, 10, 11 };
+                typeDefsB[1].nestedTypesStart = 4;
+
+                var parent = execB.GetParentTypeDefinition(typeDefsB[5]);
+                Assert.Null(parent); // Ambiguous conflict without declared parent -> returns null!
+
+                var model = JsonDumpGenerator.Create(execB, new Config());
+                // Child 5 becomes root type, not adopted by arbitrary order
+                var p0 = model.types.First(t => t.fullName == "Polly.AsyncPolicy");
+                var p1 = model.types.First(t => t.fullName == "Polly.AsyncPolicy<TResult>");
+                // p1 (AsyncPolicy<TResult>) does not adopt child 5 because parent was ambiguous
+                Assert.DoesNotContain(p1.nested, n => n.fullName.Contains("DisplayClass14_0"));
+                // Child 5 becomes an unparented root type
+                Assert.Contains(model.types, t => t.fullName == "<>c__DisplayClass14_0<TResult>");
+            }
+        }
+
+        [Fact]
+        public void PollyDump_NonGenericTypeWithBacktickInName_PreservesLiteralName_WithoutCollision()
+        {
+            // Point 3: A non-generic definition named AsyncPolicy`Literal (genericContainerIndex = -1)
+            // must retain its literal name completely and not collide with AsyncPolicy.
+            var m = CreateEmptyMetadata();
+            uint strPos = 0;
+            AddString(m, "", ref strPos);
+            var imgName = AddString(m, "Polly.dll", ref strPos);
+            var asmName = AddString(m, "Polly", ref strPos);
+            var nsPolly = AddString(m, "Polly", ref strPos);
+
+            var asyncPolicyName = AddString(m, "AsyncPolicy", ref strPos);
+            var asyncPolicyLiteralName = AddString(m, "AsyncPolicy`Literal", ref strPos);
+
+            m.assemblyDefs = new[]
+            {
+                new Il2CppAssemblyDefinition
+                {
+                    aname = new Il2CppAssemblyNameDefinition { nameIndex = asmName }
+                }
+            };
+
+            m.imageDefs = new[]
+            {
+                new Il2CppImageDefinition
+                {
+                    nameIndex = imgName,
+                    assemblyIndex = 0,
+                    typeStart = 0,
+                    typeCount = 2
+                }
+            };
+
+            var typeDefs = new[]
+            {
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = asyncPolicyName,
+                    namespaceIndex = nsPolly,
+                    declaringTypeIndex = -1,
+                    genericContainerIndex = -1,
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                },
+                new Il2CppTypeDefinition
+                {
+                    nameIndex = asyncPolicyLiteralName,
+                    namespaceIndex = nsPolly,
+                    declaringTypeIndex = -1,
+                    genericContainerIndex = -1, // Non-generic!
+                    flags = TYPE_ATTRIBUTE_PUBLIC
+                }
+            };
+            m.typeDefs = typeDefs;
+            m.nestedTypeIndices = Array.Empty<int>();
+            m.genericContainers = Array.Empty<Il2CppGenericContainer>();
+            m.genericParameters = Array.Empty<Il2CppGenericParameter>();
+            m.methodDefs = Array.Empty<Il2CppMethodDefinition>();
+            m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
+            m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
+            m.fieldDefs = Array.Empty<Il2CppFieldDefinition>();
+
+            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[1024]), 0)
+            {
+                Version = 16,
+                methodPointers = Array.Empty<ulong>(),
+                types = new[]
+                {
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 0 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 1 } }
+                }
+            };
+
+            using (m)
+            using (il2Cpp)
+            {
+                var executor = new Il2CppExecutor(m, il2Cpp);
+
+                var name0 = executor.GetTypeDefName(typeDefs[0], true, true);
+                var name1 = executor.GetTypeDefName(typeDefs[1], true, true);
+
+                Assert.Equal("Polly.AsyncPolicy", name0);
+                Assert.Equal("Polly.AsyncPolicy`Literal", name1);
+                Assert.NotEqual(name0, name1); // Must not collide!
+
+                var model = JsonDumpGenerator.Create(executor, new Config());
+                Assert.Equal(2, model.types.Count);
+                Assert.Contains(model.types, t => t.fullName == "Polly.AsyncPolicy");
+                Assert.Contains(model.types, t => t.fullName == "Polly.AsyncPolicy`Literal");
+
+                // Self-diff must succeed with zero differences and no collisions
+                var diff = DumpDiffer.Compare(model, model);
+                Assert.False(diff.HasDifferences);
+                Assert.Empty(diff.types.added);
+                Assert.Empty(diff.types.removed);
+                Assert.Empty(diff.types.changed);
+            }
+        }
+
+                [Fact]
         public void NestedType_DeclaringTypeIndexMinusOne_ResolvesParentFromNestedTypeIndices()
         {
             var m = CreateEmptyMetadata();
@@ -529,7 +767,7 @@ namespace Il2CppDumper.Tests
             m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
             m.fieldDefs = Array.Empty<Il2CppFieldDefinition>();
 
-            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[64]), 0)
+            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[8192]), 0)
             {
                 Version = 16,
                 methodPointers = Array.Empty<ulong>(),
@@ -625,7 +863,7 @@ namespace Il2CppDumper.Tests
             m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
             m.fieldDefs = Array.Empty<Il2CppFieldDefinition>();
 
-            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[64]), 0)
+            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[8192]), 0)
             {
                 Version = 16,
                 methodPointers = Array.Empty<ulong>(),

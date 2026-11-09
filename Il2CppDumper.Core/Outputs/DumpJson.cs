@@ -163,81 +163,31 @@ namespace Il2CppDumper
                 }
             }
 
-            // 2. Link nested types and parent enums via metadata.nestedTypeIndices
-            foreach (var imageDef in metadata.imageDefs)
+            // 2. Link nested types and parent enums using unified parent resolution
+            foreach (var (childTypeDef, childModel) in typeModelMap)
             {
-                var typeEnd = imageDef.typeStart + imageDef.typeCount;
-                for (var typeDefIndex = imageDef.typeStart; typeDefIndex < typeEnd && typeDefIndex < metadata.typeDefs.Length; typeDefIndex++)
+                var parentTypeDef = executor.GetParentTypeDefinition(childTypeDef);
+                if (parentTypeDef != null && typeModelMap.TryGetValue(parentTypeDef, out var parentModel))
                 {
-                    var typeDef = metadata.typeDefs[typeDefIndex];
-                    if (!typeModelMap.TryGetValue(typeDef, out var parentModel))
-                        continue;
-
-                    if (metadata.nestedTypeIndices != null && typeDef.nested_type_count > 0)
+                    if (!nestedChildren.Contains(childTypeDef) && !parentModel.nested.Contains(childModel))
                     {
-                        for (int n = 0; n < typeDef.nested_type_count; n++)
+                        if (string.IsNullOrEmpty(childModel.image)) childModel.image = parentModel.image;
+                        if (string.IsNullOrEmpty(childModel.assembly)) childModel.assembly = parentModel.assembly;
+                        parentModel.nested.Add(childModel);
+                        nestedChildren.Add(childTypeDef);
+                        if (childTypeDef.IsEnum)
                         {
-                            var nestedTypeIndex = typeDef.nestedTypesStart + n;
-                            if (nestedTypeIndex >= 0 && nestedTypeIndex < metadata.nestedTypeIndices.Length)
+                            var enumModel = CreateEnumModel(executor, metadata, il2Cpp, childTypeDef);
+                            if (!parentModel.enums.Any(e => e.name == enumModel.name))
                             {
-                                var nestedIndex = metadata.nestedTypeIndices[nestedTypeIndex];
-                                if (nestedIndex >= 0 && nestedIndex < metadata.typeDefs.Length)
-                                {
-                                    var childTypeDef = metadata.typeDefs[nestedIndex];
-                                    if (typeModelMap.TryGetValue(childTypeDef, out var childModel))
-                                    {
-                                        if (!nestedChildren.Contains(childTypeDef) && !parentModel.nested.Contains(childModel))
-                                        {
-                                            if (string.IsNullOrEmpty(childModel.image)) childModel.image = parentModel.image;
-                                            if (string.IsNullOrEmpty(childModel.assembly)) childModel.assembly = parentModel.assembly;
-                                            parentModel.nested.Add(childModel);
-                                            nestedChildren.Add(childTypeDef);
-                                            if (childTypeDef.IsEnum)
-                                            {
-                                                var enumModel = CreateEnumModel(executor, metadata, il2Cpp, childTypeDef);
-                                                if (!parentModel.enums.Any(e => e.name == enumModel.name))
-                                                {
-                                                    parentModel.enums.Add(enumModel);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                parentModel.enums.Add(enumModel);
                             }
                         }
                     }
                 }
             }
 
-            // 3. Child-to-parent linking via declaringTypeIndex (fallback/direct link)
-            foreach (var (typeDef, typeModel) in typeModelMap)
-            {
-                if (typeDef.declaringTypeIndex != -1 && !nestedChildren.Contains(typeDef) && typeDef.declaringTypeIndex < il2Cpp.types.Length)
-                {
-                    var parentIl2CppType = il2Cpp.types[typeDef.declaringTypeIndex];
-                    var parentTypeDef = executor.GetTypeDefinitionFromIl2CppType(parentIl2CppType);
-                    if (parentTypeDef != null && typeModelMap.TryGetValue(parentTypeDef, out var parentModel))
-                    {
-                        if (!parentModel.nested.Contains(typeModel))
-                        {
-                            if (string.IsNullOrEmpty(typeModel.image)) typeModel.image = parentModel.image;
-                            if (string.IsNullOrEmpty(typeModel.assembly)) typeModel.assembly = parentModel.assembly;
-                            parentModel.nested.Add(typeModel);
-                            nestedChildren.Add(typeDef);
-                            if (typeDef.IsEnum)
-                            {
-                                var enumModel = CreateEnumModel(executor, metadata, il2Cpp, typeDef);
-                                if (!parentModel.enums.Any(e => e.name == enumModel.name))
-                                {
-                                    parentModel.enums.Add(enumModel);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 4. Populate root types (all non-nested types)
+            // 3. Populate root types (all non-nested types)
             foreach (var (typeDef, typeModel) in typeModelMap)
             {
                 if (!nestedChildren.Contains(typeDef))
