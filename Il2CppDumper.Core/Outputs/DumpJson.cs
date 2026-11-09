@@ -186,7 +186,7 @@ namespace Il2CppDumper
                                     var childTypeDef = metadata.typeDefs[nestedIndex];
                                     if (typeModelMap.TryGetValue(childTypeDef, out var childModel))
                                     {
-                                        if (!parentModel.nested.Contains(childModel))
+                                        if (!nestedChildren.Contains(childTypeDef) && !parentModel.nested.Contains(childModel))
                                         {
                                             if (string.IsNullOrEmpty(childModel.image)) childModel.image = parentModel.image;
                                             if (string.IsNullOrEmpty(childModel.assembly)) childModel.assembly = parentModel.assembly;

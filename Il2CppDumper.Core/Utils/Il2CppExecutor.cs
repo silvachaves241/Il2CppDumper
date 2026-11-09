@@ -162,12 +162,74 @@ namespace Il2CppDumper
             }
         }
 
+        private Dictionary<Il2CppTypeDefinition, Il2CppTypeDefinition>? nestedTypeToParentMap;
+
+        public Il2CppTypeDefinition? GetParentTypeDefinition(Il2CppTypeDefinition typeDef)
+        {
+            if (typeDef.declaringTypeIndex != -1 && typeDef.declaringTypeIndex >= 0 && typeDef.declaringTypeIndex < il2Cpp.types.Length)
+            {
+                var parentType = il2Cpp.types[typeDef.declaringTypeIndex];
+                if (parentType.type == Il2CppTypeEnum.IL2CPP_TYPE_GENERICINST)
+                {
+                    var genericClass = il2Cpp.MapVATR<Il2CppGenericClass>(parentType.data.generic_class);
+                    var def = GetGenericClassTypeDefinition(genericClass);
+                    if (def != null) return def;
+                }
+                else
+                {
+                    var def = GetTypeDefinitionFromIl2CppType(parentType);
+                    if (def != null) return def;
+                }
+            }
+
+            if (metadata.nestedTypeIndices != null && metadata.typeDefs != null)
+            {
+                if (nestedTypeToParentMap == null)
+                {
+                    var map = new Dictionary<Il2CppTypeDefinition, Il2CppTypeDefinition>();
+                    foreach (var parent in metadata.typeDefs)
+                    {
+                        if (parent.nested_type_count > 0 && parent.nestedTypesStart >= 0)
+                        {
+                            for (int n = 0; n < parent.nested_type_count; n++)
+                            {
+                                var idx = parent.nestedTypesStart + n;
+                                if (idx >= 0 && idx < metadata.nestedTypeIndices.Length)
+                                {
+                                    var childIdx = metadata.nestedTypeIndices[idx];
+                                    if (childIdx >= 0 && childIdx < metadata.typeDefs.Length)
+                                    {
+                                        var child = metadata.typeDefs[childIdx];
+                                        map.TryAdd(child, parent);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    nestedTypeToParentMap = map;
+                }
+
+                if (nestedTypeToParentMap.TryGetValue(typeDef, out var foundParent))
+                {
+                    return foundParent;
+                }
+            }
+
+            return null;
+        }
+
         public string GetTypeDefName(Il2CppTypeDefinition typeDef, bool addNamespace, bool genericParameter)
         {
+            return GetTypeDefName(typeDef, addNamespace, genericParameter, 0);
+        }
+
+        private string GetTypeDefName(Il2CppTypeDefinition typeDef, bool addNamespace, bool genericParameter, int depth)
+        {
             var prefix = string.Empty;
-            if (typeDef.declaringTypeIndex != -1)
+            var parentTypeDef = depth < 64 ? GetParentTypeDefinition(typeDef) : null;
+            if (parentTypeDef != null)
             {
-                prefix = GetTypeName(il2Cpp.types[typeDef.declaringTypeIndex], addNamespace, true) + ".";
+                prefix = GetTypeDefName(parentTypeDef, addNamespace, genericParameter, depth + 1) + ".";
             }
             else if (addNamespace)
             {
@@ -177,20 +239,80 @@ namespace Il2CppDumper
                     prefix = @namespace + ".";
                 }
             }
+
             var typeName = metadata.GetStringFromIndex(typeDef.nameIndex);
-            if (typeDef.genericContainerIndex >= 0)
+            if (typeDef.genericContainerIndex >= 0 && genericParameter && metadata.genericContainers != null && typeDef.genericContainerIndex < metadata.genericContainers.Length)
+            {
+                var index = typeName.IndexOf("`");
+                int declaredArity = -1;
+                if (index != -1)
+                {
+                    if (int.TryParse(typeName[(index + 1)..], out var arity))
+                    {
+                        declaredArity = arity;
+                    }
+                    typeName = typeName[..index];
+                }
+
+                var genericContainer = metadata.genericContainers[typeDef.genericContainerIndex];
+                int paramStart = 0;
+                int paramCount = genericContainer.type_argc;
+
+                if (parentTypeDef != null)
+                {
+                    if (parentTypeDef.genericContainerIndex >= 0 && parentTypeDef.genericContainerIndex < metadata.genericContainers.Length)
+                    {
+                        var parentContainer = metadata.genericContainers[parentTypeDef.genericContainerIndex];
+                        if (declaredArity >= 0)
+                        {
+                            paramCount = declaredArity;
+                            paramStart = genericContainer.type_argc >= declaredArity
+                                ? genericContainer.type_argc - declaredArity
+                                : 0;
+                        }
+                        else if (genericContainer.type_argc > parentContainer.type_argc)
+                        {
+                            paramStart = parentContainer.type_argc;
+                            paramCount = genericContainer.type_argc - parentContainer.type_argc;
+                        }
+                        else
+                        {
+                            paramCount = 0;
+                        }
+                    }
+                    else if (declaredArity == 0)
+                    {
+                        paramCount = 0;
+                    }
+                }
+
+                if (paramCount > 0 && metadata.genericParameters != null)
+                {
+                    var genericParameterNames = new List<string>();
+                    for (int i = 0; i < paramCount; i++)
+                    {
+                        var genericParameterIndex = genericContainer.genericParameterStart + paramStart + i;
+                        if (genericParameterIndex >= 0 && genericParameterIndex < metadata.genericParameters.Length)
+                        {
+                            var genericParameterDef = metadata.genericParameters[genericParameterIndex];
+                            genericParameterNames.Add(metadata.GetStringFromIndex(genericParameterDef.nameIndex));
+                        }
+                    }
+                    if (genericParameterNames.Count > 0)
+                    {
+                        typeName += $"<{string.Join(", ", genericParameterNames)}>";
+                    }
+                }
+            }
+            else
             {
                 var index = typeName.IndexOf("`");
                 if (index != -1)
                 {
                     typeName = typeName[..index];
                 }
-                if (genericParameter)
-                {
-                    var genericContainer = metadata.genericContainers[typeDef.genericContainerIndex];
-                    typeName += GetGenericContainerParams(genericContainer);
-                }
             }
+
             return prefix + typeName;
         }
 
