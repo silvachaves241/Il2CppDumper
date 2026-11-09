@@ -1201,5 +1201,166 @@ namespace Il2CppDumper.Tests
                 Assert.Contains("PolicyBuilder", warnings[0]);
             }
         }
+
+        private static (Metadata, WebAssemblyMemory, Il2CppExecutor, Il2CppTypeDefinition[]) CreateInversePairEnvironment(bool genericFirst)
+        {
+            var m = CreateEmptyMetadata();
+            uint strPos = 0;
+            AddString(m, "", ref strPos);
+            var imgName = AddString(m, "Polly.dll", ref strPos);
+            var asmName = AddString(m, "Polly", ref strPos);
+            var nsPolly = AddString(m, "Polly", ref strPos);
+
+            var asyncPolicyName = AddString(m, "AsyncPolicy", ref strPos);
+            var asyncPolicyGenericName = AddString(m, "AsyncPolicy`1", ref strPos);
+            var tresultParamName = AddString(m, "TResult", ref strPos);
+
+            m.assemblyDefs = new[]
+            {
+                new Il2CppAssemblyDefinition { aname = new Il2CppAssemblyNameDefinition { nameIndex = asmName } }
+            };
+
+            m.imageDefs = new[]
+            {
+                new Il2CppImageDefinition
+                {
+                    nameIndex = imgName,
+                    assemblyIndex = 0,
+                    typeStart = 0,
+                    typeCount = 2
+                }
+            };
+
+            m.genericParameters = new[]
+            {
+                new Il2CppGenericParameter { nameIndex = tresultParamName }
+            };
+            m.genericContainers = new[]
+            {
+                new Il2CppGenericContainer { genericParameterStart = 0, type_argc = 1 }
+            };
+
+            var nonGenericDef = new Il2CppTypeDefinition
+            {
+                nameIndex = asyncPolicyName,
+                namespaceIndex = nsPolly,
+                declaringTypeIndex = genericFirst ? 0 : 1, // Points to generic parent
+                parentIndex = -1,
+                genericContainerIndex = -1,
+                nestedTypesStart = 0,
+                nested_type_count = 1, // Claims generic type as nested child (inverse fallback)
+                flags = TYPE_ATTRIBUTE_NESTED_PUBLIC
+            };
+
+            var genericDef = new Il2CppTypeDefinition
+            {
+                nameIndex = asyncPolicyGenericName,
+                namespaceIndex = nsPolly,
+                declaringTypeIndex = -1, // No declared parent
+                parentIndex = -1,
+                genericContainerIndex = 0,
+                nestedTypesStart = 0,
+                nested_type_count = 0,
+                flags = TYPE_ATTRIBUTE_PUBLIC
+            };
+
+            var typeDefs = genericFirst
+                ? new[] { genericDef, nonGenericDef }
+                : new[] { nonGenericDef, genericDef };
+
+            m.typeDefs = typeDefs;
+            m.nestedTypeIndices = new[] { genericFirst ? 0 : 1 }; // Non-generic points to generic
+            m.methodDefs = Array.Empty<Il2CppMethodDefinition>();
+            m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
+            m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
+            m.fieldDefs = Array.Empty<Il2CppFieldDefinition>();
+
+            var il2Cpp = new WebAssemblyMemory(new MemoryStream(new byte[8192]), 0)
+            {
+                Version = 16,
+                methodPointers = Array.Empty<ulong>(),
+                types = new[]
+                {
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 0 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 1 } }
+                }
+            };
+
+            var exec = new Il2CppExecutor(m, il2Cpp);
+            return (m, il2Cpp, exec, typeDefs);
+        }
+
+        [Fact]
+        public void PollyDump_AcyclicDeclaredEdgeWithInverseFallback_PreservesDeclaredEdgeRegardlessOfTypeDefOrder()
+        {
+            // Verifies [P2] fix:
+            // Layout A: Non-generic (0) before Generic (1).
+            // Layout B: Generic (0) before Non-generic (1).
+            // In both layouts:
+            // Non-generic declares Generic as parent (declaringTypeIndex).
+            // nestedTypeIndices offers the inverse link (Non-generic -> Generic) as a fallback for Generic.
+            // Both layouts MUST preserve the acyclic declared edge (Non-generic parent is Generic),
+            // reject the inverse fallback candidate (Generic parent is null),
+            // emit a diagnostic warning, and produce identical tree hierarchy and canonical names.
+
+            // Layout A: non-generic at 0, generic at 1
+            var (mA, il2CppA, execA, typeDefsA) = CreateInversePairEnvironment(genericFirst: false);
+            var warningsA = new List<string>();
+            JsonDumpModel modelA;
+            using (mA) using (il2CppA)
+            {
+                using var swA = new StringWriter();
+                using (CoreLogger.Scope(swA, warningsA))
+                {
+                    var parentOfNonGenericA = execA.GetParentTypeDefinition(typeDefsA[0]);
+                    var parentOfGenericA = execA.GetParentTypeDefinition(typeDefsA[1]);
+
+                    Assert.Same(typeDefsA[1], parentOfNonGenericA); // Declared parent preserved!
+                    Assert.Null(parentOfGenericA);                  // Inverse fallback rejected!
+
+                    modelA = JsonDumpGenerator.Create(execA, new Config());
+                }
+            }
+
+            // Layout B: generic at 0, non-generic at 1
+            var (mB, il2CppB, execB, typeDefsB) = CreateInversePairEnvironment(genericFirst: true);
+            var warningsB = new List<string>();
+            JsonDumpModel modelB;
+            using (mB) using (il2CppB)
+            {
+                using var swB = new StringWriter();
+                using (CoreLogger.Scope(swB, warningsB))
+                {
+                    var parentOfGenericB = execB.GetParentTypeDefinition(typeDefsB[0]);
+                    var parentOfNonGenericB = execB.GetParentTypeDefinition(typeDefsB[1]);
+
+                    Assert.Same(typeDefsB[0], parentOfNonGenericB); // Declared parent preserved!
+                    Assert.Null(parentOfGenericB);                  // Inverse fallback rejected!
+
+                    modelB = JsonDumpGenerator.Create(execB, new Config());
+                }
+            }
+
+            // Both models must have identical hierarchy:
+            // Root: Polly.AsyncPolicy<TResult>
+            // Nested: Polly.AsyncPolicy
+            Assert.Single(modelA.types);
+            Assert.Equal("Polly.AsyncPolicy<TResult>", modelA.types[0].fullName);
+            Assert.Single(modelA.types[0].nested);
+            Assert.Contains("AsyncPolicy", modelA.types[0].nested[0].fullName);
+
+            Assert.Single(modelB.types);
+            Assert.Equal("Polly.AsyncPolicy<TResult>", modelB.types[0].fullName);
+            Assert.Single(modelB.types[0].nested);
+            Assert.Contains("AsyncPolicy", modelB.types[0].nested[0].fullName);
+
+            // Dumps must be completely identical regardless of TypeDefs order
+            var diff = DumpDiffer.Compare(modelA, modelB);
+            Assert.False(diff.HasDifferences);
+
+            // Diagnostic warnings emitted in both runs for rejected cycle-closing candidate
+            Assert.Contains(warningsA, w => w.Contains("rejected: creates a cycle with an established declared parent chain"));
+            Assert.Contains(warningsB, w => w.Contains("rejected: creates a cycle with an established declared parent chain"));
+        }
     }
 }
