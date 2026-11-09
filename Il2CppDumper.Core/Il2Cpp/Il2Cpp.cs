@@ -459,7 +459,30 @@ namespace Il2CppDumper
             return normalizedRGCTXDataDictionary != null && normalizedRGCTXDataDictionary.TryGetValue(NormalizeModuleName(imageName), out rgctxs);
         }
 
-        private readonly HashSet<ulong> rejectedMethodPointers = new();
+        private readonly HashSet<string> reportedMappingFailureKeys = new(StringComparer.Ordinal);
+        public List<RunManifestWarningItem> MethodMappingFailures { get; } = new();
+        public int MethodMappingFailuresCount => MethodMappingFailures.Count;
+
+        public void RecordMappingFailure(string origin, ulong candidatePointer, string reason, int? typeDefIndex = null, string typeName = null, string member = null)
+        {
+            var key = $"{origin}|{candidatePointer}|{member}";
+            if (reportedMappingFailureKeys.Add(key))
+            {
+                var detail = $"candidate pointer 0x{candidatePointer:X} {reason}";
+                var item = new RunManifestWarningItem
+                {
+                    Category = "methodMapping",
+                    TypeDefIndex = typeDefIndex,
+                    TypeName = typeName,
+                    Member = member,
+                    RawBytes = $"0x{candidatePointer:X}",
+                    Count = 1,
+                    Detail = $"{origin}: {detail}"
+                };
+                MethodMappingFailures.Add(item);
+                CoreLogger.LogWarning($"WARNING: Method mapping failure in {origin}: {member ?? $"0x{candidatePointer:X}"} - {detail}");
+            }
+        }
 
         public bool IsMethodAbstract(Il2CppMethodDefinition methodDef)
         {
@@ -515,10 +538,18 @@ namespace Il2CppDumper
                 }
                 if (!IsValidMethodPointer(ptr))
                 {
-                    if (rejectedMethodPointers.Add(ptr))
-                    {
-                        CoreLogger.LogWarning($"WARNING: Method '{imageName}' token 0x{methodToken:X8} candidate pointer 0x{ptr:X} is outside executable sections and was omitted.");
-                    }
+                    var typeDef = (metadata != null && methodDef.declaringType >= 0 && methodDef.declaringType < metadata.typeDefs.Length)
+                        ? metadata.typeDefs[methodDef.declaringType]
+                        : null;
+                    var tName = typeDef != null && metadata != null ? metadata.GetStringFromIndex(typeDef.nameIndex) : null;
+                    var mName = metadata != null ? metadata.GetStringFromIndex(methodDef.nameIndex) : null;
+                    RecordMappingFailure(
+                        "GetMethodPointer",
+                        ptr,
+                        "is outside executable sections or stream bounds",
+                        typeDefIndex: methodDef.declaringType,
+                        typeName: tName,
+                        member: mName != null && tName != null ? $"{tName}.{mName}" : null);
                     return 0;
                 }
                 return ptr;
@@ -535,10 +566,18 @@ namespace Il2CppDumper
                     }
                     if (!IsValidMethodPointer(ptr))
                     {
-                        if (rejectedMethodPointers.Add(ptr))
-                        {
-                            CoreLogger.LogWarning($"WARNING: Method '{imageName}' index {methodIndex} candidate pointer 0x{ptr:X} is outside executable sections and was omitted.");
-                        }
+                        var typeDef = (metadata != null && methodDef.declaringType >= 0 && methodDef.declaringType < metadata.typeDefs.Length)
+                            ? metadata.typeDefs[methodDef.declaringType]
+                            : null;
+                        var tName = typeDef != null && metadata != null ? metadata.GetStringFromIndex(typeDef.nameIndex) : null;
+                        var mName = metadata != null ? metadata.GetStringFromIndex(methodDef.nameIndex) : null;
+                        RecordMappingFailure(
+                            "GetMethodPointer",
+                            ptr,
+                            "is outside executable sections or stream bounds",
+                            typeDefIndex: methodDef.declaringType,
+                            typeName: tName,
+                            member: mName != null && tName != null ? $"{tName}.{mName}" : null);
                         return 0;
                     }
                     return ptr;

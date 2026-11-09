@@ -27,6 +27,120 @@ namespace Il2CppDumper.Tests
             return (peBytes, validCodeVa, dataVa);
         }
 
+        private static byte[] CreateSyntheticElf64WithSegment(ulong p_vaddr, ulong p_offset, ulong p_memsz, ulong p_filesz, uint p_flags = 7)
+        {
+            var dynamicOffset = Math.Max(p_offset + p_filesz, 0x600ul) + 0x100ul;
+            var dynamicVaddr = 0x5000ul;
+            var totalSize = (int)dynamicOffset + 0x2000;
+            var data = new byte[totalSize];
+            using var ms = new MemoryStream(data);
+            using var w = new BinaryWriter(ms);
+
+            w.Write(new byte[] { 0x7F, (byte)'E', (byte)'L', (byte)'F' }); // e_ident[0..3]
+            w.Write((byte)2); // EI_CLASS: ELFCLASS64
+            w.Write((byte)1); // EI_DATA: ELFDATA2LSB
+            w.Write((byte)1); // EI_VERSION: EV_CURRENT
+            w.Write(new byte[9]); // padding
+
+            w.Write((ushort)3); // e_type: ET_DYN
+            w.Write((ushort)183); // e_machine: EM_AARCH64
+            w.Write((uint)1); // e_version: EV_CURRENT
+            w.Write((ulong)0); // e_entry
+            w.Write((ulong)64); // e_phoff = 64
+            w.Write((ulong)0x1000); // e_shoff = 0x1000 (non-zero so IsDumped is false, preserving disk p_filesz)
+            w.Write((uint)0); // e_flags
+            w.Write((ushort)64); // e_ehsize = 64
+            w.Write((ushort)56); // e_phentsize = 56
+            w.Write((ushort)2); // e_phnum = 2 (PT_LOAD and PT_DYNAMIC)
+            w.Write((ushort)64); // e_shentsize = 64
+            w.Write((ushort)0); // e_shnum = 0
+            w.Write((ushort)0); // e_shstrndx = 0
+
+            // Program header 0: PT_LOAD
+            w.Write((uint)1); // p_type: PT_LOAD
+            w.Write(p_flags); // p_flags: PF_X
+            w.Write(p_offset); // p_offset
+            w.Write(p_vaddr); // p_vaddr
+            w.Write(p_vaddr); // p_paddr
+            w.Write(p_filesz); // p_filesz
+            w.Write(p_memsz); // p_memsz
+            w.Write((ulong)4096); // p_align
+
+            // Program header 1: PT_DYNAMIC (required by Elf64.Load)
+            w.Write((uint)2); // p_type: PT_DYNAMIC
+            w.Write((uint)6); // p_flags: PF_R | PF_W
+            w.Write(dynamicOffset); // p_offset
+            w.Write(dynamicVaddr); // p_vaddr
+            w.Write(dynamicVaddr); // p_paddr
+            w.Write((ulong)16); // p_filesz (1 entry = 16 bytes)
+            w.Write((ulong)16); // p_memsz
+            w.Write((ulong)8); // p_align
+
+            // Dynamic table entry: DT_NULL
+            ms.Position = (long)dynamicOffset;
+            w.Write((long)0); // d_tag = DT_NULL
+            w.Write((ulong)0); // d_un = 0
+
+            return data;
+        }
+
+        private static byte[] CreateSyntheticMacho64TwoAdjacentSections(ulong addr1, ulong size1, uint off1, ulong addr2, ulong size2, uint off2)
+        {
+            var totalSize = (int)Math.Max(off1 + size1, off2 + size2) + 0x400;
+            var bytes = new byte[totalSize];
+            using var ms = new MemoryStream(bytes);
+            using var w = new BinaryWriter(ms);
+
+            // Mach-O 64 header (32 bytes)
+            w.Write((uint)0xFEEDFACF); // magic
+            w.Write((uint)0x01000007); // cputype (x86_64)
+            w.Write((uint)0x03);       // cpusubtype
+            w.Write((uint)0x02);       // filetype (MH_EXECUTE)
+            w.Write((uint)2);          // ncmds = 2 segments
+            uint cmdSize = 72 + 80;    // 152 bytes per segment with 1 section
+            w.Write((uint)(cmdSize * 2)); // sizeofcmds
+            w.Write((uint)0);          // flags
+            w.Write((uint)0);          // reserved
+
+            void WriteSegment(string name, ulong vmaddr, ulong vmsize, uint fileoff, ulong filesize, ulong secAddr, ulong secSize, uint secOff)
+            {
+                w.Write((uint)0x19);   // LC_SEGMENT_64
+                w.Write(cmdSize);
+                var segBytes = new byte[16];
+                Encoding.ASCII.GetBytes(name).CopyTo(segBytes, 0);
+                w.Write(segBytes);
+                w.Write(vmaddr);
+                w.Write(vmsize);
+                w.Write((ulong)fileoff);
+                w.Write(filesize);
+                w.Write((uint)7);      // maxprot
+                w.Write((uint)5);      // initprot
+                w.Write((uint)1);      // nsects = 1
+                w.Write((uint)0);      // flags
+
+                // section
+                var sectBytes = new byte[16];
+                Encoding.ASCII.GetBytes("__text").CopyTo(sectBytes, 0);
+                w.Write(sectBytes);
+                w.Write(segBytes);
+                w.Write(secAddr);
+                w.Write(secSize);
+                w.Write(secOff);
+                w.Write((uint)3);      // align
+                w.Write((uint)0);      // reloff
+                w.Write((uint)0);      // nreloc
+                w.Write((uint)0x80000400); // flags: executable code
+                w.Write((uint)0);
+                w.Write((uint)0);
+                w.Write((uint)0);
+            }
+
+            WriteSegment("__TEXT1", addr1, size1, off1, size1, addr1, size1, off1);
+            WriteSegment("__TEXT2", addr2, size2, off2, size2, addr2, size2, off2);
+
+            return bytes;
+        }
+
         private static Metadata CreateTestMetadata(
             string imageName,
             string typeName,
@@ -262,17 +376,58 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
-        public void PE_Disk_CandidatePointerBeyondVirtualSize_IsRejected_AndMapVATRReturnsZero()
+        public void PE_Disk_CandidatePointerInVirtualTailWithoutRawData_IsRejected_AndMapVATRReturnsZero()
         {
-            // P2: .text at RVA 0x1000 with VirtualSize=0x100 and SizeOfRawData=0x200
-            // Candidate RVA 0x1180 is past VirtualSize (0x1000 + 0x100 = 0x1100)
-            var (peBytes, _, _) = CreateTestPe(textVirtualSize: 0x100, textRawSize: 0x200);
+            // P2 Point 1: .text at RVA 0x1000, VirtualSize=0x400, SizeOfRawData=0x200
+            // Candidate RVA 0x1200 is in the virtual tail past SizeOfRawData (0x1000 + 0x200 = 0x1200)
+            var (peBytes, _, _) = CreateTestPe(textVirtualSize: 0x400, textRawSize: 0x200);
 
             using var pe = new PE(new MemoryStream(peBytes));
-            var candidateVa = 0x180001180ul; // RVA 0x1180
+            var tailVa = 0x180001200ul; // RVA 0x1200
 
-            Assert.False(pe.IsValidMethodPointer(candidateVa));
-            Assert.Equal(0ul, pe.MapVATR(candidateVa));
+            Assert.False(pe.IsValidMethodPointer(tailVa));
+            Assert.Equal(0ul, pe.MapVATR(tailVa));
+
+            // Positive control within SizeOfRawData (RVA 0x1180 -> raw 0x580)
+            var validVa = 0x180001180ul;
+            Assert.True(pe.IsValidMethodPointer(validVa));
+            Assert.Equal(0x580ul, pe.MapVATR(validVa));
+        }
+
+        [Fact]
+        public void ELF64_VirtualTailBeyondFilesz_IsRejected_AndMapVATRThrowsInvalidOperation()
+        {
+            // P2 Point 1: PT_LOAD executable segment with p_vaddr=0x1400, p_offset=0x400, p_memsz=0x400, p_filesz=0x200
+            var elfBytes = CreateSyntheticElf64WithSegment(p_vaddr: 0x1400, p_offset: 0x400, p_memsz: 0x400, p_filesz: 0x200);
+
+            using var elf = new Elf64(new MemoryStream(elfBytes));
+            var tailVa = 0x1600ul; // 0x1400 + 0x200 = 0x1600 (virtual tail beyond filesz)
+
+            Assert.False(elf.IsValidMethodPointer(tailVa));
+            Assert.Throws<InvalidOperationException>(() => elf.MapVATR(tailVa));
+
+            // Positive control within filesz (0x1500 -> offset 0x500)
+            var validVa = 0x1500ul;
+            Assert.True(elf.IsValidMethodPointer(validVa));
+            Assert.Equal(0x500ul, elf.MapVATR(validVa));
+        }
+
+        [Fact]
+        public void Macho64_AdjacentSectionsBoundary_SelectsSecondSectionForBothValidationAndMapVATR()
+        {
+            // P2 Point 2: Mach-O 64 with 2 adjacent code sections:
+            // Section 1 at addr=0x1000, size=0x1000, offset=0x1000.
+            // Section 2 at addr=0x2000, size=0x1000, offset=0x2000.
+            var machoBytes = CreateSyntheticMacho64TwoAdjacentSections(
+                addr1: 0x1000, size1: 0x1000, off1: 0x1000,
+                addr2: 0x2000, size2: 0x1000, off2: 0x2000);
+
+            using var macho = new Macho64(new MemoryStream(machoBytes));
+            var boundaryVa = 0x2000ul;
+
+            // At VA 0x2000, section 2 must be chosen exclusively
+            Assert.True(macho.IsValidMethodPointer(boundaryVa));
+            Assert.Equal(0x2000ul, macho.MapVATR(boundaryVa)); // Must return 0x2000, NOT 0x1000!
         }
 
         [Fact]
@@ -296,9 +451,9 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
-        public void AddMetadataUsageMethodRef_WithInvalidGenericMethodBodyPointer_PreservesSlotAddressAndClearsMethodAddress()
+        public void AddMetadataUsageMethodRef_WithInvalidGenericMethodBodyPointer_PreservesSlotAddressAndEmitsStructuredWarning()
         {
-            // P2: AddMetadataUsageMethodRef with candidate VA 0x180900000 outside PE bounds
+            // P2 Point 3: AddMetadataUsageMethodRef with candidate VA 0x180900000 outside PE bounds
             var (peBytes, validCodeVa, _) = CreateTestPe();
 
             using var pe = new PE(new MemoryStream(peBytes));
@@ -329,7 +484,11 @@ namespace Il2CppDumper.Tests
             Assert.NotNull(addMethodRefMethod);
 
             var usageSlotVa = 0x180001020ul; // Valid RVA 0x1020 in .text
-            addMethodRefMethod.Invoke(structGenerator, new object[] { scriptJson, 0u, usageSlotVa });
+            var warnings = new List<string>();
+            using (CoreLogger.Scope(null, warnings))
+            {
+                addMethodRefMethod.Invoke(structGenerator, new object[] { scriptJson, 0u, usageSlotVa });
+            }
 
             Assert.Single(scriptJson.ScriptMetadataMethod);
             var entry = scriptJson.ScriptMetadataMethod[0];
@@ -338,6 +497,14 @@ namespace Il2CppDumper.Tests
             Assert.Equal(0x1020ul, entry.Address);
             // Native method body pointer must be cleared to 0 (contract absence value) because 0x180900000 is invalid
             Assert.Equal(0ul, entry.MethodAddress);
+
+            // P2 Point 3: Structured warning must be emitted in CoreLogger and recorded in MethodMappingFailures
+            Assert.Contains(warnings, w => w.Contains("0x180900000") && w.Contains("MetadataUsageMethodRef"));
+            Assert.Single(pe.MethodMappingFailures);
+            var failure = pe.MethodMappingFailures[0];
+            Assert.Equal("methodMapping", failure.Category);
+            Assert.Equal("0x180900000", failure.RawBytes);
+            Assert.Contains("MetadataUsageMethodRef", failure.Detail);
         }
 
         [Fact]

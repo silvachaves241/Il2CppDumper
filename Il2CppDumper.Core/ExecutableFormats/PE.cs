@@ -57,7 +57,13 @@ namespace Il2CppDumper
         public override ulong MapVATR(ulong absAddr)
         {
             var addr = absAddr - ImageBase;
-            var section = sections.FirstOrDefault(x => addr >= x.VirtualAddress && addr < x.VirtualAddress + x.VirtualSize);
+            var section = sections.FirstOrDefault(x =>
+            {
+                var maxLen = (x.SizeOfRawData > 0 && x.VirtualSize > 0)
+                    ? Math.Min(x.VirtualSize, x.SizeOfRawData)
+                    : (x.VirtualSize > 0 ? x.VirtualSize : x.SizeOfRawData);
+                return addr >= x.VirtualAddress && addr < x.VirtualAddress + maxLen;
+            });
             if (section == null)
             {
                 return 0ul;
@@ -105,7 +111,13 @@ namespace Il2CppDumper
                 return false;
             }
             var addr = pointer - ImageBase;
-            var section = sections.FirstOrDefault(x => addr >= x.VirtualAddress && addr < x.VirtualAddress + x.VirtualSize);
+            var section = sections.FirstOrDefault(x =>
+            {
+                var maxLen = (x.SizeOfRawData > 0 && x.VirtualSize > 0)
+                    ? Math.Min(x.VirtualSize, x.SizeOfRawData)
+                    : (x.VirtualSize > 0 ? x.VirtualSize : x.SizeOfRawData);
+                return addr >= x.VirtualAddress && addr < x.VirtualAddress + maxLen;
+            });
             if (section == null)
             {
                 return false;

@@ -79,8 +79,19 @@ namespace Il2CppDumper
 
         public override ulong MapVATR(ulong addr)
         {
-            var phdr = programSegment.First(x => addr >= x.p_vaddr && addr <= x.p_vaddr + x.p_memsz);
-            return addr - phdr.p_vaddr + phdr.p_offset;
+            var phdr = programSegment.First(x =>
+            {
+                var maxLen = (x.p_filesz > 0 && x.p_memsz > 0)
+                    ? Math.Min(x.p_memsz, x.p_filesz)
+                    : (x.p_memsz > 0 ? x.p_memsz : x.p_filesz);
+                return addr >= x.p_vaddr && addr < x.p_vaddr + maxLen;
+            });
+            var offset = addr - phdr.p_vaddr + phdr.p_offset;
+            if (offset >= Length)
+            {
+                throw new InvalidOperationException();
+            }
+            return offset;
         }
 
         public override ulong MapRTVA(ulong addr)
@@ -313,7 +324,13 @@ namespace Il2CppDumper
             {
                 return false;
             }
-            var phdr = programSegment.FirstOrDefault(x => pointer >= x.p_vaddr && pointer < x.p_vaddr + x.p_memsz);
+            var phdr = programSegment.FirstOrDefault(x =>
+            {
+                var maxLen = (x.p_filesz > 0 && x.p_memsz > 0)
+                    ? Math.Min(x.p_memsz, x.p_filesz)
+                    : (x.p_memsz > 0 ? x.p_memsz : x.p_filesz);
+                return pointer >= x.p_vaddr && pointer < x.p_vaddr + maxLen;
+            });
             if (phdr == null)
             {
                 return false;

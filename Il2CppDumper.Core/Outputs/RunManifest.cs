@@ -109,13 +109,14 @@ namespace Il2CppDumper
                 ByCategory.StringDecryptor = SumCategory("stringDecryptor");
                 ByCategory.ConstantDecode = SumCategory("constantDecode");
                 ByCategory.OutputHash = SumCategory("outputHash");
+                ByCategory.MethodMapping = SumCategory("methodMapping");
 
-                long totalSum = (long)ByCategory.AttributeDecode + ByCategory.StringLiteral + ByCategory.StringDecryptor + ByCategory.ConstantDecode + ByCategory.OutputHash;
+                long totalSum = (long)ByCategory.AttributeDecode + ByCategory.StringLiteral + ByCategory.StringDecryptor + ByCategory.ConstantDecode + ByCategory.OutputHash + ByCategory.MethodMapping;
                 Total = totalSum > int.MaxValue ? int.MaxValue : (int)totalSum;
             }
             else
             {
-                long totalSum = (long)ByCategory.AttributeDecode + ByCategory.StringLiteral + ByCategory.StringDecryptor + ByCategory.ConstantDecode + ByCategory.OutputHash;
+                long totalSum = (long)ByCategory.AttributeDecode + ByCategory.StringLiteral + ByCategory.StringDecryptor + ByCategory.ConstantDecode + ByCategory.OutputHash + ByCategory.MethodMapping;
                 Total = totalSum > int.MaxValue ? int.MaxValue : (int)totalSum;
             }
         }
@@ -137,6 +138,9 @@ namespace Il2CppDumper
 
         [JsonPropertyName("outputHash")]
         public int OutputHash { get; set; }
+
+        [JsonPropertyName("methodMapping")]
+        public int MethodMapping { get; set; }
     }
 
     public class RunManifestWarningItem
