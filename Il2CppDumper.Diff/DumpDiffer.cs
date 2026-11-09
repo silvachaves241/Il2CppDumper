@@ -717,6 +717,7 @@ namespace Il2CppDumper.Diff
             public string TypeName { get; set; } = string.Empty;
             public string MethodName { get; set; } = string.Empty;
             public string Signature { get; set; } = string.Empty;
+            public string? MethodSignature { get; set; }
             public ulong Address { get; set; }
             public string? Image { get; set; }
             public string? Assembly { get; set; }
@@ -744,6 +745,11 @@ namespace Il2CppDumper.Diff
 
         private static bool AreSignaturesCompatible(MethodDiffItem lm, MethodDiffItem rm, string methodName)
         {
+            if (!string.IsNullOrEmpty(lm.Entry.MethodSignature) && !string.IsNullOrEmpty(rm.Entry.MethodSignature))
+            {
+                return string.Equals(lm.Entry.MethodSignature, rm.Entry.MethodSignature, StringComparison.Ordinal);
+            }
+
             var lSig = lm.Entry.Signature ?? "";
             var rSig = rm.Entry.Signature ?? "";
 
@@ -871,8 +877,20 @@ namespace Il2CppDumper.Diff
             return true;
         }
 
+        private class CParamInfo
+        {
+            public string Type { get; set; } = string.Empty;
+            public string Name { get; set; } = string.Empty;
+        }
+
         private static bool IsSignatureColliding(MethodDiffItem item, string methodName)
         {
+            if (!string.IsNullOrEmpty(item.Entry.MethodSignature))
+            {
+                // Explicit managed signature distinguishes overloads definitively
+                return false;
+            }
+
             var declType = item.Identity.DeclaringType;
             if (declType?.methods == null) return false;
 
@@ -889,7 +907,7 @@ namespace Il2CppDumper.Diff
                 return true;
             }
 
-            var cParams = ExtractParameterTypes(sig);
+            var cParams = ExtractManagedParametersFromSignature(sig);
             int matchCount = 0;
             foreach (var cand in candidates)
             {
@@ -902,36 +920,21 @@ namespace Il2CppDumper.Diff
             return matchCount > 1;
         }
 
-        private static bool DoesDeclarationMatchSignature(JsonDumpMethod cand, List<string>? cParams)
+        private static bool DoesDeclarationMatchSignature(JsonDumpMethod cand, List<CParamInfo> cParams)
         {
-            if (cand.parameters == null || cand.parameters.Count == 0)
-            {
-                return true;
-            }
-
-            if (cParams == null)
+            var candParams = cand.parameters ?? new List<JsonDumpParameter>();
+            if (candParams.Count != cParams.Count)
             {
                 return false;
             }
 
-            if (cand.parameters.Count == cParams.Count)
+            for (int i = 0; i < cParams.Count; i++)
             {
-                for (int i = 0; i < cParams.Count; i++)
-                {
-                    if (!AreParameterTypesMatching(cand.parameters[i].type, cParams[i]))
-                        return false;
-                }
-                return true;
+                if (!AreParameterTypesMatching(candParams[i].type, cParams[i].Type))
+                    return false;
             }
 
-            if (cParams.Count == 1 && cand.parameters.Count > 1)
-            {
-                var lastParam = cand.parameters[^1];
-                if (AreParameterTypesMatching(lastParam.type, cParams[0]))
-                    return true;
-            }
-
-            return false;
+            return true;
         }
 
         private static bool AreParameterTypesMatching(string managedType, string cType)
@@ -939,18 +942,25 @@ namespace Il2CppDumper.Diff
             if (string.Equals(managedType, cType, StringComparison.OrdinalIgnoreCase))
                 return true;
 
-            if (managedType.StartsWith("System."))
-                managedType = managedType.Substring(7);
+            cType = cType.Trim();
+            if (cType.StartsWith("const "))
+                cType = cType.Substring(6).Trim();
+            if (cType.StartsWith("struct "))
+                cType = cType.Substring(7).Trim();
 
-            if (string.Equals(managedType, cType, StringComparison.OrdinalIgnoreCase))
+            var managedSimple = managedType;
+            if (managedSimple.StartsWith("System."))
+                managedSimple = managedSimple.Substring(7);
+
+            if (string.Equals(managedSimple, cType, StringComparison.OrdinalIgnoreCase))
                 return true;
 
-            var m = managedType.ToLowerInvariant();
+            var m = managedSimple.ToLowerInvariant();
             var c = cType.ToLowerInvariant();
 
             if (m == c) return true;
 
-            if ((m == "char" || m == "ushort" || m == "uint16") && (c == "uint16_t" || c == "ushort" || c == "char"))
+            if ((m == "char" || m == "ushort" || m == "uint16") && (c == "uint16_t" || c == "ushort" || c == "char" || c == "il2cppchar"))
                 return true;
 
             if ((m == "short" || m == "int16") && (c == "int16_t" || c == "short"))
@@ -989,13 +999,85 @@ namespace Il2CppDumper.Diff
             if (m == "uintptr" && (c == "uintptr_t" || c == "void*"))
                 return true;
 
+            bool isManagedPrimitive = (m == "char" || m == "ushort" || m == "short" || m == "int" || m == "uint" ||
+                                       m == "long" || m == "ulong" || m == "byte" || m == "sbyte" || m == "bool" ||
+                                       m == "float" || m == "double" || m == "int32" || m == "uint32" || m == "int16" ||
+                                       m == "uint16" || m == "int64" || m == "uint64" || m == "single" || m == "boolean");
+
+            if (isManagedPrimitive && c.EndsWith("*"))
+            {
+                return false;
+            }
+
+            if (m == "string")
+            {
+                return c.Contains("string") || c == "il2cppstring*" || c == "system_string_o*";
+            }
+
+            if (m == "type")
+            {
+                return c.Contains("type") || c == "il2cppreflectiontype*" || c == "system_type_o*";
+            }
+
+            if (m == "object")
+            {
+                return c.Contains("object") || c == "il2cppobject*";
+            }
+
+            if (managedType.EndsWith("[]"))
+            {
+                var elemType = managedType.Substring(0, managedType.Length - 2);
+                return c.Contains("array") || c == "il2cpparray*" || c.Contains(elemType.ToLowerInvariant());
+            }
+
             if (c.EndsWith("*"))
-                return true;
+            {
+                var cBase = c.TrimEnd('*').Trim();
+                if (cBase.EndsWith("_o"))
+                    cBase = cBase.Substring(0, cBase.Length - 2);
+
+                if (cBase.EndsWith(m, StringComparison.OrdinalIgnoreCase) ||
+                    cBase.Replace("_", ".").EndsWith(m, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
 
             return false;
         }
 
-        private static List<string>? ExtractParameterTypes(string sig)
+        private static List<CParamInfo> ExtractManagedParametersFromSignature(string sig)
+        {
+            var rawParams = ExtractRawParameters(sig);
+            if (rawParams == null || rawParams.Count == 0)
+                return new List<CParamInfo>();
+
+            var list = new List<CParamInfo>(rawParams);
+
+            // 1. Remove receptor (__this) if first parameter
+            if (list.Count > 0)
+            {
+                var first = list[0];
+                if (first.Name == "__this" || first.Name.StartsWith("__this") || first.Type.EndsWith("__this"))
+                {
+                    list.RemoveAt(0);
+                }
+            }
+
+            // 2. Remove auxiliary metadata argument (const MethodInfo* method) if last parameter
+            if (list.Count > 0)
+            {
+                var last = list[^1];
+                if (last.Name == "method" || last.Type.Contains("MethodInfo") || last.Type.EndsWith("MethodInfo*"))
+                {
+                    list.RemoveAt(list.Count - 1);
+                }
+            }
+
+            return list;
+        }
+
+        private static List<CParamInfo>? ExtractRawParameters(string sig)
         {
             if (string.IsNullOrEmpty(sig)) return null;
             var openParen = sig.IndexOf('(');
@@ -1005,9 +1087,9 @@ namespace Il2CppDumper.Diff
 
             var paramStr = sig.Substring(openParen + 1, closeParen - openParen - 1).Trim();
             if (string.IsNullOrEmpty(paramStr))
-                return new List<string>();
+                return new List<CParamInfo>();
 
-            var paramList = new List<string>();
+            var paramTokens = new List<string>();
             int depth = 0;
             int bracketDepth = 0;
             int lastStart = 0;
@@ -1020,31 +1102,39 @@ namespace Il2CppDumper.Diff
                 else if (c == ']') { if (bracketDepth > 0) bracketDepth--; }
                 else if (c == ',' && depth == 0 && bracketDepth == 0)
                 {
-                    paramList.Add(paramStr.Substring(lastStart, i - lastStart).Trim());
+                    paramTokens.Add(paramStr.Substring(lastStart, i - lastStart).Trim());
                     lastStart = i + 1;
                 }
             }
             if (lastStart < paramStr.Length)
             {
-                paramList.Add(paramStr.Substring(lastStart).Trim());
+                paramTokens.Add(paramStr.Substring(lastStart).Trim());
             }
 
-            var result = new List<string>();
-            foreach (var p in paramList)
+            var result = new List<CParamInfo>();
+            foreach (var token in paramTokens)
             {
-                var trimmed = p.Trim();
-                if (string.IsNullOrEmpty(trimmed)) continue;
+                var trimmed = token.Trim();
+                if (string.IsNullOrEmpty(trimmed) || trimmed == "void") continue;
+
                 var parts = trimmed.Split(new[] { ' ', '	' }, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length > 1)
+                if (parts.Length == 1)
                 {
-                    var last = parts[^1];
-                    if (!last.EndsWith('*') && !last.EndsWith('&'))
+                    result.Add(new CParamInfo { Type = parts[0], Name = "" });
+                }
+                else
+                {
+                    var name = parts[^1];
+                    if (name.EndsWith('*') || name.EndsWith('&'))
                     {
-                        result.Add(string.Join(" ", parts.Take(parts.Length - 1)));
-                        continue;
+                        result.Add(new CParamInfo { Type = trimmed, Name = "" });
+                    }
+                    else
+                    {
+                        var type = string.Join(" ", parts.Take(parts.Length - 1));
+                        result.Add(new CParamInfo { Type = type, Name = name });
                     }
                 }
-                result.Add(trimmed);
             }
             return result;
         }
@@ -1462,6 +1552,7 @@ namespace Il2CppDumper.Diff
                             TypeName = typeName,
                             MethodName = methodName,
                             Signature = sig,
+                            MethodSignature = item.TryGetProperty("MethodSignature", out var msEl) && msEl.ValueKind == JsonValueKind.String ? msEl.GetString() : (item.TryGetProperty("methodSignature", out msEl) && msEl.ValueKind == JsonValueKind.String ? msEl.GetString() : null),
                             Address = addr,
                             Image = item.TryGetProperty("Image", out var imgEl) && imgEl.ValueKind == JsonValueKind.String ? imgEl.GetString() : (item.TryGetProperty("image", out imgEl) && imgEl.ValueKind == JsonValueKind.String ? imgEl.GetString() : null),
                             Assembly = item.TryGetProperty("Assembly", out var asmEl) && asmEl.ValueKind == JsonValueKind.String ? asmEl.GetString() : (item.TryGetProperty("assembly", out asmEl) && asmEl.ValueKind == JsonValueKind.String ? asmEl.GetString() : null)

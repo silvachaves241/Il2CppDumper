@@ -119,6 +119,14 @@ namespace Il2CppDumper
                             scriptMethod.Name = methodFullName;
                             scriptMethod.Image = imageName;
                             scriptMethod.Assembly = assemblyName;
+                            var managedParams = new List<string>();
+                            for (var j = 0; j < methodDef.parameterCount; j++)
+                            {
+                                var parameterDef = metadata.parameterDefs[methodDef.parameterStart + j];
+                                var parameterType = il2Cpp.types[parameterDef.typeIndex];
+                                managedParams.Add(executor.GetTypeName(parameterType, false, false));
+                            }
+                            scriptMethod.MethodSignature = $"{methodName}({string.Join(", ", managedParams)})";
 
                                 var methodReturnType = il2Cpp.types[methodDef.returnType];
                                 var returnType = ParseType(methodReturnType);
@@ -186,6 +194,14 @@ namespace Il2CppDumper
                                         scriptMethod.Name = methodFullName;
                                         scriptMethod.Image = imageName;
                                         scriptMethod.Assembly = assemblyName;
+                                        var genericManagedParams = new List<string>();
+                                        for (var j = 0; j < methodDef.parameterCount; j++)
+                                        {
+                                            var parameterDef = metadata.parameterDefs[methodDef.parameterStart + j];
+                                            var parameterType = il2Cpp.types[parameterDef.typeIndex];
+                                            genericManagedParams.Add(executor.GetTypeName(parameterType, false, false));
+                                        }
+                                        scriptMethod.MethodSignature = $"{methodSpecMethodName}({string.Join(", ", genericManagedParams)})";
 
                                         var genericContext = executor.GetMethodSpecGenericContext(methodSpec);
                                         var methodReturnType = il2Cpp.types[methodDef.returnType];

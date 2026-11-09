@@ -989,7 +989,7 @@ namespace Il2CppDumper.Tests
                     }
                 };
 
-                var sigColliding = "object System.Enum$$ToObject (uint16_t value)";
+                var sigColliding = "Il2CppObject* System_Enum__ToObject (System_Type_o* enumType, uint16_t value, const MethodInfo* method);";
                 var leftScript = new ScriptJson
                 {
                     ScriptMethod = new List<ScriptMethod>
@@ -1741,7 +1741,7 @@ namespace Il2CppDumper.Tests
                     }
                 };
 
-                var sigColliding = "object System.Enum$$ToObject (uint16_t value)";
+                var sigColliding = "Il2CppObject* System_Enum__ToObject (System_Type_o* enumType, uint16_t value, const MethodInfo* method);";
                 var leftScript = new ScriptJson
                 {
                     ScriptMethod = new List<ScriptMethod>
@@ -1889,6 +1889,364 @@ namespace Il2CppDumper.Tests
                 var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
                 Assert.False(diff.hasAmbiguousMethodAddresses);
                 Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+        [Fact]
+        public void ReviewerRound6_P2_Dofus_EnumToObject_RealNativeSignature_SignalsAmbiguityWithoutDelta()
+        {
+            // Review 6, Point 1: System.Enum.ToObject(Type, char) vs ToObject(Type, ushort)
+            // Real native signature: Il2CppObject* System_Enum__ToObject (System_Type_o* enumType, uint16_t value, const MethodInfo* method);
+            // Must NOT emit false delta 0x42D7190 -> 0x42D6D50!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer6-enum-toobject-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "mscorlib.dll",
+                            assembly = "mscorlib",
+                            fullName = "System.Enum",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "char" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "ushort" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var sigReal = "Il2CppObject* System_Enum__ToObject (System_Type_o* enumType, uint16_t value, const MethodInfo* method);";
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = sigReal, Address = 0x42D7190, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = sigReal, Address = 0x42D6D50, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+                Assert.NotNull(diff.methods.note);
+                Assert.Contains(sigReal, diff.methods.note);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound6_P2_String_IndexOf_RealNativeSignature_ReportsRvaChange()
+        {
+            // Review 6, Point 2: System.String.IndexOf(string) valid RVA change 0x40AE360 -> 0x40AE370
+            // Real native signature: int32_t System_String__IndexOf (System_String_o* __this, System_String_o* value, const MethodInfo* method);
+            // Must NOT be suppressed as ambiguous! Must cleanly report address change!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer6-string-indexof-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "mscorlib.dll",
+                            assembly = "mscorlib",
+                            fullName = "System.String",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "IndexOf",
+                                    returnType = "int",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "value", type = "char" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "IndexOf",
+                                    returnType = "int",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "value", type = "string" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "IndexOf",
+                                    returnType = "int",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "value", type = "string" },
+                                        new() { name = "startIndex", type = "int" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "IndexOf",
+                                    returnType = "int",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "value", type = "string" },
+                                        new() { name = "comparisonType", type = "StringComparison" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var sigReal = "int32_t System_String__IndexOf (System_String_o* __this, System_String_o* value, const MethodInfo* method);";
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.String$$IndexOf", Signature = sigReal, Address = 0x40AE360, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.String$$IndexOf", Signature = sigReal, Address = 0x40AE370, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Single(diff.methods.addressChanged!);
+                var change = diff.methods.addressChanged![0];
+                Assert.Equal("System.String", change.type);
+                Assert.Equal("0x40AE360", change.left);
+                Assert.Equal("0x40AE370", change.right);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound6_P2_BitConverter_GetBytes_RealNativeSignature_SignalsAmbiguityWithoutDelta()
+        {
+            // Review 6, Point 1: BitConverter.GetBytes(char) vs GetBytes(ushort)
+            // Real native signature: Il2CppArray* System_BitConverter__GetBytes (uint16_t value, const MethodInfo* method);
+            // Must NOT emit false delta!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer6-bitconverter-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "mscorlib.dll",
+                            assembly = "mscorlib",
+                            fullName = "System.BitConverter",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "GetBytes",
+                                    returnType = "byte[]",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "value", type = "char" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "GetBytes",
+                                    returnType = "byte[]",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "value", type = "ushort" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var sigReal = "Il2CppArray* System_BitConverter__GetBytes (uint16_t value, const MethodInfo* method);";
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.BitConverter$$GetBytes", Signature = sigReal, Address = 0x1000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.BitConverter$$GetBytes", Signature = sigReal, Address = 0x2000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound6_MethodSignature_DistinguishesOverloadsWithoutCollision()
+        {
+            // When MethodSignature is present, overloads with identical C signatures (e.g. char vs ushort)
+            // are unambiguously resolved by managed signature!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer6-methodsig-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "mscorlib.dll",
+                            assembly = "mscorlib",
+                            fullName = "System.Enum",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "char" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "ushort" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var cSig = "Il2CppObject* System_Enum__ToObject (System_Type_o* enumType, uint16_t value, const MethodInfo* method);";
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "ToObject(Type, char)", Address = 0x1000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "ToObject(Type, char)", Address = 0x2000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Single(diff.methods.addressChanged!);
+                Assert.Equal("0x1000", diff.methods.addressChanged![0].left);
+                Assert.Equal("0x2000", diff.methods.addressChanged![0].right);
             }
             finally
             {

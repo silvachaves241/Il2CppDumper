@@ -20,6 +20,8 @@ namespace Il2CppDumper
         public string Signature;
         public string TypeSignature;
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? MethodSignature;
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public string? Image;
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public string? Assembly;
