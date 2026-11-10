@@ -215,6 +215,217 @@ namespace Il2CppDumper.Tests
             Assert.Equal("3.21.0", reopenedGenAttr.ConstructorArguments[1].Value);
         }
 
+        [Fact]
+        public void SanitizeCustomAttributes_ConstructorArgumentTypeMismatch_OmitsOnlyMismatchedAttribute()
+        {
+            using var assembly = AssemblyDefinition.CreateAssembly(
+                new AssemblyNameDefinition("MismatchSample", new Version(1, 0, 0, 0)),
+                "MismatchSample.dll",
+                ModuleKind.Dll);
+
+            var module = assembly.MainModule;
+            var stringAttrType = CreateAttributeType(module, "MismatchSample", "StringMarkerAttribute", module.TypeSystem.String);
+            var dbgAttrType = CreateAttributeType(module, "System.Diagnostics", "DebuggerNonUserCodeAttribute");
+
+            var targetType = new TypeDefinition(
+                "MismatchSample",
+                "Target",
+                Mono.Cecil.TypeAttributes.Public | Mono.Cecil.TypeAttributes.Class,
+                module.TypeSystem.Object);
+            module.Types.Add(targetType);
+
+            // Ctor expects System.String, but argument has type System.Int32
+            var mismatchedAttr = new CustomAttribute(stringAttrType.Methods.Single(m => m.Name == ".ctor"));
+            mismatchedAttr.ConstructorArguments.Add(new CustomAttributeArgument(module.TypeSystem.Int32, 42));
+            targetType.CustomAttributes.Add(mismatchedAttr);
+
+            var validAttr = new CustomAttribute(dbgAttrType.Methods.Single(m => m.Name == ".ctor"));
+            targetType.CustomAttributes.Add(validAttr);
+
+            var warnings = new List<string>();
+            byte[] emittedBytes;
+            using (CoreLogger.Scope(null, warnings))
+            {
+                DummyAssemblyExporter.SanitizeCustomAttributes(assembly);
+                emittedBytes = DummyAssemblyExporter.WriteAssembly(assembly);
+            }
+
+            var warning = Assert.Single(warnings);
+            Assert.Contains("MismatchSample", warning);
+            Assert.Contains("MismatchSample.Target", warning);
+            Assert.Contains("MismatchSample.StringMarkerAttribute", warning);
+            Assert.Contains("System.Int32", warning);
+            Assert.Contains("System.String", warning);
+
+            using var reopened = AssemblyDefinition.ReadAssembly(new MemoryStream(emittedBytes));
+            var reopenedTarget = reopened.MainModule.GetType("MismatchSample.Target");
+            var surviving = Assert.Single(reopenedTarget.CustomAttributes);
+            Assert.Equal("System.Diagnostics.DebuggerNonUserCodeAttribute", surviving.AttributeType.FullName);
+        }
+
+        [Fact]
+        public void WriteAssembly_WhenWriterFailsOnOneAttributeAmongOneThousand_IsolatesInLogarithmicProbes()
+        {
+            using var assembly = AssemblyDefinition.CreateAssembly(
+                new AssemblyNameDefinition("BatchIsolationSample", new Version(1, 0, 0, 0)),
+                "BatchIsolationSample.dll",
+                ModuleKind.Dll);
+
+            var module = assembly.MainModule;
+            var validAttrType = CreateAttributeType(module, "BatchIsolationSample", "ValidMarkerAttribute", module.TypeSystem.Int32);
+            var validCtor = validAttrType.Methods.Single(m => m.Name == ".ctor");
+
+            var validEnumDef = new TypeDefinition(
+                "BatchIsolationSample",
+                "LateCorruptedEnum",
+                Mono.Cecil.TypeAttributes.Public | Mono.Cecil.TypeAttributes.Sealed,
+                module.ImportReference(typeof(Enum)));
+            var valueField = new FieldDefinition(
+                "value__",
+                Mono.Cecil.FieldAttributes.Public | Mono.Cecil.FieldAttributes.SpecialName | Mono.Cecil.FieldAttributes.RTSpecialName,
+                module.TypeSystem.Int32);
+            validEnumDef.Fields.Add(valueField);
+            module.Types.Add(validEnumDef);
+
+            var lateFailingAttrType = CreateAttributeType(module, "BatchIsolationSample", "LateFailingEnumAttribute", validEnumDef);
+            var lateFailingCtor = lateFailingAttrType.Methods.Single(m => m.Name == ".ctor");
+
+            var containerType = new TypeDefinition(
+                "BatchIsolationSample",
+                "BigContainer",
+                Mono.Cecil.TypeAttributes.Public | Mono.Cecil.TypeAttributes.Class,
+                module.TypeSystem.Object);
+            module.Types.Add(containerType);
+
+            const int validCount = 1000;
+            for (var i = 0; i < validCount; i++)
+            {
+                var prop = new PropertyDefinition($"Prop{i}", Mono.Cecil.PropertyAttributes.None, module.TypeSystem.Int32);
+                var attr = new CustomAttribute(validCtor);
+                attr.ConstructorArguments.Add(new CustomAttributeArgument(module.TypeSystem.Int32, i));
+                prop.CustomAttributes.Add(attr);
+                containerType.Properties.Add(prop);
+            }
+
+            // Place the late-failing attribute at the end (index 1000)
+            var failingProp = new PropertyDefinition("FailingProp", Mono.Cecil.PropertyAttributes.None, module.TypeSystem.Int32);
+            var failingAttr = new CustomAttribute(lateFailingCtor);
+            failingAttr.ConstructorArguments.Add(new CustomAttributeArgument(validEnumDef, 1));
+            failingProp.CustomAttributes.Add(failingAttr);
+            containerType.Properties.Add(failingProp);
+
+            var writeAttempts = 0;
+            var warnings = new List<string>();
+            byte[] emittedBytes;
+            using (CoreLogger.Scope(null, warnings))
+            {
+                DummyAssemblyExporter.SanitizeCustomAttributes(assembly);
+                Assert.Single(failingProp.CustomAttributes);
+
+                // Simulate a write-only failure that survives sanitization (e.g., an external or mutated enum reference
+                // where Cecil's SignatureWriter.WriteCustomAttributeEnumValue throws ArgumentException during PE emission).
+                validEnumDef.BaseType = module.TypeSystem.Object;
+
+                emittedBytes = DummyAssemblyExporter.WriteAssembly(assembly, asm =>
+                {
+                    writeAttempts++;
+                    using var ms = new MemoryStream();
+                    asm.Write(ms);
+                    return ms.ToArray();
+                }, customAttributesSanitized: true);
+            }
+
+            // 1 initial write + 1 baseline check + ~20 binary-search probes <= 25 total writes (vs 1,002 in linear recovery)
+            Assert.InRange(writeAttempts, 4, 25);
+
+            var warning = Assert.Single(warnings);
+            Assert.Contains("BatchIsolationSample", warning);
+            Assert.Contains("BatchIsolationSample.BigContainer.FailingProp", warning);
+            Assert.Contains("BatchIsolationSample.LateFailingEnumAttribute", warning);
+
+            using var reopened = AssemblyDefinition.ReadAssembly(new MemoryStream(emittedBytes));
+            var reopenedContainer = reopened.MainModule.GetType("BatchIsolationSample.BigContainer");
+            Assert.Equal(validCount + 1, reopenedContainer.Properties.Count);
+            Assert.Equal(validCount, reopenedContainer.Properties.Count(p => p.CustomAttributes.Count == 1));
+            Assert.Empty(reopenedContainer.Properties.Single(p => p.Name == "FailingProp").CustomAttributes);
+        }
+
+        [Fact]
+        public void Export_CrossModuleStructAndEnumFieldsInEarlierAssembly_PreserveIsValueTypeInReopenedAssembly()
+        {
+            var (metadata, il2Cpp) = CreateCrossModuleStructAndEnumFieldEnvironment();
+            var executor = new Il2CppExecutor(metadata, il2Cpp);
+
+            var tempDir = Path.Combine(Path.GetTempPath(), "il2cpp_issue102_crossmod_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var written = DummyAssemblyExporter.Export(executor, tempDir, addToken: false);
+                var earlierDllPath = Assert.Single(written, p => Path.GetFileName(p) == "EarlierModule.dll");
+
+                using var reopenedEarlier = AssemblyDefinition.ReadAssembly(earlierDllPath);
+                var holderType = reopenedEarlier.MainModule.GetType("EarlierNamespace.FieldHolder");
+                Assert.NotNull(holderType);
+
+                var structField = holderType.Fields.Single(f => f.Name == "StructField");
+                Assert.Equal("LaterNamespace.LaterStruct", structField.FieldType.FullName);
+                Assert.True(structField.FieldType.IsValueType);
+
+                var enumField = holderType.Fields.Single(f => f.Name == "EnumField");
+                Assert.Equal("LaterNamespace.LaterEnum", enumField.FieldType.FullName);
+                Assert.True(enumField.FieldType.IsValueType);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    Directory.Delete(tempDir, true);
+                }
+            }
+        }
+
+        [Fact]
+        public void Export_BlobWithReadableArityMismatchAttributeFollowedByValidAttribute_PreservesTrailingAttributeOnSameMember()
+        {
+            var (metadata, il2Cpp) = CreateSameMemberArityMismatchAndValidTrailingAttributeEnvironment();
+            var executor = new Il2CppExecutor(metadata, il2Cpp);
+
+            var warnings = new List<string>();
+            var tempDir = Path.Combine(Path.GetTempPath(), "il2cpp_issue102_trailing_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                List<string> written;
+                using (CoreLogger.Scope(null, warnings))
+                {
+                    written = DummyAssemblyExporter.Export(executor, tempDir, addToken: false);
+                }
+
+                var dllPath = Assert.Single(written, p => Path.GetFileName(p) == "TestProtocol.dll");
+
+                var warning = Assert.Single(warnings);
+                Assert.Contains("TestProtocol", warning);
+                Assert.Contains("TestNamespace.SampleMessage.Payload", warning);
+                Assert.Contains("DebuggerNonUserCodeAttribute", warning);
+
+                using var reopened = AssemblyDefinition.ReadAssembly(dllPath);
+                var messageType = reopened.MainModule.GetType("TestNamespace.SampleMessage");
+                var payloadProp = messageType.Properties.Single(p => p.Name == "Payload");
+
+                var survivingAttr = Assert.Single(payloadProp.CustomAttributes);
+                Assert.Equal("System.CodeDom.Compiler.GeneratedCodeAttribute", survivingAttr.AttributeType.FullName);
+                Assert.Equal("protoc", survivingAttr.ConstructorArguments[0].Value);
+                Assert.Equal("3.21.0", survivingAttr.ConstructorArguments[1].Value);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    Directory.Delete(tempDir, true);
+                }
+            }
+        }
+
         private static TypeDefinition CreateAttributeType(ModuleDefinition module, string ns, string name, params TypeReference[] ctorParamTypes)
         {
             var attrType = new TypeDefinition(
@@ -606,6 +817,241 @@ namespace Il2CppDumper.Tests
             var utf8 = Encoding.UTF8.GetBytes(value);
             bw.Write((byte)(utf8.Length << 1)); // compressed int32 length
             bw.Write(utf8);
+        }
+
+        private static (Metadata metadata, WebAssemblyMemory il2Cpp) CreateCrossModuleStructAndEnumFieldEnvironment()
+        {
+            var bytes = new byte[16384];
+            BitConverter.GetBytes(0xFAB11BAFu).CopyTo(bytes, 0);
+            BitConverter.GetBytes(29).CopyTo(bytes, 4);
+            var m = new Metadata(new MemoryStream(bytes))
+            {
+                Version = 29
+            };
+            m.header.stringOffset = 512;
+            m.header.stringSize = 2048;
+            m.header.attributeDataOffset = 4096;
+            m.header.fieldAndParameterDefaultValueDataOffset = 8192;
+
+            uint strPos = 0;
+            uint WriteStr(string s)
+            {
+                var ret = strPos;
+                var b = Encoding.UTF8.GetBytes(s + "\0");
+                Buffer.BlockCopy(b, 0, bytes, (int)(m.header.stringOffset + strPos), b.Length);
+                strPos += (uint)b.Length;
+                return ret;
+            }
+
+            // Types in il2Cpp.types:
+            // 0: System.ValueType (CLASS, data.dummy = 0 -> typeDefs[0] in CoreLib.dll)
+            // 1: System.Enum (CLASS, data.dummy = 1 -> typeDefs[1] in CoreLib.dll)
+            // 2: System.Int32
+            // 3: LaterNamespace.LaterStruct (VALUETYPE, data.dummy = 3 -> typeDefs[3] in LaterModule.dll, field attrs = Public)
+            // 4: LaterNamespace.LaterEnum (VALUETYPE, data.dummy = 4 -> typeDefs[4] in LaterModule.dll, field attrs = Public)
+            // 5: EarlierNamespace.FieldHolder (CLASS, data.dummy = 2 -> typeDefs[2] in EarlierModule.dll)
+            var valueTypeDef = new Il2CppTypeDefinition
+            {
+                nameIndex = WriteStr("ValueType"),
+                namespaceIndex = WriteStr("System"),
+                byvalTypeIndex = 0,
+                declaringTypeIndex = -1,
+                parentIndex = -1,
+                genericContainerIndex = -1,
+                flags = (uint)Mono.Cecil.TypeAttributes.Public,
+                token = 0x02000001
+            };
+
+            var enumBaseDef = new Il2CppTypeDefinition
+            {
+                nameIndex = WriteStr("Enum"),
+                namespaceIndex = WriteStr("System"),
+                byvalTypeIndex = 1,
+                declaringTypeIndex = -1,
+                parentIndex = 0,
+                genericContainerIndex = -1,
+                flags = (uint)Mono.Cecil.TypeAttributes.Public,
+                token = 0x02000002
+            };
+
+            var earlierHolderDef = new Il2CppTypeDefinition
+            {
+                nameIndex = WriteStr("FieldHolder"),
+                namespaceIndex = WriteStr("EarlierNamespace"),
+                byvalTypeIndex = 5,
+                declaringTypeIndex = -1,
+                parentIndex = -1,
+                genericContainerIndex = -1,
+                flags = (uint)Mono.Cecil.TypeAttributes.Public,
+                fieldStart = 0,
+                field_count = 2,
+                token = 0x02000001
+            };
+
+            var laterStructDef = new Il2CppTypeDefinition
+            {
+                nameIndex = WriteStr("LaterStruct"),
+                namespaceIndex = WriteStr("LaterNamespace"),
+                byvalTypeIndex = 3,
+                declaringTypeIndex = -1,
+                parentIndex = 0, // System.ValueType
+                genericContainerIndex = -1,
+                flags = (uint)(Mono.Cecil.TypeAttributes.Public | Mono.Cecil.TypeAttributes.Sealed),
+                bitfield = 1, // ValueType
+                fieldStart = 2,
+                field_count = 1,
+                token = 0x02000001
+            };
+
+            var laterEnumDef = new Il2CppTypeDefinition
+            {
+                nameIndex = WriteStr("LaterEnum"),
+                namespaceIndex = WriteStr("LaterNamespace"),
+                byvalTypeIndex = 4,
+                declaringTypeIndex = -1,
+                parentIndex = 2, // System.Int32 in IL2CPP metadata
+                genericContainerIndex = -1,
+                flags = (uint)(Mono.Cecil.TypeAttributes.Public | Mono.Cecil.TypeAttributes.Sealed),
+                bitfield = 3, // ValueType | Enum
+                fieldStart = 3,
+                field_count = 1,
+                token = 0x02000002
+            };
+
+            m.typeDefs = new[]
+            {
+                valueTypeDef,
+                enumBaseDef,
+                earlierHolderDef,
+                laterStructDef,
+                laterEnumDef
+            };
+
+            m.fieldDefs = new[]
+            {
+                new Il2CppFieldDefinition { nameIndex = WriteStr("StructField"), typeIndex = 3, token = 0x04000001 },
+                new Il2CppFieldDefinition { nameIndex = WriteStr("EnumField"), typeIndex = 4, token = 0x04000002 },
+                new Il2CppFieldDefinition { nameIndex = WriteStr("X"), typeIndex = 2, token = 0x04000003 },
+                new Il2CppFieldDefinition { nameIndex = WriteStr("value__"), typeIndex = 2, token = 0x04000004 }
+            };
+
+            typeof(Metadata).GetField("fieldDefaultValuesDic", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .SetValue(m, new Dictionary<int, Il2CppFieldDefaultValue>());
+
+            m.parameterDefs = Array.Empty<Il2CppParameterDefinition>();
+            m.methodDefs = Array.Empty<Il2CppMethodDefinition>();
+            m.propertyDefs = Array.Empty<Il2CppPropertyDefinition>();
+            m.eventDefs = Array.Empty<Il2CppEventDefinition>();
+            m.interfaceIndices = Array.Empty<int>();
+            m.nestedTypeIndices = Array.Empty<int>();
+            m.attributeDataRanges = Array.Empty<Il2CppCustomAttributeDataRange>();
+
+            var coreImage = new Il2CppImageDefinition
+            {
+                nameIndex = WriteStr("CoreLib.dll"),
+                assemblyIndex = 0,
+                typeStart = 0,
+                typeCount = 2
+            };
+            var earlierImage = new Il2CppImageDefinition
+            {
+                nameIndex = WriteStr("EarlierModule.dll"),
+                assemblyIndex = 1,
+                typeStart = 2,
+                typeCount = 1
+            };
+            var laterImage = new Il2CppImageDefinition
+            {
+                nameIndex = WriteStr("LaterModule.dll"),
+                assemblyIndex = 2,
+                typeStart = 3,
+                typeCount = 2
+            };
+
+            m.imageDefs = new[] { coreImage, earlierImage, laterImage };
+            m.assemblyDefs = new[]
+            {
+                new Il2CppAssemblyDefinition { aname = new Il2CppAssemblyNameDefinition { nameIndex = WriteStr("CoreLib"), major = 1 } },
+                new Il2CppAssemblyDefinition { aname = new Il2CppAssemblyNameDefinition { nameIndex = WriteStr("EarlierModule"), major = 1 } },
+                new Il2CppAssemblyDefinition { aname = new Il2CppAssemblyNameDefinition { nameIndex = WriteStr("LaterModule"), major = 1 } }
+            };
+
+            typeof(Metadata).GetField("attributeTypeRangesDic", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .SetValue(m, new Dictionary<Il2CppImageDefinition, Dictionary<uint, int>>
+                {
+                    [coreImage] = new(),
+                    [earlierImage] = new(),
+                    [laterImage] = new()
+                });
+
+            var publicFieldAttrs = (ushort)FIELD_ATTRIBUTE_PUBLIC;
+            var il = new WebAssemblyMemory(new MemoryStream(new byte[256]), 0)
+            {
+                Version = 29,
+                codeGenModuleMethodPointers = new Dictionary<string, ulong[]>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["CoreLib.dll"] = Array.Empty<ulong>(),
+                    ["EarlierModule.dll"] = Array.Empty<ulong>(),
+                    ["LaterModule.dll"] = Array.Empty<ulong>()
+                },
+                types = new[]
+                {
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 0 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 1 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_I4, attrs = publicFieldAttrs },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VALUETYPE, attrs = publicFieldAttrs, data = new Il2CppType.Union { dummy = 3 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_VALUETYPE, attrs = publicFieldAttrs, data = new Il2CppType.Union { dummy = 4 } },
+                    new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 2 } }
+                }
+            };
+
+            return (m, il);
+        }
+
+        private static (Metadata metadata, WebAssemblyMemory il2Cpp) CreateSameMemberArityMismatchAndValidTrailingAttributeEnvironment()
+        {
+            var (m, il) = CreateProtocolMetadataEnvironment(includeBrokenEnumAttribute: false);
+
+            // Build blob1 for SampleMessage.Payload (0x17000001) where:
+            // Attr 0 is DebuggerNonUserCodeAttribute (ctor has 0 parameters), but the blob payload encodes 1 constructor argument ("extra"),
+            // causing VisitCustomAttributeData() to succeed and advance cursors cleanly, while materialization throws on Parameters[0].
+            // Attr 1 is GeneratedCodeAttribute("protoc", "3.21.0"), which must still be materialized and preserved!
+            using var ms = new MemoryStream();
+            using var bw = new BinaryWriter(ms);
+            bw.Write((byte)2); // Count = 2
+            bw.Write(1); // Attr 0 ctor: DebuggerNonUserCodeAttribute..ctor() (0 params)
+            bw.Write(2); // Attr 1 ctor: GeneratedCodeAttribute..ctor(string, string) (2 params)
+
+            // Attr 0 payload: 1 ctor argument (arity mismatch!), 0 fields, 0 properties
+            bw.Write((byte)1);
+            bw.Write((byte)0);
+            bw.Write((byte)0);
+            WriteStringBlobValue(bw, "extra");
+
+            // Attr 1 payload: 2 ctor arguments, 0 fields, 0 properties
+            bw.Write((byte)2);
+            bw.Write((byte)0);
+            bw.Write((byte)0);
+            WriteStringBlobValue(bw, "protoc");
+            WriteStringBlobValue(bw, "3.21.0");
+
+            var blob0 = BuildEditorBrowsableBlob(ctorMethodIndex: 0, enumTypeIndex: 4, enumValue: 1);
+            var blob1 = ms.ToArray();
+
+            m.Position = (ulong)m.header.attributeDataOffset;
+            m.Writer.Write(blob0);
+            var offset1 = (uint)blob0.Length;
+            m.Writer.Write(blob1);
+            var offset2 = offset1 + (uint)blob1.Length;
+
+            m.attributeDataRanges = new[]
+            {
+                new Il2CppCustomAttributeDataRange { token = 0x02000007, startOffset = 0 },
+                new Il2CppCustomAttributeDataRange { token = 0x17000001, startOffset = offset1 },
+                new Il2CppCustomAttributeDataRange { token = 0, startOffset = offset2 }
+            };
+
+            return (m, il);
         }
     }
 }

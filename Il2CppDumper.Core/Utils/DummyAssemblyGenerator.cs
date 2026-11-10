@@ -197,6 +197,15 @@ namespace Il2CppDumper
                         var interfaceTypeRef = GetTypeReference(typeDefinition, interfaceType);
                         typeDefinition.Interfaces.Add(new InterfaceImplementation(interfaceTypeRef));
                     }
+                }
+            }
+            foreach (var imageDef in metadata.imageDefs)
+            {
+                var typeEnd = imageDef.typeStart + imageDef.typeCount;
+                for (var index = imageDef.typeStart; index < typeEnd; ++index)
+                {
+                    var typeDef = metadata.typeDefs[index];
+                    var typeDefinition = typeDefinitionDic[typeDef];
 
                     //field definitions
                     var fieldEnd = typeDef.fieldStart + typeDef.field_count;
@@ -1018,9 +1027,28 @@ namespace Il2CppDumper
                             for (var i = 0; i < availableCount; i++)
                             {
                                 var attributeTypeName = reader.GetAttributeTypeName(i);
+                                CustomAttributeReaderVisitor visitor;
                                 try
                                 {
-                                    var visitor = reader.VisitCustomAttributeData();
+                                    visitor = reader.VisitCustomAttributeData();
+                                }
+                                catch (Exception ex)
+                                {
+                                    DummyAssemblyExporter.ReportOmittedCustomAttribute(assemblyName, ownerName, attributeTypeName, ex.Message);
+                                    for (var j = i + 1; j < availableCount; j++)
+                                    {
+                                        var remainingTypeName = reader.GetAttributeTypeName(j);
+                                        DummyAssemblyExporter.ReportOmittedCustomAttribute(
+                                            assemblyName,
+                                            ownerName,
+                                            remainingTypeName,
+                                            "Skipped due to previous attribute decoding failure in the same blob");
+                                    }
+                                    break;
+                                }
+
+                                try
+                                {
                                     var methodDefinition = methodDefinitionDic[visitor.CtorIndex];
                                     var customAttribute = new CustomAttribute(moduleDefinition.ImportReference(methodDefinition));
                                     foreach (var argument in visitor.Arguments)
@@ -1048,16 +1076,6 @@ namespace Il2CppDumper
                                 catch (Exception ex)
                                 {
                                     DummyAssemblyExporter.ReportOmittedCustomAttribute(assemblyName, ownerName, attributeTypeName, ex.Message);
-                                    for (var j = i + 1; j < availableCount; j++)
-                                    {
-                                        var remainingTypeName = reader.GetAttributeTypeName(j);
-                                        DummyAssemblyExporter.ReportOmittedCustomAttribute(
-                                            assemblyName,
-                                            ownerName,
-                                            remainingTypeName,
-                                            "Skipped due to previous attribute decoding failure in the same blob");
-                                    }
-                                    break;
                                 }
                             }
                             if (truncatedCount > 0)
