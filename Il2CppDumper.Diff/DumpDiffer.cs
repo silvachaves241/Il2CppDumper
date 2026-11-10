@@ -292,12 +292,14 @@ namespace Il2CppDumper.Diff
                                     : (!string.IsNullOrEmpty(rm.Entry.Signature) ? rm.Entry.Signature : msig);
                                 var displayImage = rm.Identity.Image ?? lm.Identity.Image ?? rm.Entry.Image ?? lm.Entry.Image;
                                 var displayAssembly = rm.Identity.Assembly ?? lm.Identity.Assembly ?? rm.Entry.Assembly ?? lm.Entry.Assembly;
+                                var displayMethodSig = rm.Entry.MethodSignature ?? lm.Entry.MethodSignature;
                                 addressChanges.Add(new DumpDiffAddressChange
                                 {
                                     type = lm.Entry.TypeName,
                                     image = displayImage,
                                     assembly = displayAssembly,
                                     method = displayMethod,
+                                    methodSignature = displayMethodSig,
                                     left = $"0x{lm.Entry.Address:X}",
                                     right = $"0x{rm.Entry.Address:X}"
                                 });
@@ -371,12 +373,14 @@ namespace Il2CppDumper.Diff
                         {
                             var displayImage = rm.Identity.Image ?? lm.Identity.Image ?? rm.Entry.Image ?? lm.Entry.Image;
                             var displayAssembly = rm.Identity.Assembly ?? lm.Identity.Assembly ?? rm.Entry.Assembly ?? lm.Entry.Assembly;
+                            var displayMethodSig = rm.Entry.MethodSignature ?? lm.Entry.MethodSignature;
                             addressChanges.Add(new DumpDiffAddressChange
                             {
                                 type = lm.Entry.TypeName,
                                 image = displayImage,
                                 assembly = displayAssembly,
                                 method = qKey.MethodName,
+                                methodSignature = displayMethodSig,
                                 left = $"0x{lm.Entry.Address:X}",
                                 right = $"0x{rm.Entry.Address:X}"
                             });
@@ -433,12 +437,14 @@ namespace Il2CppDumper.Diff
                                     var displayMethod = !string.IsNullOrEmpty(sig) ? sig : qKey.MethodName;
                                     var displayImage = rm.Identity.Image ?? lm.Identity.Image ?? rm.Entry.Image ?? lm.Entry.Image;
                                     var displayAssembly = rm.Identity.Assembly ?? lm.Identity.Assembly ?? rm.Entry.Assembly ?? lm.Entry.Assembly;
+                                    var displayMethodSig = rm.Entry.MethodSignature ?? lm.Entry.MethodSignature;
                                     addressChanges.Add(new DumpDiffAddressChange
                                     {
                                         type = lm.Entry.TypeName,
                                         image = displayImage,
                                         assembly = displayAssembly,
                                         method = displayMethod,
+                                        methodSignature = displayMethodSig,
                                         left = $"0x{lm.Entry.Address:X}",
                                         right = $"0x{rm.Entry.Address:X}"
                                     });
@@ -512,54 +518,110 @@ namespace Il2CppDumper.Diff
                         foreach (var e in leftMs) leftMatched.Add(e);
                         foreach (var e in rightMs) rightMatched.Add(e);
 
-                        if (leftMs.Count == 1 && rightMs.Count == 1)
-                        {
-                            var l = leftMs[0];
-                            var r = rightMs[0];
+                        // If shared identical implementation across all entries: unchanged
+                        var sortedLeft = leftMs.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+                        var sortedRight = rightMs.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
 
-                            bool isIndeterminate = IsUnitPairIndeterminate(l, r);
-                            if (isIndeterminate)
+                        if (sortedLeft.Count == sortedRight.Count &&
+                            sortedLeft.Distinct().Count() <= 1 &&
+                            sortedLeft.SequenceEqual(sortedRight))
+                        {
+                            continue;
+                        }
+
+                        // Evaluate owner compatibility between left and right candidates
+                        var leftToRight = new Dictionary<MethodDiffItem, List<MethodDiffItem>>();
+                        foreach (var l in leftMs)
+                        {
+                            leftToRight[l] = rightMs.Where(r => AreOwnersCompatible(l, r)).ToList();
+                        }
+
+                        var rightToLeft = new Dictionary<MethodDiffItem, List<MethodDiffItem>>();
+                        foreach (var r in rightMs)
+                        {
+                            rightToLeft[r] = leftMs.Where(l => AreOwnersCompatible(l, r)).ToList();
+                        }
+
+                        bool hasAnyCompatible = leftToRight.Values.Any(v => v.Count > 0);
+                        if (!hasAnyCompatible)
+                        {
+                            bool allOwnersKnown = leftMs.All(e => !string.IsNullOrEmpty(e.Identity.Image ?? e.Entry.Image ?? e.Identity.Assembly ?? e.Entry.Assembly)) &&
+                                                  rightMs.All(e => !string.IsNullOrEmpty(e.Identity.Image ?? e.Entry.Image ?? e.Identity.Assembly ?? e.Entry.Assembly)) &&
+                                                  !leftMs.Any(e => e.Identity.IsIndeterminate) &&
+                                                  !rightMs.Any(e => e.Identity.IsIndeterminate);
+                            if (allOwnersKnown)
                             {
-                                result.hasAmbiguousMethodAddresses = true;
-                                ambiguityNotes.Add(msig);
+                                // All owners are known and mutually disjoint: zero compatible pairings exist
+                                continue;
                             }
-                            else if (AreOwnersCompatible(l, r))
+                        }
+
+                        // Greedily resolve uniquely compatible pairs (1-to-1)
+                        var pairedLeft = new HashSet<MethodDiffItem>();
+                        var pairedRight = new HashSet<MethodDiffItem>();
+
+                        foreach (var l in leftMs)
+                        {
+                            if (leftToRight[l].Count == 1)
                             {
-                                if (l.Entry.Address != r.Entry.Address)
+                                var r = leftToRight[l][0];
+                                if (rightToLeft[r].Count == 1 && !IsUnitPairIndeterminate(l, r))
                                 {
-                                    var displayMethod = !string.IsNullOrEmpty(l.Entry.Signature)
-                                        ? l.Entry.Signature
-                                        : (!string.IsNullOrEmpty(r.Entry.Signature) ? r.Entry.Signature : msig);
-                                    var displayImage = r.Identity.Image ?? l.Identity.Image ?? r.Entry.Image ?? l.Entry.Image;
-                                    var displayAssembly = r.Identity.Assembly ?? l.Identity.Assembly ?? r.Entry.Assembly ?? l.Entry.Assembly;
-                                    addressChanges.Add(new DumpDiffAddressChange
+                                    pairedLeft.Add(l);
+                                    pairedRight.Add(r);
+
+                                    if (l.Entry.Address != r.Entry.Address)
                                     {
-                                        type = remKey.TypeName,
-                                        image = displayImage,
-                                        assembly = displayAssembly,
-                                        method = displayMethod,
-                                        left = $"0x{l.Entry.Address:X}",
-                                        right = $"0x{r.Entry.Address:X}"
-                                    });
+                                        var displayMethod = !string.IsNullOrEmpty(l.Entry.Signature)
+                                            ? l.Entry.Signature
+                                            : (!string.IsNullOrEmpty(r.Entry.Signature) ? r.Entry.Signature : msig);
+                                        var displayImage = r.Identity.Image ?? l.Identity.Image ?? r.Entry.Image ?? l.Entry.Image;
+                                        var displayAssembly = r.Identity.Assembly ?? l.Identity.Assembly ?? r.Entry.Assembly ?? l.Entry.Assembly;
+                                        var displayMethodSig = r.Entry.MethodSignature ?? l.Entry.MethodSignature;
+                                        addressChanges.Add(new DumpDiffAddressChange
+                                        {
+                                            type = remKey.TypeName,
+                                            image = displayImage,
+                                            assembly = displayAssembly,
+                                            method = displayMethod,
+                                            methodSignature = displayMethodSig,
+                                            left = $"0x{l.Entry.Address:X}",
+                                            right = $"0x{r.Entry.Address:X}"
+                                        });
+                                    }
                                 }
                             }
                         }
-                        else
-                        {
-                            var sortedLeft = leftMs.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
-                            var sortedRight = rightMs.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
 
-                            if (sortedLeft.Count == sortedRight.Count &&
-                                sortedLeft.Distinct().Count() <= 1 &&
-                                sortedLeft.SequenceEqual(sortedRight))
+                        // Check remaining un-paired entries: signal ambiguity only when an unresolved plausible candidate remains
+                        var unpLeft = leftMs.Where(e => !pairedLeft.Contains(e)).ToList();
+                        var unpRight = rightMs.Where(e => !pairedRight.Contains(e)).ToList();
+
+                        bool hasUnresolvedCandidate = false;
+                        foreach (var l in unpLeft)
+                        {
+                            if (l.Identity.IsIndeterminate || leftToRight[l].Count > 0)
                             {
-                                // Shared native implementation across all entries: unchanged
+                                hasUnresolvedCandidate = true;
+                                break;
                             }
-                            else
+                        }
+                        if (!hasUnresolvedCandidate)
+                        {
+                            foreach (var r in unpRight)
                             {
-                                result.hasAmbiguousMethodAddresses = true;
-                                ambiguityNotes.Add(msig);
+                                if (r.Identity.IsIndeterminate || rightToLeft[r].Count > 0)
+                                {
+                                    hasUnresolvedCandidate = true;
+                                    break;
+                                }
                             }
+                        }
+
+                        if (hasUnresolvedCandidate)
+                        {
+                            result.hasAmbiguousMethodAddresses = true;
+                            ambiguityNotes.Add(msig);
                         }
                     }
 
@@ -623,12 +685,14 @@ namespace Il2CppDumper.Diff
                                     {
                                         var displayImage = r.Identity.Image ?? l.Identity.Image ?? r.Entry.Image ?? l.Entry.Image;
                                         var displayAssembly = r.Identity.Assembly ?? l.Identity.Assembly ?? r.Entry.Assembly ?? l.Entry.Assembly;
+                                        var displayMethodSig = r.Entry.MethodSignature ?? l.Entry.MethodSignature;
                                         addressChanges.Add(new DumpDiffAddressChange
                                         {
                                             type = remKey.TypeName,
                                             image = displayImage,
                                             assembly = displayAssembly,
                                             method = sig,
+                                            methodSignature = displayMethodSig,
                                             left = $"0x{l.Entry.Address:X}",
                                             right = $"0x{r.Entry.Address:X}"
                                         });
@@ -741,12 +805,14 @@ namespace Il2CppDumper.Diff
                                 var displayMethod = rightHasSig ? r.Entry.Signature! : (leftHasSig ? l.Entry.Signature! : remKey.MethodName);
                                 var displayImage = r.Identity.Image ?? l.Identity.Image ?? r.Entry.Image ?? l.Entry.Image;
                                 var displayAssembly = r.Identity.Assembly ?? l.Identity.Assembly ?? r.Entry.Assembly ?? l.Entry.Assembly;
+                                var displayMethodSig = r.Entry.MethodSignature ?? l.Entry.MethodSignature;
                                 addressChanges.Add(new DumpDiffAddressChange
                                 {
                                     type = remKey.TypeName,
                                     image = displayImage,
                                     assembly = displayAssembly,
                                     method = displayMethod,
+                                    methodSignature = displayMethodSig,
                                     left = $"0x{l.Entry.Address:X}",
                                     right = $"0x{r.Entry.Address:X}"
                                 });

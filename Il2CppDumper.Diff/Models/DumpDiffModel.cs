@@ -116,6 +116,11 @@ namespace Il2CppDumper.Diff
         public string? assembly { get; set; }
 
         public string method { get; set; } = string.Empty;
+
+        /// <summary>Canonical managed method identity used to correlate homonymous overloads when available.</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? methodSignature { get; set; }
+
         public string left { get; set; } = string.Empty;
         public string right { get; set; } = string.Empty;
     }

@@ -641,6 +641,13 @@ namespace Il2CppDumper
 
         private string FormatMethodSignature(string name, Il2CppMethodDefinition methodDef)
         {
+            var methodReturnType = il2Cpp.types[methodDef.returnType];
+            var returnTypeName = executor.GetTypeName(methodReturnType, true, false);
+            if (methodReturnType.byref == 1)
+            {
+                returnTypeName = "ref " + returnTypeName;
+            }
+
             var managedParams = new List<string>();
             for (var j = 0; j < methodDef.parameterCount; j++)
             {
@@ -665,7 +672,7 @@ namespace Il2CppDumper
                 }
                 managedParams.Add(prefix + typeName);
             }
-            return $"{name}({string.Join(", ", managedParams)})";
+            return $"{returnTypeName} {name}({string.Join(", ", managedParams)})";
         }
 
         private string ParseType(Il2CppType il2CppType, Il2CppGenericContext context = null)

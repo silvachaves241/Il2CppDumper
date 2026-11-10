@@ -2616,5 +2616,259 @@ namespace Il2CppDumper.Tests
                 }
             }
         }
+        [Fact]
+        public void ReviewerRound8_P2_Phase2_MultiEntryDisjointOwners_AB_Left_CD_Right_ReturnsZeroWithoutAmbiguity()
+        {
+            // Review 8, Point 1: Ns.Player.Run in 4 images (A, B, C, D).
+            // Left has RVAs in A and B only. Right has RVAs in C and D only.
+            // All entries have image, assembly, and MethodSignature.
+            // All owners are disjoint -> zero compatible pairs -> must return 0 without ambiguity!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer8-disjoint-legacy-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new() { image = "A.dll", assembly = "A", fullName = "Ns.Player", methods = new List<JsonDumpMethod> { new() { name = "Run", returnType = "void", parameters = new() } } },
+                        new() { image = "B.dll", assembly = "B", fullName = "Ns.Player", methods = new List<JsonDumpMethod> { new() { name = "Run", returnType = "void", parameters = new() } } },
+                        new() { image = "C.dll", assembly = "C", fullName = "Ns.Player", methods = new List<JsonDumpMethod> { new() { name = "Run", returnType = "void", parameters = new() } } },
+                        new() { image = "D.dll", assembly = "D", fullName = "Ns.Player", methods = new List<JsonDumpMethod> { new() { name = "Run", returnType = "void", parameters = new() } } }
+                    }
+                };
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", MethodSignature = "void Run()", Address = 0x1000, Image = "A.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", MethodSignature = "void Run()", Address = 0x2000, Image = "B.dll", Assembly = "B" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", MethodSignature = "void Run()", Address = 0x3000, Image = "C.dll", Assembly = "C" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", MethodSignature = "void Run()", Address = 0x4000, Image = "D.dll", Assembly = "D" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(0, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound8_P2_ConversionOperators_ReturnTypesDistinguishOverloads_DoesNotEmitFalseDelta()
+        {
+            // Review 8, Point 2: Dofus real case - System.Threading.Channels.Channel<TWrite, TRead> in gdio_unity_agent.dll
+            // Two op_Implicit operators with identical parameter Channel<TWrite, TRead> but distinct return types:
+            // ChannelReader<TRead> and ChannelWriter<TWrite>.
+            // Formatted MethodSignature includes return type, distinguishing them and preventing 0x3CAE4F0 -> 0x3CAE4C0 false delta!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer8-operators-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "gdio_unity_agent.dll",
+                            assembly = "gdio_unity_agent",
+                            fullName = "System.Threading.Channels.Channel`2",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "op_Implicit",
+                                    returnType = "System.Threading.Channels.ChannelReader<TRead>",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "channel", type = "System.Threading.Channels.Channel<TWrite, TRead>" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "op_Implicit",
+                                    returnType = "System.Threading.Channels.ChannelWriter<TWrite>",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "channel", type = "System.Threading.Channels.Channel<TWrite, TRead>" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var sigC = "void* Channel__op_Implicit (void* channel, const MethodInfo* method);";
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new()
+                        {
+                            Name = "System.Threading.Channels.Channel`2$$op_Implicit",
+                            Signature = sigC,
+                            MethodSignature = "System.Threading.Channels.ChannelReader<TRead> op_Implicit(System.Threading.Channels.Channel<TWrite, TRead>)",
+                            Address = 0x3CAE4F0,
+                            Image = "gdio_unity_agent.dll",
+                            Assembly = "gdio_unity_agent"
+                        }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new()
+                        {
+                            Name = "System.Threading.Channels.Channel`2$$op_Implicit",
+                            Signature = sigC,
+                            MethodSignature = "System.Threading.Channels.ChannelWriter<TWrite> op_Implicit(System.Threading.Channels.Channel<TWrite, TRead>)",
+                            Address = 0x3CAE4C0,
+                            Image = "gdio_unity_agent.dll",
+                            Assembly = "gdio_unity_agent"
+                        }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(0, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound8_P2_DumpDiffAddressChange_Emits_MethodSignature_For_Overloads()
+        {
+            // Review 8, Point 3: When two overloads with same C signature both change RVAs,
+            // DumpDiffAddressChange preserves 'method' (C signature) AND emits 'methodSignature' identifying each overload!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer8-both-deltas-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "mscorlib.dll",
+                            assembly = "mscorlib",
+                            fullName = "System.Enum",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "char" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "ushort" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var cSig = "Il2CppObject* System_Enum__ToObject (System_Type_o* enumType, uint16_t value, const MethodInfo* method);";
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "object ToObject(System.Type, char)", Address = 0x1000, Image = "mscorlib.dll", Assembly = "mscorlib" },
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "object ToObject(System.Type, ushort)", Address = 0x3000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "object ToObject(System.Type, char)", Address = 0x2000, Image = "mscorlib.dll", Assembly = "mscorlib" },
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "object ToObject(System.Type, ushort)", Address = 0x4000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Equal(2, diff.methods.addressChanged!.Count);
+
+                var deltaChar = diff.methods.addressChanged.First(c => c.left == "0x1000");
+                Assert.Equal("0x2000", deltaChar.right);
+                Assert.Equal(cSig, deltaChar.method);
+                Assert.Equal("object ToObject(System.Type, char)", deltaChar.methodSignature);
+
+                var deltaUshort = diff.methods.addressChanged.First(c => c.left == "0x3000");
+                Assert.Equal("0x4000", deltaUshort.right);
+                Assert.Equal(cSig, deltaUshort.method);
+                Assert.Equal("object ToObject(System.Type, ushort)", deltaUshort.methodSignature);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
     }
 }
