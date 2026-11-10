@@ -224,47 +224,179 @@ namespace Il2CppDumper.Diff
                 var addressChanges = new List<DumpDiffAddressChange>();
                 var ambiguityNotes = new List<string>();
 
-                var leftGrouped = leftArtifacts.ScriptMethods
-                    .GroupBy(m => (m.TypeName, m.MethodName))
+                var leftIndex = TypeLookupIndex.Build(reconciled, isLeft: true);
+                var rightIndex = TypeLookupIndex.Build(reconciled, isLeft: false);
+
+                var leftItems = leftArtifacts.ScriptMethods.Select(m => new MethodDiffItem
+                {
+                    Entry = m,
+                    Identity = leftIndex.Resolve(m, isLeft: true)
+                }).ToList();
+
+                var rightItems = rightArtifacts.ScriptMethods.Select(m => new MethodDiffItem
+                {
+                    Entry = m,
+                    Identity = rightIndex.Resolve(m, isLeft: false)
+                }).ToList();
+
+                // Phase 1: Correlate qualified pairs (demonstrably unique by qualified key)
+                var leftQualified = leftItems
+                    .Where(x => x.Identity.QualifiedKey != null)
+                    .GroupBy(x => (QualifiedKey: x.Identity.QualifiedKey!, MethodName: x.Entry.MethodName))
                     .ToDictionary(g => g.Key, g => g.ToList());
 
-                var rightGrouped = rightArtifacts.ScriptMethods
-                    .GroupBy(m => (m.TypeName, m.MethodName))
+                var rightQualified = rightItems
+                    .Where(x => x.Identity.QualifiedKey != null)
+                    .GroupBy(x => (QualifiedKey: x.Identity.QualifiedKey!, MethodName: x.Entry.MethodName))
                     .ToDictionary(g => g.Key, g => g.ToList());
 
-                var commonKeys = leftGrouped.Keys.Intersect(rightGrouped.Keys)
-                    .OrderBy(k => k.TypeName, StringComparer.Ordinal)
+                var commonQualifiedKeys = leftQualified.Keys.Intersect(rightQualified.Keys)
+                    .OrderBy(k => k.QualifiedKey, StringComparer.Ordinal)
                     .ThenBy(k => k.MethodName, StringComparer.Ordinal);
 
-                foreach (var key in commonKeys)
+                foreach (var qKey in commonQualifiedKeys)
                 {
-                    var leftEntries = leftGrouped[key];
-                    var rightEntries = rightGrouped[key];
+                    var leftEntries = leftQualified[qKey];
+                    var rightEntries = rightQualified[qKey];
 
-                    if (leftEntries.Count == 1 && rightEntries.Count == 1)
+                    // Step 1: Correlate by explicit managed identity (MethodSignature) first
+                    var leftByMethodSig = leftEntries
+                        .Where(m => !string.IsNullOrEmpty(m.Entry.MethodSignature))
+                        .GroupBy(m => m.Entry.MethodSignature!)
+                        .ToDictionary(g => g.Key, g => g.ToList());
+
+                    var rightByMethodSig = rightEntries
+                        .Where(m => !string.IsNullOrEmpty(m.Entry.MethodSignature))
+                        .GroupBy(m => m.Entry.MethodSignature!)
+                        .ToDictionary(g => g.Key, g => g.ToList());
+
+                    var commonMethodSigs = leftByMethodSig.Keys.Intersect(rightByMethodSig.Keys)
+                        .OrderBy(s => s, StringComparer.Ordinal);
+
+                    foreach (var msig in commonMethodSigs)
                     {
-                        var lm = leftEntries[0];
-                        var rm = rightEntries[0];
-                        if (lm.Address != rm.Address)
+                        var leftMs = leftByMethodSig[msig];
+                        var rightMs = rightByMethodSig[msig];
+
+                        foreach (var e in leftMs) e.Handled = true;
+                        foreach (var e in rightMs) e.Handled = true;
+
+                        if (leftMs.Count == 1 && rightMs.Count == 1)
                         {
+                            var lm = leftMs[0];
+                            var rm = rightMs[0];
+                            if (lm.Entry.Address != rm.Entry.Address)
+                            {
+                                var displayMethod = !string.IsNullOrEmpty(lm.Entry.Signature)
+                                    ? lm.Entry.Signature
+                                    : (!string.IsNullOrEmpty(rm.Entry.Signature) ? rm.Entry.Signature : msig);
+                                var displayImage = rm.Identity.Image ?? lm.Identity.Image ?? rm.Entry.Image ?? lm.Entry.Image;
+                                var displayAssembly = rm.Identity.Assembly ?? lm.Identity.Assembly ?? rm.Entry.Assembly ?? lm.Entry.Assembly;
+                                var displayMethodSig = rm.Entry.MethodSignature ?? lm.Entry.MethodSignature;
+                                addressChanges.Add(new DumpDiffAddressChange
+                                {
+                                    type = lm.Entry.TypeName,
+                                    image = displayImage,
+                                    assembly = displayAssembly,
+                                    method = displayMethod,
+                                    methodSignature = displayMethodSig,
+                                    left = $"0x{lm.Entry.Address:X}",
+                                    right = $"0x{rm.Entry.Address:X}"
+                                });
+                            }
+                        }
+                        else
+                        {
+                            var sortedLeft = leftMs.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+                            var sortedRight = rightMs.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+
+                            if (sortedLeft.Count == sortedRight.Count &&
+                                sortedLeft.Distinct().Count() <= 1 &&
+                                sortedLeft.SequenceEqual(sortedRight))
+                            {
+                                // Shared native implementation across all entries: unchanged
+                            }
+                            else
+                            {
+                                result.hasAmbiguousMethodAddresses = true;
+                                ambiguityNotes.Add(msig);
+                            }
+                        }
+                    }
+
+                    // Step 2: Correlate remaining unhandled entries in this qKey (where at least one side lacks MethodSignature)
+                    var remLeft = leftEntries.Where(e => !e.Handled).ToList();
+                    var remRight = rightEntries.Where(e => !e.Handled).ToList();
+
+                    if (remLeft.Count == 0 || remRight.Count == 0)
+                        continue;
+
+                    // If all remaining entries on both sides have explicit MethodSignature, they are incompatible managed overloads
+                    if (remLeft.All(e => !string.IsNullOrEmpty(e.Entry.MethodSignature)) &&
+                        remRight.All(e => !string.IsNullOrEmpty(e.Entry.MethodSignature)))
+                    {
+                        continue;
+                    }
+
+                    if (remLeft.Count == 1 && remRight.Count == 1)
+                    {
+                        var lm = remLeft[0];
+                        var rm = remRight[0];
+
+                        if (!string.IsNullOrEmpty(lm.Entry.MethodSignature) && !string.IsNullOrEmpty(rm.Entry.MethodSignature))
+                        {
+                            continue;
+                        }
+
+                        var leftHasSig = !string.IsNullOrEmpty(lm.Entry.Signature);
+                        var rightHasSig = !string.IsNullOrEmpty(rm.Entry.Signature);
+
+                        if (leftHasSig && rightHasSig && !AreSignaturesCompatible(lm, rm, qKey.MethodName))
+                        {
+                            // Distinct overloads with different signatures: do not pair.
+                            continue;
+                        }
+
+                        if (IsSignatureColliding(lm, qKey.MethodName) || IsSignatureColliding(rm, qKey.MethodName))
+                        {
+                            lm.Handled = true;
+                            rm.Handled = true;
+                            result.hasAmbiguousMethodAddresses = true;
+                            var desc = leftHasSig ? lm.Entry.Signature! : (rightHasSig ? rm.Entry.Signature! : $"{lm.Entry.TypeName}.{qKey.MethodName}");
+                            ambiguityNotes.Add(desc);
+                            continue;
+                        }
+
+                        lm.Handled = true;
+                        rm.Handled = true;
+                        if (lm.Entry.Address != rm.Entry.Address)
+                        {
+                            var displayImage = rm.Identity.Image ?? lm.Identity.Image ?? rm.Entry.Image ?? lm.Entry.Image;
+                            var displayAssembly = rm.Identity.Assembly ?? lm.Identity.Assembly ?? rm.Entry.Assembly ?? lm.Entry.Assembly;
+                            var displayMethodSig = rm.Entry.MethodSignature ?? lm.Entry.MethodSignature;
                             addressChanges.Add(new DumpDiffAddressChange
                             {
-                                type = key.TypeName,
-                                method = key.MethodName,
-                                left = $"0x{lm.Address:X}",
-                                right = $"0x{rm.Address:X}"
+                                type = lm.Entry.TypeName,
+                                image = displayImage,
+                                assembly = displayAssembly,
+                                method = qKey.MethodName,
+                                methodSignature = displayMethodSig,
+                                left = $"0x{lm.Entry.Address:X}",
+                                right = $"0x{rm.Entry.Address:X}"
                             });
                         }
                     }
                     else
                     {
-                        // Overloads: group by Signature order-independently
-                        var leftBySig = leftEntries
-                            .GroupBy(m => m.Signature ?? "")
+                        // Overloads within the same qualified type
+                        var leftBySig = remLeft
+                            .Where(m => !string.IsNullOrEmpty(m.Entry.Signature))
+                            .GroupBy(m => BuildNativeSignatureKey(m.Entry.Signature!))
                             .ToDictionary(g => g.Key, g => g.ToList());
 
-                        var rightBySig = rightEntries
-                            .GroupBy(m => m.Signature ?? "")
+                        var rightBySig = remRight
+                            .Where(m => !string.IsNullOrEmpty(m.Entry.Signature))
+                            .GroupBy(m => BuildNativeSignatureKey(m.Entry.Signature!))
                             .ToDictionary(g => g.Key, g => g.ToList());
 
                         var commonSigs = leftBySig.Keys.Intersect(rightBySig.Keys)
@@ -272,49 +404,517 @@ namespace Il2CppDumper.Diff
 
                         foreach (var sig in commonSigs)
                         {
-                            var leftSigEntries = leftBySig[sig];
-                            var rightSigEntries = rightBySig[sig];
+                            var leftSig = leftBySig[sig];
+                            var rightSig = rightBySig[sig];
 
-                            var sortedLeft = leftSigEntries.Select(e => e.Address).OrderBy(a => a).ToList();
-                            var sortedRight = rightSigEntries.Select(e => e.Address).OrderBy(a => a).ToList();
-
-                            var unmatchedLeft = new List<ulong>();
-                            var remainingRight = new List<ulong>(sortedRight);
-
-                            foreach (var lAddr in sortedLeft)
+                            if (leftSig.All(e => !string.IsNullOrEmpty(e.Entry.MethodSignature)) &&
+                                rightSig.All(e => !string.IsNullOrEmpty(e.Entry.MethodSignature)))
                             {
-                                var rIndex = remainingRight.IndexOf(lAddr);
-                                if (rIndex >= 0)
+                                continue;
+                            }
+
+                            foreach (var e in leftSig) e.Handled = true;
+                            foreach (var e in rightSig) e.Handled = true;
+
+                            if (leftSig.Count == 1 && rightSig.Count == 1)
+                            {
+                                var lm = leftSig[0];
+                                var rm = rightSig[0];
+
+                                if (!string.IsNullOrEmpty(lm.Entry.MethodSignature) && !string.IsNullOrEmpty(rm.Entry.MethodSignature))
                                 {
-                                    remainingRight.RemoveAt(rIndex);
+                                    continue;
+                                }
+
+                                var rawSig = lm.Entry.Signature ?? rm.Entry.Signature ?? sig;
+                                if (IsSignatureColliding(lm, qKey.MethodName) || IsSignatureColliding(rm, qKey.MethodName))
+                                {
+                                    result.hasAmbiguousMethodAddresses = true;
+                                    var desc = !string.IsNullOrEmpty(rawSig) ? rawSig : $"{lm.Entry.TypeName}.{qKey.MethodName}";
+                                    ambiguityNotes.Add(desc);
+                                }
+                                else if (lm.Entry.Address != rm.Entry.Address)
+                                {
+                                    var displayMethod = !string.IsNullOrEmpty(rawSig) ? rawSig : qKey.MethodName;
+                                    var displayImage = rm.Identity.Image ?? lm.Identity.Image ?? rm.Entry.Image ?? lm.Entry.Image;
+                                    var displayAssembly = rm.Identity.Assembly ?? lm.Identity.Assembly ?? rm.Entry.Assembly ?? lm.Entry.Assembly;
+                                    var displayMethodSig = rm.Entry.MethodSignature ?? lm.Entry.MethodSignature;
+                                    addressChanges.Add(new DumpDiffAddressChange
+                                    {
+                                        type = lm.Entry.TypeName,
+                                        image = displayImage,
+                                        assembly = displayAssembly,
+                                        method = displayMethod,
+                                        methodSignature = displayMethodSig,
+                                        left = $"0x{lm.Entry.Address:X}",
+                                        right = $"0x{rm.Entry.Address:X}"
+                                    });
+                                }
+                            }
+                            else
+                            {
+                                var sortedLeft = leftSig.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+                                var sortedRight = rightSig.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+
+                                if (sortedLeft.Count == sortedRight.Count &&
+                                    sortedLeft.Distinct().Count() <= 1 &&
+                                    sortedLeft.SequenceEqual(sortedRight))
+                                {
+                                    // Shared native implementation across all entries: unchanged
                                 }
                                 else
                                 {
-                                    unmatchedLeft.Add(lAddr);
+                                    result.hasAmbiguousMethodAddresses = true;
+                                    var rawSig = leftSig[0].Entry.Signature ?? rightSig[0].Entry.Signature ?? sig;
+                                    var desc = !string.IsNullOrEmpty(rawSig) ? rawSig : $"{leftSig[0].Entry.TypeName}.{qKey.MethodName}";
+                                    ambiguityNotes.Add(desc);
                                 }
                             }
-                            var unmatchedRight = remainingRight;
+                        }
+                    }
+                }
 
-                            if (unmatchedLeft.Count == 1 && unmatchedRight.Count == 1)
+                // Phase 2: Reconcile remaining entries by legacy (TypeName, MethodName)
+                var leftRemaining = leftItems.Where(x => !x.Handled).ToList();
+                var rightRemaining = rightItems.Where(x => !x.Handled).ToList();
+
+                var leftRemainingGroups = leftRemaining
+                    .GroupBy(x => (TypeName: x.Entry.TypeName, MethodName: x.Entry.MethodName))
+                    .ToDictionary(g => g.Key, g => g.ToList());
+
+                var rightRemainingGroups = rightRemaining
+                    .GroupBy(x => (TypeName: x.Entry.TypeName, MethodName: x.Entry.MethodName))
+                    .ToDictionary(g => g.Key, g => g.ToList());
+
+                var commonRemainingKeys = leftRemainingGroups.Keys.Intersect(rightRemainingGroups.Keys)
+                    .OrderBy(k => k.TypeName, StringComparer.Ordinal)
+                    .ThenBy(k => k.MethodName, StringComparer.Ordinal);
+
+                foreach (var remKey in commonRemainingKeys)
+                {
+                    var leftEntries = leftRemainingGroups[remKey];
+                    var rightEntries = rightRemainingGroups[remKey];
+
+                    var leftMatched = new HashSet<MethodDiffItem>();
+                    var rightMatched = new HashSet<MethodDiffItem>();
+
+                    // Step 1: Process matches by explicit managed identity (MethodSignature) first
+                    var leftByMethodSig = leftEntries
+                        .Where(m => !string.IsNullOrEmpty(m.Entry.MethodSignature))
+                        .GroupBy(m => m.Entry.MethodSignature!)
+                        .ToDictionary(g => g.Key, g => g.ToList());
+
+                    var rightByMethodSig = rightEntries
+                        .Where(m => !string.IsNullOrEmpty(m.Entry.MethodSignature))
+                        .GroupBy(m => m.Entry.MethodSignature!)
+                        .ToDictionary(g => g.Key, g => g.ToList());
+
+                    var commonMethodSigs = leftByMethodSig.Keys.Intersect(rightByMethodSig.Keys)
+                        .OrderBy(s => s, StringComparer.Ordinal);
+
+                    foreach (var msig in commonMethodSigs)
+                    {
+                        var leftMs = leftByMethodSig[msig];
+                        var rightMs = rightByMethodSig[msig];
+
+                        // Evaluate owner compatibility without materializing Cartesian edge lists
+                        var leftMatchCount = new Dictionary<MethodDiffItem, int>(leftMs.Count);
+                        var leftSingleMatch = new Dictionary<MethodDiffItem, MethodDiffItem?>(leftMs.Count);
+                        foreach (var l in leftMs)
+                        {
+                            int count = 0;
+                            MethodDiffItem? single = null;
+                            foreach (var r in rightMs)
                             {
-                                var displayMethod = !string.IsNullOrEmpty(sig) ? sig : key.MethodName;
-                                addressChanges.Add(new DumpDiffAddressChange
+                                if (AreOwnersCompatible(l, r))
                                 {
-                                    type = key.TypeName,
-                                    method = displayMethod,
-                                    left = $"0x{unmatchedLeft[0]:X}",
-                                    right = $"0x{unmatchedRight[0]:X}"
-                                });
+                                    count++;
+                                    if (count == 1)
+                                    {
+                                        single = r;
+                                    }
+                                    else
+                                    {
+                                        single = null;
+                                        break; // Distinguish 0, 1, or multiple without scanning entire set
+                                    }
+                                }
                             }
-                            else if (unmatchedLeft.Count > 0 && unmatchedRight.Count > 0)
+                            leftMatchCount[l] = count;
+                            leftSingleMatch[l] = single;
+                        }
+
+                        var rightMatchCount = new Dictionary<MethodDiffItem, int>(rightMs.Count);
+                        var rightSingleMatch = new Dictionary<MethodDiffItem, MethodDiffItem?>(rightMs.Count);
+                        foreach (var r in rightMs)
+                        {
+                            int count = 0;
+                            MethodDiffItem? single = null;
+                            foreach (var l in leftMs)
                             {
-                                result.hasAmbiguousMethodAddresses = true;
-                                var desc = !string.IsNullOrEmpty(sig)
-                                    ? sig
-                                    : (!string.IsNullOrEmpty(key.TypeName) ? $"{key.TypeName}.{key.MethodName}" : key.MethodName);
-                                ambiguityNotes.Add(desc);
+                                if (AreOwnersCompatible(l, r))
+                                {
+                                    count++;
+                                    if (count == 1)
+                                    {
+                                        single = l;
+                                    }
+                                    else
+                                    {
+                                        single = null;
+                                        break; // Stop at multiple
+                                    }
+                                }
+                            }
+                            rightMatchCount[r] = count;
+                            rightSingleMatch[r] = single;
+                        }
+
+                        // Greedily resolve uniquely compatible pairs (1-to-1)
+                        var pairedLeft = new HashSet<MethodDiffItem>();
+                        var pairedRight = new HashSet<MethodDiffItem>();
+
+                        foreach (var l in leftMs)
+                        {
+                            if (leftMatchCount[l] == 1)
+                            {
+                                var r = leftSingleMatch[l]!;
+                                if (rightMatchCount[r] == 1 && rightSingleMatch[r] == l && !IsUnitPairIndeterminate(l, r))
+                                {
+                                    pairedLeft.Add(l);
+                                    pairedRight.Add(r);
+                                    leftMatched.Add(l);
+                                    rightMatched.Add(r);
+
+                                    if (l.Entry.Address != r.Entry.Address)
+                                    {
+                                        var displayMethod = !string.IsNullOrEmpty(l.Entry.Signature)
+                                            ? l.Entry.Signature
+                                            : (!string.IsNullOrEmpty(r.Entry.Signature) ? r.Entry.Signature : msig);
+                                        var displayImage = r.Identity.Image ?? l.Identity.Image ?? r.Entry.Image ?? l.Entry.Image;
+                                        var displayAssembly = r.Identity.Assembly ?? l.Identity.Assembly ?? r.Entry.Assembly ?? l.Entry.Assembly;
+                                        var displayMethodSig = r.Entry.MethodSignature ?? l.Entry.MethodSignature;
+                                        addressChanges.Add(new DumpDiffAddressChange
+                                        {
+                                            type = remKey.TypeName,
+                                            image = displayImage,
+                                            assembly = displayAssembly,
+                                            method = displayMethod,
+                                            methodSignature = displayMethodSig,
+                                            left = $"0x{l.Entry.Address:X}",
+                                            right = $"0x{r.Entry.Address:X}"
+                                        });
+                                    }
+                                }
                             }
                         }
+
+                        // Check remaining unpaired entries for shared RVA or ambiguity
+                        var unpLeft = leftMs.Where(e => !pairedLeft.Contains(e)).ToList();
+                        var unpRight = rightMs.Where(e => !pairedRight.Contains(e)).ToList();
+
+                        var compLeft = unpLeft.Where(l => leftMatchCount[l] > 0).ToList();
+                        var compRight = unpRight.Where(r => rightMatchCount[r] > 0).ToList();
+
+                        if (compLeft.Count > 0)
+                        {
+                            var sharedAddress = compLeft[0].Entry.Address;
+                            bool allSameAddress = compLeft.Count == compRight.Count &&
+                                compLeft.All(e => e.Entry.Address == sharedAddress) &&
+                                compRight.All(e => e.Entry.Address == sharedAddress);
+
+                            bool hasExternalPlausibleCandidate = false;
+                            if (allSameAddress)
+                            {
+                                // Verify if the equal RVA covers all relevant candidates across this group.
+                                // If any entry with indeterminate owner still has a compatible candidate
+                                // with a different RVA outside this matched set, it cannot be safely collapsed.
+                                foreach (var l in compLeft)
+                                {
+                                    if (l.Identity.IsIndeterminate)
+                                    {
+                                        foreach (var rOther in rightEntries)
+                                        {
+                                            if (!pairedRight.Contains(rOther) &&
+                                                rOther.Entry.Address != sharedAddress &&
+                                                AreOwnersCompatible(l, rOther) &&
+                                                (string.IsNullOrEmpty(rOther.Entry.MethodSignature) || string.Equals(l.Entry.MethodSignature, rOther.Entry.MethodSignature, StringComparison.Ordinal)) &&
+                                                (string.IsNullOrEmpty(l.Entry.Signature) || string.IsNullOrEmpty(rOther.Entry.Signature) || AreSignaturesCompatible(l, rOther, remKey.MethodName)))
+                                            {
+                                                hasExternalPlausibleCandidate = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if (hasExternalPlausibleCandidate) break;
+                                }
+
+                                if (!hasExternalPlausibleCandidate)
+                                {
+                                    foreach (var r in compRight)
+                                    {
+                                        if (r.Identity.IsIndeterminate)
+                                        {
+                                            foreach (var lOther in leftEntries)
+                                            {
+                                                if (!pairedLeft.Contains(lOther) &&
+                                                    lOther.Entry.Address != sharedAddress &&
+                                                    AreOwnersCompatible(lOther, r) &&
+                                                    (string.IsNullOrEmpty(lOther.Entry.MethodSignature) || string.Equals(r.Entry.MethodSignature, lOther.Entry.MethodSignature, StringComparison.Ordinal)) &&
+                                                    (string.IsNullOrEmpty(r.Entry.Signature) || string.IsNullOrEmpty(lOther.Entry.Signature) || AreSignaturesCompatible(lOther, r, remKey.MethodName)))
+                                                {
+                                                    hasExternalPlausibleCandidate = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        if (hasExternalPlausibleCandidate) break;
+                                    }
+                                }
+                            }
+
+                            if (allSameAddress && !hasExternalPlausibleCandidate)
+                            {
+                                // Shared identical implementation across all relevant compatible candidates: unchanged
+                                foreach (var e in compLeft) leftMatched.Add(e);
+                                foreach (var e in compRight) rightMatched.Add(e);
+                            }
+                            else if (!hasExternalPlausibleCandidate)
+                            {
+                                // Candidates within this managed signature bucket have different RVAs or counts: ambiguous
+                                result.hasAmbiguousMethodAddresses = true;
+                                ambiguityNotes.Add(msig);
+                                foreach (var l in compLeft) leftMatched.Add(l);
+                                foreach (var r in compRight) rightMatched.Add(r);
+                            }
+                            // If hasExternalPlausibleCandidate:
+                            // Indeterminate entries have plausible candidates with different RVAs in the legacy phase.
+                            // Leave them untouched in leftMatched/rightMatched so they remain available for Step 2 / Step 3.
+                        }
+                    }
+
+                    // Step 2: Process exact non-empty signature matches for entries without managed match
+                    var remLeftEntries = leftEntries.Where(e => !leftMatched.Contains(e)).ToList();
+                    var remRightEntries = rightEntries.Where(e => !rightMatched.Contains(e)).ToList();
+
+                    var leftBySig = remLeftEntries
+                        .Where(m => !string.IsNullOrEmpty(m.Entry.Signature))
+                        .GroupBy(m => BuildNativeSignatureKey(m.Entry.Signature!))
+                        .ToDictionary(g => g.Key, g => g.ToList());
+
+                    var rightBySig = remRightEntries
+                        .Where(m => !string.IsNullOrEmpty(m.Entry.Signature))
+                        .GroupBy(m => BuildNativeSignatureKey(m.Entry.Signature!))
+                        .ToDictionary(g => g.Key, g => g.ToList());
+
+                    var commonSigs = leftBySig.Keys.Intersect(rightBySig.Keys)
+                        .OrderBy(s => s, StringComparer.Ordinal);
+
+                    foreach (var sig in commonSigs)
+                    {
+                        var leftSig = leftBySig[sig];
+                        var rightSig = rightBySig[sig];
+
+                        if (leftSig.All(e => !string.IsNullOrEmpty(e.Entry.MethodSignature)) &&
+                            rightSig.All(e => !string.IsNullOrEmpty(e.Entry.MethodSignature)))
+                        {
+                            continue;
+                        }
+
+                        foreach (var e in leftSig) leftMatched.Add(e);
+                        foreach (var e in rightSig) rightMatched.Add(e);
+
+                        if (leftSig.Count == 1 && rightSig.Count == 1)
+                        {
+                            var l = leftSig[0];
+                            var r = rightSig[0];
+
+                            if (!string.IsNullOrEmpty(l.Entry.MethodSignature) && !string.IsNullOrEmpty(r.Entry.MethodSignature))
+                            {
+                                continue;
+                            }
+
+                            var rawSig = l.Entry.Signature ?? r.Entry.Signature ?? sig;
+                            if (IsSignatureColliding(l, remKey.MethodName) || IsSignatureColliding(r, remKey.MethodName))
+                            {
+                                result.hasAmbiguousMethodAddresses = true;
+                                ambiguityNotes.Add(rawSig);
+                            }
+                            else
+                            {
+                                bool isIndeterminate = IsUnitPairIndeterminate(l, r);
+                                if (isIndeterminate)
+                                {
+                                    result.hasAmbiguousMethodAddresses = true;
+                                    ambiguityNotes.Add(rawSig);
+                                }
+                                else if (AreOwnersCompatible(l, r))
+                                {
+                                    if (l.Entry.Address != r.Entry.Address)
+                                    {
+                                        var displayImage = r.Identity.Image ?? l.Identity.Image ?? r.Entry.Image ?? l.Entry.Image;
+                                        var displayAssembly = r.Identity.Assembly ?? l.Identity.Assembly ?? r.Entry.Assembly ?? l.Entry.Assembly;
+                                        var displayMethodSig = r.Entry.MethodSignature ?? l.Entry.MethodSignature;
+                                        addressChanges.Add(new DumpDiffAddressChange
+                                        {
+                                            type = remKey.TypeName,
+                                            image = displayImage,
+                                            assembly = displayAssembly,
+                                            method = rawSig,
+                                            methodSignature = displayMethodSig,
+                                            left = $"0x{l.Entry.Address:X}",
+                                            right = $"0x{r.Entry.Address:X}"
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // Multiple candidates with the exact same non-empty signature
+                            var sortedLeft = leftSig.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+                            var sortedRight = rightSig.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+
+                            if (sortedLeft.Count == sortedRight.Count &&
+                                sortedLeft.Distinct().Count() <= 1 &&
+                                sortedLeft.SequenceEqual(sortedRight))
+                            {
+                                // Shared identical implementation across all entries: unchanged
+                                continue;
+                            }
+
+                            bool hasCompatiblePair = false;
+                            foreach (var l in leftSig)
+                            {
+                                foreach (var r in rightSig)
+                                {
+                                    if (AreOwnersCompatible(l, r))
+                                    {
+                                        hasCompatiblePair = true;
+                                        break;
+                                    }
+                                }
+                                if (hasCompatiblePair) break;
+                            }
+
+                            if (!hasCompatiblePair)
+                            {
+                                // Disjoint owners: zero compatible pairings exist.
+                                // They remain unmatched without triggering false ambiguity.
+                                continue;
+                            }
+
+                            result.hasAmbiguousMethodAddresses = true;
+                            var rawSig = leftSig[0].Entry.Signature ?? rightSig[0].Entry.Signature ?? sig;
+                            ambiguityNotes.Add(rawSig);
+                        }
+                    }
+
+                    // Step 3: Process remaining entries (treating absent signature as unknown information)
+                    var remainingLeft = leftEntries.Where(e => !leftMatched.Contains(e)).ToList();
+                    var remainingRight = rightEntries.Where(e => !rightMatched.Contains(e)).ToList();
+
+                    if (remainingLeft.Count == 0 || remainingRight.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    if (remainingLeft.Count == 1 && remainingRight.Count == 1)
+                    {
+                        var l = remainingLeft[0];
+                        var r = remainingRight[0];
+
+                        if (!string.IsNullOrEmpty(l.Entry.MethodSignature) && !string.IsNullOrEmpty(r.Entry.MethodSignature))
+                        {
+                            continue; // Incompatible explicit managed signatures
+                        }
+
+                        var leftHasSig = !string.IsNullOrEmpty(l.Entry.Signature);
+                        var rightHasSig = !string.IsNullOrEmpty(r.Entry.Signature);
+
+                        if (leftHasSig && rightHasSig && !AreSignaturesCompatible(l, r, remKey.MethodName))
+                        {
+                            // Distinct overloads with different signatures: do not pair
+                            continue;
+                        }
+
+                        if (IsSignatureColliding(l, remKey.MethodName) || IsSignatureColliding(r, remKey.MethodName))
+                        {
+                            result.hasAmbiguousMethodAddresses = true;
+                            var desc = rightHasSig ? r.Entry.Signature! : (leftHasSig ? l.Entry.Signature! : remKey.MethodName);
+                            ambiguityNotes.Add(desc);
+                            continue;
+                        }
+
+                        // At least one lacks signature, or both signatures are compatible: uniquely identifiable pair
+                        bool isIndeterminate = IsUnitPairIndeterminate(l, r);
+                        if (isIndeterminate)
+                        {
+                            result.hasAmbiguousMethodAddresses = true;
+                            var desc = rightHasSig ? r.Entry.Signature! : (leftHasSig ? l.Entry.Signature! : remKey.MethodName);
+                            ambiguityNotes.Add(desc);
+                        }
+                        else if (AreOwnersCompatible(l, r))
+                        {
+                            if (l.Entry.Address != r.Entry.Address)
+                            {
+                                var displayMethod = rightHasSig ? r.Entry.Signature! : (leftHasSig ? l.Entry.Signature! : remKey.MethodName);
+                                var displayImage = r.Identity.Image ?? l.Identity.Image ?? r.Entry.Image ?? l.Entry.Image;
+                                var displayAssembly = r.Identity.Assembly ?? l.Identity.Assembly ?? r.Entry.Assembly ?? l.Entry.Assembly;
+                                var displayMethodSig = r.Entry.MethodSignature ?? l.Entry.MethodSignature;
+                                addressChanges.Add(new DumpDiffAddressChange
+                                {
+                                    type = remKey.TypeName,
+                                    image = displayImage,
+                                    assembly = displayAssembly,
+                                    method = displayMethod,
+                                    methodSignature = displayMethodSig,
+                                    left = $"0x{l.Entry.Address:X}",
+                                    right = $"0x{r.Entry.Address:X}"
+                                });
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Multiple competing candidates remaining
+                        // First: check shared identical implementation across all remaining entries
+                        var sortedLeft = remainingLeft.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+                        var sortedRight = remainingRight.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
+
+                        if (sortedLeft.Count == sortedRight.Count &&
+                            sortedLeft.Distinct().Count() <= 1 &&
+                            sortedLeft.SequenceEqual(sortedRight))
+                        {
+                            // Shared identical implementation across all entries: unchanged
+                            continue;
+                        }
+
+                        // Check if any compatible candidate pair exists (considering signature and owner)
+                        bool hasCompatiblePair = false;
+                        foreach (var l in remainingLeft)
+                        {
+                            foreach (var r in remainingRight)
+                            {
+                                if (AreEntriesCompatible(l, r, remKey.MethodName))
+                                {
+                                    hasCompatiblePair = true;
+                                    break;
+                                }
+                            }
+                            if (hasCompatiblePair) break;
+                        }
+
+                        if (!hasCompatiblePair)
+                        {
+                            // Zero compatible pairings exist (disjoint owners and/or distinct known overloads).
+                            // They remain unmatched without triggering false ambiguity.
+                            continue;
+                        }
+
+                        result.hasAmbiguousMethodAddresses = true;
+                        var desc = !string.IsNullOrEmpty(remKey.TypeName) ? $"{remKey.TypeName}.{remKey.MethodName}" : remKey.MethodName;
+                        ambiguityNotes.Add(desc);
                     }
                 }
 
@@ -428,7 +1028,677 @@ namespace Il2CppDumper.Diff
             public string TypeName { get; set; } = string.Empty;
             public string MethodName { get; set; } = string.Empty;
             public string Signature { get; set; } = string.Empty;
+            public string? MethodSignature { get; set; }
             public ulong Address { get; set; }
+            public string? Image { get; set; }
+            public string? Assembly { get; set; }
+
+            public string? PreferredScope => !string.IsNullOrEmpty(Image) ? Image : Assembly;
+            public string FormatTypeKey() => JsonDumpType.FormatKey(Image, Assembly, TypeName);
+        }
+
+        private class ResolvedMethodIdentity
+        {
+            public string? QualifiedKey { get; set; }
+            public string? Image { get; set; }
+            public string? Assembly { get; set; }
+            public bool IsAttributed { get; set; }
+            public bool IsIndeterminate { get; set; }
+            public JsonDumpType? DeclaringType { get; set; }
+        }
+
+        private class MethodDiffItem
+        {
+            public ScriptMethodEntry Entry { get; set; } = null!;
+            public ResolvedMethodIdentity Identity { get; set; } = null!;
+            public bool Handled { get; set; }
+        }
+
+        private static bool AreSignaturesCompatible(MethodDiffItem lm, MethodDiffItem rm, string methodName)
+        {
+            if (!string.IsNullOrEmpty(lm.Entry.MethodSignature) && !string.IsNullOrEmpty(rm.Entry.MethodSignature))
+            {
+                return string.Equals(lm.Entry.MethodSignature, rm.Entry.MethodSignature, StringComparison.Ordinal);
+            }
+
+            var lSig = lm.Entry.Signature ?? "";
+            var rSig = rm.Entry.Signature ?? "";
+
+            if (string.Equals(BuildNativeSignatureKey(lSig), BuildNativeSignatureKey(rSig), StringComparison.Ordinal))
+                return true;
+
+            // Check managed declaration in dump.json
+            var lDeclType = lm.Identity.DeclaringType;
+            var rDeclType = rm.Identity.DeclaringType;
+            if (lDeclType?.methods != null && rDeclType?.methods != null)
+            {
+                var lMethods = lDeclType.methods.Where(m => m.name == methodName).ToList();
+                var rMethods = rDeclType.methods.Where(m => m.name == methodName).ToList();
+                if (lMethods.Count == 1 && rMethods.Count == 1)
+                {
+                    var lTypes = string.Join(", ", lMethods[0].parameters?.Select(p => p.type) ?? Array.Empty<string>());
+                    var rTypes = string.Join(", ", rMethods[0].parameters?.Select(p => p.type) ?? Array.Empty<string>());
+                    if (string.Equals(lTypes, rTypes, StringComparison.Ordinal) &&
+                        string.Equals(lMethods[0].returnType, rMethods[0].returnType, StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+                    return false;
+                }
+            }
+
+            // Fallback: strip parameter names from C signature
+            var lNorm = StripParameterNamesFromSignature(lSig);
+            var rNorm = StripParameterNamesFromSignature(rSig);
+            return string.Equals(lNorm, rNorm, StringComparison.Ordinal);
+        }
+
+        private static string BuildNativeSignatureKey(string sig)
+        {
+            if (string.IsNullOrEmpty(sig)) return "";
+            var rawParams = ExtractNormalizedParameters(sig, out var prefix, out var suffix, out var normalized);
+            if (rawParams == null || !normalized)
+                return sig;
+
+            var formattedParams = rawParams.Select(p => string.IsNullOrEmpty(p.Name) ? p.Type : $"{p.Type} {p.Name}");
+            return $"{prefix}({string.Join(", ", formattedParams)}){suffix}";
+        }
+
+        private static string StripParameterNamesFromSignature(string sig)
+        {
+            if (string.IsNullOrEmpty(sig)) return "";
+            var rawParams = ExtractNormalizedParameters(sig, out var prefix, out _, out _);
+            if (rawParams == null)
+                return sig;
+
+            return $"{prefix}({string.Join(", ", rawParams.Select(p => p.Type))})";
+        }
+
+        private static List<CParamInfo>? ExtractNormalizedParameters(string sig, out string prefix, out string suffix, out bool normalized)
+        {
+            prefix = "";
+            suffix = "";
+            normalized = false;
+
+            var rawParams = ExtractRawParameters(sig);
+            if (rawParams == null)
+                return null;
+
+            var openParen = sig.IndexOf('(');
+            var closeParen = sig.LastIndexOf(')');
+            prefix = sig.Substring(0, openParen);
+            suffix = sig.Substring(closeParen + 1);
+
+            if (rawParams.Count > 0 &&
+                string.Equals(rawParams[^1].Name, "method", StringComparison.Ordinal) &&
+                TryNormalizeAuxiliaryMethodInfoType(rawParams[^1].Type, out var normalizedType))
+            {
+                rawParams[^1].Type = normalizedType;
+                normalized = true;
+            }
+
+            return rawParams;
+        }
+
+        private static bool TryNormalizeAuxiliaryMethodInfoType(string type, out string normalizedType)
+        {
+            normalizedType = type;
+            if (string.IsNullOrEmpty(type))
+                return false;
+
+            var trimmed = type.Trim();
+            bool hasConst = false;
+            if (trimmed.StartsWith("const ", StringComparison.Ordinal))
+            {
+                hasConst = true;
+                trimmed = trimmed.Substring(6).TrimStart();
+            }
+
+            const string methodInfoPrefix = "MethodInfo_";
+            if (!trimmed.StartsWith(methodInfoPrefix, StringComparison.Ordinal) || !trimmed.EndsWith("*", StringComparison.Ordinal))
+                return false;
+
+            var hexPart = trimmed.Substring(methodInfoPrefix.Length, trimmed.Length - methodInfoPrefix.Length - 1).Trim();
+            if (hexPart.Length == 0)
+                return false;
+
+            for (int i = 0; i < hexPart.Length; i++)
+            {
+                char c = hexPart[i];
+                bool isHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+                if (!isHex)
+                    return false;
+            }
+
+            normalizedType = hasConst ? "const MethodInfo*" : "MethodInfo*";
+            return true;
+        }
+
+        private static bool IsUnitPairIndeterminate(MethodDiffItem l, MethodDiffItem r)
+        {
+            return l.Identity.IsIndeterminate || r.Identity.IsIndeterminate;
+        }
+
+        private static bool AreOwnersCompatible(MethodDiffItem left, MethodDiffItem right)
+        {
+            var leftImg = left.Identity.Image ?? left.Entry.Image;
+            var rightImg = right.Identity.Image ?? right.Entry.Image;
+            if (!string.IsNullOrEmpty(leftImg) && !string.IsNullOrEmpty(rightImg))
+            {
+                return string.Equals(leftImg, rightImg, StringComparison.Ordinal);
+            }
+
+            var leftAsm = left.Identity.Assembly ?? left.Entry.Assembly;
+            var rightAsm = right.Identity.Assembly ?? right.Entry.Assembly;
+            if (!string.IsNullOrEmpty(leftAsm) && !string.IsNullOrEmpty(rightAsm))
+            {
+                return string.Equals(leftAsm, rightAsm, StringComparison.Ordinal);
+            }
+
+            return true;
+        }
+
+        private static bool AreEntriesCompatible(MethodDiffItem l, MethodDiffItem r, string methodName)
+        {
+            if (!AreOwnersCompatible(l, r))
+                return false;
+
+            var lHasSig = !string.IsNullOrEmpty(l.Entry.Signature);
+            var rHasSig = !string.IsNullOrEmpty(r.Entry.Signature);
+            if (lHasSig && rHasSig && !AreSignaturesCompatible(l, r, methodName))
+                return false;
+
+            return true;
+        }
+
+        private class CParamInfo
+        {
+            public string Type { get; set; } = string.Empty;
+            public string Name { get; set; } = string.Empty;
+        }
+
+        private static bool IsSignatureColliding(MethodDiffItem item, string methodName)
+        {
+            if (!string.IsNullOrEmpty(item.Entry.MethodSignature))
+            {
+                // Explicit managed signature distinguishes overloads definitively
+                return false;
+            }
+
+            var declType = item.Identity.DeclaringType;
+            if (declType?.methods == null) return false;
+
+            var candidates = declType.methods
+                .Where(m => string.Equals(m.name, methodName, StringComparison.Ordinal))
+                .ToList();
+
+            if (candidates.Count <= 1) return false;
+
+            var sig = item.Entry.Signature;
+            if (string.IsNullOrEmpty(sig))
+            {
+                // No signature to distinguish among multiple declarations: colliding
+                return true;
+            }
+
+            var cParams = ExtractManagedParametersFromSignature(sig);
+            int matchCount = 0;
+            foreach (var cand in candidates)
+            {
+                if (DoesDeclarationMatchSignature(cand, cParams))
+                {
+                    matchCount++;
+                }
+            }
+
+            return matchCount > 1;
+        }
+
+        private static bool DoesDeclarationMatchSignature(JsonDumpMethod cand, List<CParamInfo> cParams)
+        {
+            var candParams = cand.parameters ?? new List<JsonDumpParameter>();
+            if (candParams.Count != cParams.Count)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < cParams.Count; i++)
+            {
+                if (!AreParameterTypesMatching(candParams[i].type, cParams[i].Type))
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static bool AreParameterTypesMatching(string managedType, string cType)
+        {
+            if (string.Equals(managedType, cType, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            cType = cType.Trim();
+            if (cType.StartsWith("const "))
+                cType = cType.Substring(6).Trim();
+            if (cType.StartsWith("struct "))
+                cType = cType.Substring(7).Trim();
+
+            var managedSimple = managedType;
+            if (managedSimple.StartsWith("System."))
+                managedSimple = managedSimple.Substring(7);
+
+            if (string.Equals(managedSimple, cType, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            var m = managedSimple.ToLowerInvariant();
+            var c = cType.ToLowerInvariant();
+
+            if (m == c) return true;
+
+            if ((m == "char" || m == "ushort" || m == "uint16") && (c == "uint16_t" || c == "ushort" || c == "char" || c == "il2cppchar"))
+                return true;
+
+            if ((m == "short" || m == "int16") && (c == "int16_t" || c == "short"))
+                return true;
+
+            if ((m == "int" || m == "int32") && (c == "int32_t" || c == "int"))
+                return true;
+
+            if ((m == "uint" || m == "uint32") && (c == "uint32_t" || c == "uint"))
+                return true;
+
+            if ((m == "long" || m == "int64") && (c == "int64_t" || c == "long"))
+                return true;
+
+            if ((m == "ulong" || m == "uint64") && (c == "uint64_t" || c == "ulong"))
+                return true;
+
+            if ((m == "byte" || m == "uint8") && (c == "uint8_t" || c == "byte"))
+                return true;
+
+            if ((m == "sbyte" || m == "int8") && (c == "int8_t" || c == "sbyte"))
+                return true;
+
+            if (m == "bool" || m == "boolean")
+                return c == "bool" || c == "boolean";
+
+            if (m == "single" || m == "float")
+                return c == "float" || c == "single";
+
+            if (m == "double")
+                return c == "double";
+
+            if (m == "intptr" && (c == "intptr_t" || c == "void*"))
+                return true;
+
+            if (m == "uintptr" && (c == "uintptr_t" || c == "void*"))
+                return true;
+
+            bool isManagedPrimitive = (m == "char" || m == "ushort" || m == "short" || m == "int" || m == "uint" ||
+                                       m == "long" || m == "ulong" || m == "byte" || m == "sbyte" || m == "bool" ||
+                                       m == "float" || m == "double" || m == "int32" || m == "uint32" || m == "int16" ||
+                                       m == "uint16" || m == "int64" || m == "uint64" || m == "single" || m == "boolean");
+
+            if (isManagedPrimitive && c.EndsWith("*"))
+            {
+                return false;
+            }
+
+            if (m == "string")
+            {
+                return c.Contains("string") || c == "il2cppstring*" || c == "system_string_o*";
+            }
+
+            if (m == "type")
+            {
+                return c.Contains("type") || c == "il2cppreflectiontype*" || c == "system_type_o*";
+            }
+
+            if (m == "object")
+            {
+                return c.Contains("object") || c == "il2cppobject*";
+            }
+
+            if (managedType.EndsWith("[]"))
+            {
+                var elemType = managedType.Substring(0, managedType.Length - 2);
+                return c.Contains("array") || c == "il2cpparray*" || c.Contains(elemType.ToLowerInvariant());
+            }
+
+            if (c.EndsWith("*"))
+            {
+                var cBase = c.TrimEnd('*').Trim();
+                if (cBase.EndsWith("_o"))
+                    cBase = cBase.Substring(0, cBase.Length - 2);
+
+                if (cBase.EndsWith(m, StringComparison.OrdinalIgnoreCase) ||
+                    cBase.Replace("_", ".").EndsWith(m, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static List<CParamInfo> ExtractManagedParametersFromSignature(string sig)
+        {
+            var rawParams = ExtractRawParameters(sig);
+            if (rawParams == null || rawParams.Count == 0)
+                return new List<CParamInfo>();
+
+            var list = new List<CParamInfo>(rawParams);
+
+            // 1. Remove receptor (__this) if first parameter
+            if (list.Count > 0)
+            {
+                var first = list[0];
+                if (first.Name == "__this" || first.Name.StartsWith("__this") || first.Type.EndsWith("__this"))
+                {
+                    list.RemoveAt(0);
+                }
+            }
+
+            // 2. Remove auxiliary metadata argument (const MethodInfo* method) if last parameter
+            if (list.Count > 0)
+            {
+                var last = list[^1];
+                if (last.Name == "method" || last.Type.Contains("MethodInfo") || last.Type.EndsWith("MethodInfo*"))
+                {
+                    list.RemoveAt(list.Count - 1);
+                }
+            }
+
+            return list;
+        }
+
+        private static List<CParamInfo>? ExtractRawParameters(string sig)
+        {
+            if (string.IsNullOrEmpty(sig)) return null;
+            var openParen = sig.IndexOf('(');
+            var closeParen = sig.LastIndexOf(')');
+            if (openParen < 0 || closeParen <= openParen)
+                return null;
+
+            var paramStr = sig.Substring(openParen + 1, closeParen - openParen - 1).Trim();
+            if (string.IsNullOrEmpty(paramStr))
+                return new List<CParamInfo>();
+
+            var paramTokens = new List<string>();
+            int depth = 0;
+            int bracketDepth = 0;
+            int lastStart = 0;
+            for (int i = 0; i < paramStr.Length; i++)
+            {
+                char c = paramStr[i];
+                if (c == '<') depth++;
+                else if (c == '>') { if (depth > 0) depth--; }
+                else if (c == '[') bracketDepth++;
+                else if (c == ']') { if (bracketDepth > 0) bracketDepth--; }
+                else if (c == ',' && depth == 0 && bracketDepth == 0)
+                {
+                    paramTokens.Add(paramStr.Substring(lastStart, i - lastStart).Trim());
+                    lastStart = i + 1;
+                }
+            }
+            if (lastStart < paramStr.Length)
+            {
+                paramTokens.Add(paramStr.Substring(lastStart).Trim());
+            }
+
+            var result = new List<CParamInfo>();
+            foreach (var token in paramTokens)
+            {
+                var trimmed = token.Trim();
+                if (string.IsNullOrEmpty(trimmed) || trimmed == "void") continue;
+
+                var parts = trimmed.Split(new[] { ' ', '	' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 1)
+                {
+                    result.Add(new CParamInfo { Type = parts[0], Name = "" });
+                }
+                else
+                {
+                    var name = parts[^1];
+                    if (name.EndsWith('*') || name.EndsWith('&'))
+                    {
+                        result.Add(new CParamInfo { Type = trimmed, Name = "" });
+                    }
+                    else
+                    {
+                        var type = string.Join(" ", parts.Take(parts.Length - 1));
+                        result.Add(new CParamInfo { Type = type, Name = name });
+                    }
+                }
+            }
+            return result;
+        }
+
+        private class TypeLookupIndex
+        {
+            private readonly Dictionary<(string Image, string FullName), List<ReconciledType>> _byImageAndName = new();
+            private readonly Dictionary<(string Assembly, string FullName), List<ReconciledType>> _byAssemblyAndName = new();
+            private readonly Dictionary<string, List<ReconciledType>> _byFullName = new();
+
+            private readonly Dictionary<(string Image, string BaseName, int Arity), List<ReconciledType>> _byImageBaseGeneric = new();
+            private readonly Dictionary<(string Assembly, string BaseName, int Arity), List<ReconciledType>> _byAssemblyBaseGeneric = new();
+            private readonly Dictionary<(string BaseName, int Arity), List<ReconciledType>> _byBaseGeneric = new();
+
+            private readonly HashSet<string> _images = new(StringComparer.Ordinal);
+            private readonly HashSet<string> _assemblies = new(StringComparer.Ordinal);
+
+            public static TypeLookupIndex Build(List<ReconciledType> reconciled, bool isLeft)
+            {
+                var index = new TypeLookupIndex();
+                foreach (var r in reconciled)
+                {
+                    var target = isLeft ? r.Left : r.Right;
+                    if (target == null) continue;
+
+                    var fullName = r.FullName;
+                    var image = target.image ?? r.Image;
+                    var assembly = target.assembly ?? r.Assembly;
+
+                    AddToList(index._byFullName, fullName, r);
+
+                    if (!string.IsNullOrEmpty(image))
+                    {
+                        index._images.Add(image);
+                        AddToList(index._byImageAndName, (image, fullName), r);
+                    }
+
+                    if (!string.IsNullOrEmpty(assembly))
+                    {
+                        index._assemblies.Add(assembly);
+                        AddToList(index._byAssemblyAndName, (assembly, fullName), r);
+                    }
+
+                    if (TryExtractGenericBase(fullName, out var baseName, out var arity))
+                    {
+                        AddToList(index._byBaseGeneric, (baseName, arity), r);
+                        if (!string.IsNullOrEmpty(image))
+                        {
+                            AddToList(index._byImageBaseGeneric, (image, baseName, arity), r);
+                        }
+                        if (!string.IsNullOrEmpty(assembly))
+                        {
+                            AddToList(index._byAssemblyBaseGeneric, (assembly, baseName, arity), r);
+                        }
+                    }
+                }
+                return index;
+            }
+
+            private static void AddToList<TKey>(Dictionary<TKey, List<ReconciledType>> dict, TKey key, ReconciledType item) where TKey : notnull
+            {
+                if (!dict.TryGetValue(key, out var list))
+                {
+                    list = new List<ReconciledType>();
+                    dict[key] = list;
+                }
+                list.Add(item);
+            }
+
+            internal static bool TryExtractGenericBase(string typeName, out string baseName, out int arity)
+            {
+                baseName = string.Empty;
+                arity = 0;
+                if (string.IsNullOrEmpty(typeName) || !typeName.Contains('<'))
+                    return false;
+
+                var sb = new StringBuilder();
+                int totalArity = 0;
+                int depth = 0;
+                int bracketDepth = 0;
+                int blockCommas = 0;
+                bool inBlock = false;
+
+                for (int i = 0; i < typeName.Length; i++)
+                {
+                    char c = typeName[i];
+                    if (c == '<')
+                    {
+                        if (depth == 0)
+                        {
+                            inBlock = true;
+                            blockCommas = 0;
+                        }
+                        depth++;
+                    }
+                    else if (c == '>')
+                    {
+                        depth--;
+                        if (depth == 0 && inBlock)
+                        {
+                            totalArity += blockCommas + 1;
+                            inBlock = false;
+                        }
+                        else if (depth < 0)
+                        {
+                            depth = 0;
+                        }
+                    }
+                    else if (c == '[')
+                    {
+                        bracketDepth++;
+                    }
+                    else if (c == ']')
+                    {
+                        if (bracketDepth > 0) bracketDepth--;
+                    }
+                    else if (c == ',' && depth == 1 && bracketDepth == 0)
+                    {
+                        blockCommas++;
+                    }
+                    else if (depth == 0)
+                    {
+                        sb.Append(c);
+                    }
+                }
+
+                if (depth != 0 || totalArity == 0)
+                    return false;
+
+                baseName = sb.ToString();
+                arity = totalArity;
+                return true;
+            }
+
+            public ResolvedMethodIdentity Resolve(ScriptMethodEntry entry, bool isLeft)
+            {
+                var identity = new ResolvedMethodIdentity();
+                bool hasGeneric = TryExtractGenericBase(entry.TypeName, out var baseName, out var arity);
+
+                if (!string.IsNullOrEmpty(entry.Image))
+                {
+                    List<ReconciledType>? matches = null;
+                    if (!_byImageAndName.TryGetValue((entry.Image, entry.TypeName), out matches) && hasGeneric)
+                    {
+                        _byImageBaseGeneric.TryGetValue((entry.Image, baseName, arity), out matches);
+                    }
+
+                    if (matches != null && matches.Count == 1)
+                    {
+                        var m = matches[0];
+                        identity.DeclaringType = isLeft ? m.Left : m.Right;
+                        identity.Image = m.Image ?? (isLeft ? m.Left?.image : m.Right?.image) ?? entry.Image;
+                        identity.Assembly = m.Assembly ?? (isLeft ? m.Left?.assembly : m.Right?.assembly) ?? entry.Assembly;
+                        // Preserve concrete exported type name in qualified key
+                        identity.QualifiedKey = JsonDumpType.FormatKey(identity.Image, identity.Assembly, entry.TypeName);
+                        identity.IsAttributed = true;
+                        return identity;
+                    }
+
+                    if (matches == null || matches.Count == 0)
+                    {
+                        identity.Image = entry.Image;
+                        identity.Assembly = entry.Assembly;
+                        identity.QualifiedKey = JsonDumpType.FormatKey(entry.Image, entry.Assembly, entry.TypeName);
+                        identity.IsAttributed = true;
+                        return identity;
+                    }
+
+                    identity.Image = entry.Image;
+                    identity.Assembly = entry.Assembly;
+                    identity.QualifiedKey = null;
+                    identity.IsAttributed = false;
+                    identity.IsIndeterminate = matches != null && matches.Count > 1;
+                    return identity;
+                }
+
+                if (!string.IsNullOrEmpty(entry.Assembly))
+                {
+                    List<ReconciledType>? matches = null;
+                    if (!_byAssemblyAndName.TryGetValue((entry.Assembly, entry.TypeName), out matches) && hasGeneric)
+                    {
+                        _byAssemblyBaseGeneric.TryGetValue((entry.Assembly, baseName, arity), out matches);
+                    }
+
+                    if (matches != null && matches.Count == 1)
+                    {
+                        var m = matches[0];
+                        identity.DeclaringType = isLeft ? m.Left : m.Right;
+                        identity.Image = m.Image ?? (isLeft ? m.Left?.image : m.Right?.image);
+                        identity.Assembly = m.Assembly ?? (isLeft ? m.Left?.assembly : m.Right?.assembly) ?? entry.Assembly;
+                        identity.QualifiedKey = JsonDumpType.FormatKey(identity.Image, identity.Assembly, entry.TypeName);
+                        identity.IsAttributed = true;
+                        return identity;
+                    }
+
+                    // Ambiguous candidates in this assembly
+                    identity.Image = null;
+                    identity.Assembly = entry.Assembly;
+                    identity.QualifiedKey = null;
+                    identity.IsAttributed = false;
+                    identity.IsIndeterminate = matches != null && matches.Count > 1;
+                    return identity;
+                }
+
+                // Legacy: no Image or Assembly
+                List<ReconciledType>? nameMatches = null;
+                if (!_byFullName.TryGetValue(entry.TypeName, out nameMatches) && hasGeneric)
+                {
+                    _byBaseGeneric.TryGetValue((baseName, arity), out nameMatches);
+                }
+
+                if (nameMatches != null && nameMatches.Count == 1)
+                {
+                    var m = nameMatches[0];
+                    identity.DeclaringType = isLeft ? m.Left : m.Right;
+                    identity.Image = m.Image ?? (isLeft ? m.Left?.image : m.Right?.image);
+                    identity.Assembly = m.Assembly ?? (isLeft ? m.Left?.assembly : m.Right?.assembly);
+                    identity.QualifiedKey = JsonDumpType.FormatKey(identity.Image, identity.Assembly, entry.TypeName);
+                    identity.IsAttributed = true;
+                    return identity;
+                }
+
+                identity.Image = null;
+                identity.Assembly = null;
+                identity.QualifiedKey = null;
+                identity.IsAttributed = false;
+                identity.IsIndeterminate = (nameMatches != null && nameMatches.Count > 1) ||
+                                           (hasGeneric && (_images.Count > 1 || _assemblies.Count > 1));
+                return identity;
+            }
         }
 
         private class ParsedArtifacts
@@ -616,7 +1886,10 @@ namespace Il2CppDumper.Diff
                             TypeName = typeName,
                             MethodName = methodName,
                             Signature = sig,
-                            Address = addr
+                            MethodSignature = item.TryGetProperty("MethodSignature", out var msEl) && msEl.ValueKind == JsonValueKind.String ? msEl.GetString() : (item.TryGetProperty("methodSignature", out msEl) && msEl.ValueKind == JsonValueKind.String ? msEl.GetString() : null),
+                            Address = addr,
+                            Image = item.TryGetProperty("Image", out var imgEl) && imgEl.ValueKind == JsonValueKind.String ? imgEl.GetString() : (item.TryGetProperty("image", out imgEl) && imgEl.ValueKind == JsonValueKind.String ? imgEl.GetString() : null),
+                            Assembly = item.TryGetProperty("Assembly", out var asmEl) && asmEl.ValueKind == JsonValueKind.String ? asmEl.GetString() : (item.TryGetProperty("assembly", out asmEl) && asmEl.ValueKind == JsonValueKind.String ? asmEl.GetString() : null)
                         });
                     }
                     artifacts.ScriptMethods = list;

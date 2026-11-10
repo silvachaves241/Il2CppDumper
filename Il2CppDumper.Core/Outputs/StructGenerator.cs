@@ -1,3 +1,4 @@
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -84,6 +85,18 @@ namespace Il2CppDumper
             foreach (var imageDef in metadata.imageDefs)
             {
                 var imageName = metadata.GetStringFromIndex(imageDef.nameIndex);
+                string? assemblyName = null;
+                if (imageDef.assemblyIndex >= 0 && metadata.assemblyDefs != null && imageDef.assemblyIndex < metadata.assemblyDefs.Length)
+                {
+                    var assemblyDef = metadata.assemblyDefs[imageDef.assemblyIndex];
+                    assemblyName = metadata.GetStringFromIndex(assemblyDef.aname.nameIndex);
+                }
+                if (string.IsNullOrEmpty(assemblyName) && !string.IsNullOrEmpty(imageName))
+                {
+                    assemblyName = imageName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+                        ? imageName.Substring(0, imageName.Length - 4)
+                        : imageName;
+                }
                 var typeEnd = imageDef.typeStart + imageDef.typeCount;
                 for (int typeIndex = imageDef.typeStart; typeIndex < typeEnd; typeIndex++)
                 {
@@ -104,6 +117,9 @@ namespace Il2CppDumper
                             scriptMethod.Address = il2Cpp.GetRVA(methodPointer);
                             var methodFullName = typeName + "$$" + methodName;
                             scriptMethod.Name = methodFullName;
+                            scriptMethod.Image = imageName;
+                            scriptMethod.Assembly = assemblyName;
+                            scriptMethod.MethodSignature = FormatMethodSignature(methodName, methodDef);
 
                                 var methodReturnType = il2Cpp.types[methodDef.returnType];
                                 var returnType = ParseType(methodReturnType);
@@ -169,6 +185,9 @@ namespace Il2CppDumper
                                             GenerateMethodInfo(methodInfoName, structTypeName, rgctxs);
                                         }
                                         scriptMethod.Name = methodFullName;
+                                        scriptMethod.Image = imageName;
+                                        scriptMethod.Assembly = assemblyName;
+                                        scriptMethod.MethodSignature = FormatMethodSignature(methodSpecMethodName, methodDef);
 
                                         var genericContext = executor.GetMethodSpecGenericContext(methodSpec);
                                         var methodReturnType = il2Cpp.types[methodDef.returnType];
@@ -618,6 +637,42 @@ namespace Il2CppDumper
             {
                 return Regex.Replace(str, "[^a-zA-Z0-9_]", "_");
             }
+        }
+
+        private string FormatMethodSignature(string name, Il2CppMethodDefinition methodDef)
+        {
+            var methodReturnType = il2Cpp.types[methodDef.returnType];
+            var returnTypeName = executor.GetTypeName(methodReturnType, true, false);
+            if (methodReturnType.byref == 1)
+            {
+                returnTypeName = "ref " + returnTypeName;
+            }
+
+            var managedParams = new List<string>();
+            for (var j = 0; j < methodDef.parameterCount; j++)
+            {
+                var parameterDef = metadata.parameterDefs[methodDef.parameterStart + j];
+                var parameterType = il2Cpp.types[parameterDef.typeIndex];
+                var typeName = executor.GetTypeName(parameterType, true, false);
+                var prefix = "";
+                if (parameterType.byref == 1)
+                {
+                    if ((parameterType.attrs & PARAM_ATTRIBUTE_OUT) != 0 && (parameterType.attrs & PARAM_ATTRIBUTE_IN) == 0)
+                    {
+                        prefix = "out ";
+                    }
+                    else if ((parameterType.attrs & PARAM_ATTRIBUTE_OUT) == 0 && (parameterType.attrs & PARAM_ATTRIBUTE_IN) != 0)
+                    {
+                        prefix = "in ";
+                    }
+                    else
+                    {
+                        prefix = "ref ";
+                    }
+                }
+                managedParams.Add(prefix + typeName);
+            }
+            return $"{returnTypeName} {name}({string.Join(", ", managedParams)})";
         }
 
         private string ParseType(Il2CppType il2CppType, Il2CppGenericContext context = null)

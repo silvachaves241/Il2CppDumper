@@ -1,0 +1,3646 @@
+#nullable enable
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Text.Json;
+using Il2CppDumper.Core;
+using Il2CppDumper.Diff;
+using Il2CppDumper.Tests.Synthetic;
+using Xunit;
+
+namespace Il2CppDumper.Tests
+{
+    public class HomonymousMethodAddressTests
+    {
+        private static void CreateFixtures(
+            string dir,
+            JsonDumpModel dumpModel,
+            ScriptJson? script = null)
+        {
+            Directory.CreateDirectory(dir);
+            var dumpJson = JsonSerializer.Serialize(dumpModel, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(Path.Combine(dir, "dump.json"), dumpJson, new UTF8Encoding(false));
+
+            if (script != null)
+            {
+                var scriptJson = JsonSerializer.Serialize(script, new JsonSerializerOptions { WriteIndented = true, IncludeFields = true });
+                File.WriteAllText(Path.Combine(dir, "script.json"), scriptJson, new UTF8Encoding(false));
+            }
+        }
+
+        private static JsonDumpModel CreateTwoImagesModel()
+        {
+            return new JsonDumpModel
+            {
+                types = new List<JsonDumpType>
+                {
+                    new()
+                    {
+                        image = "A.dll",
+                        assembly = "A",
+                        fullName = "Ns.Player",
+                        methods = new List<JsonDumpMethod>
+                        {
+                            new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter>() }
+                        }
+                    },
+                    new()
+                    {
+                        image = "B.dll",
+                        assembly = "B",
+                        fullName = "Ns.Player",
+                        methods = new List<JsonDumpMethod>
+                        {
+                            new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter>() }
+                        }
+                    }
+                }
+            };
+        }
+
+        [Fact]
+        public void Issue90_ReproductionScenario_LegacyScript_AddressSwap_DetectsAmbiguityAndExits1()
+        {
+            // Exact scenario from Issue #90:
+            // Two types with same fullName 'Ns.Player' in A.dll and B.dll
+            // Left script: [4096 (0x1000), 8192 (0x2000)] without Image/Assembly
+            // Right script: [8192 (0x2000), 4096 (0x1000)] without Image/Assembly
+            // Old behavior: exit 0, addressChanges 0, no ambiguity (multiset equality masked the swap)
+            // Expected behavior: exit 1, hasAmbiguousMethodAddresses true, explicit unresolved correlation note
+            var tempDir = Path.Combine(Path.GetTempPath(), "issue90-swap-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+
+                var model = CreateTwoImagesModel();
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000 },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x2000 }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x2000 },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000 }
+                    }
+                };
+
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+
+                Assert.Equal(1, exitCode);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+
+                Assert.True(diff.HasDifferences);
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.NotNull(diff.methods.note);
+                Assert.Contains("Address comparison has unresolved ambiguous overloads: unable to correlate", diff.methods.note);
+                Assert.Contains("void Run()", diff.methods.note);
+                Assert.Equal(0, diff.summary.addressChanges);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void Issue90_ControlScenario_LegacyScript_AddressChangeInAmbiguousGroup_PreservesAmbiguityWithoutFabricatedTransition()
+        {
+            // Reviewer Point 3: Canceling equal addresses in an ambiguous group must not fabricate a transition.
+            // With homonymous methods in A and B:
+            // Left: [0x1000, 0x2000]
+            // Right: [0x1000, 0x3000] (or [0x3000, 0x1000])
+            // In an unresolved group, address 0x1000 may belong to different methods across builds.
+            // The tool must detect the set change, preserve ambiguity (hasAmbiguousMethodAddresses = true),
+            // and reserve addressChanged for demonstrable pairs rather than fabricating 0x2000 -> 0x3000.
+            var tempDir = Path.Combine(Path.GetTempPath(), "issue90-control-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "control");
+                var outPath = Path.Combine(tempDir, "diff.json");
+
+                var model = CreateTwoImagesModel();
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000 },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x2000 }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000 },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x3000 }
+                    }
+                };
+
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+
+                Assert.Equal(1, exitCode);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+
+                Assert.True(diff.HasDifferences);
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.NotNull(diff.methods.note);
+                Assert.Contains("Address comparison has unresolved ambiguous overloads: unable to correlate", diff.methods.note);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void Issue90_QualifiedScriptWithOwnership_AddressSwap_ReportsBothChangesWithAttribution()
+        {
+            // When script.json records preserve Image/Assembly ownership additively:
+            // Both methods swap addresses between builds:
+            // A.dll!Ns.Player.Run: 0x1000 -> 0x2000
+            // B.dll!Ns.Player.Run: 0x2000 -> 0x1000
+            // Must report BOTH changes independently with image and assembly attribution, exit 1, and no false ambiguity!
+            // Also verifies Reviewer Point 5: public 'type' field emits simple type name "Ns.Player".
+            var tempDir = Path.Combine(Path.GetTempPath(), "issue90-qualified-swap-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+
+                var model = CreateTwoImagesModel();
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000, Image = "A.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x2000, Image = "B.dll", Assembly = "B" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x2000, Image = "A.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000, Image = "B.dll", Assembly = "B" }
+                    }
+                };
+
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+
+                Assert.Equal(1, exitCode);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+
+                Assert.True(diff.HasDifferences);
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Null(diff.methods.note);
+                Assert.Equal(2, diff.summary.addressChanges);
+                Assert.NotNull(diff.methods.addressChanged);
+                Assert.Equal(2, diff.methods.addressChanged.Count);
+
+                var changeA = diff.methods.addressChanged.FirstOrDefault(c => c.image == "A.dll");
+                Assert.NotNull(changeA);
+                Assert.Equal("Ns.Player", changeA!.type); // Reviewer Point 5: Simple type name!
+                Assert.Equal("A.dll", changeA.image);
+                Assert.Equal("A", changeA.assembly);
+                Assert.Equal("Run", changeA.method);
+                Assert.Equal("0x1000", changeA.left);
+                Assert.Equal("0x2000", changeA.right);
+
+                var changeB = diff.methods.addressChanged.FirstOrDefault(c => c.image == "B.dll");
+                Assert.NotNull(changeB);
+                Assert.Equal("Ns.Player", changeB!.type); // Reviewer Point 5: Simple type name!
+                Assert.Equal("B.dll", changeB.image);
+                Assert.Equal("B", changeB.assembly);
+                Assert.Equal("Run", changeB.method);
+                Assert.Equal("0x2000", changeB.left);
+                Assert.Equal("0x1000", changeB.right);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerP2_LegacyVsQualified_AddressDiff_BothOrders_DetectsAmbiguityAndExits1()
+        {
+            // Reviewer Point 1: Key intersection must not drop methods when comparing legacy with qualified map.
+            // Left: [0x1000, 0x2000] without owners.
+            // Right: A=0x1000, B=0x3000 with owners.
+            // Both orders must return exit code 1, ambiguity true.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer-legacy-vs-qualified-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = CreateTwoImagesModel();
+                var legacyScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000 },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x2000 }
+                    }
+                };
+                var qualifiedScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000, Image = "A.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x3000, Image = "B.dll", Assembly = "B" }
+                    }
+                };
+
+                // Order 1: Legacy left, Qualified right
+                var dir1 = Path.Combine(tempDir, "run1");
+                var left1 = Path.Combine(dir1, "left");
+                var right1 = Path.Combine(dir1, "right");
+                var out1 = Path.Combine(dir1, "diff.json");
+                CreateFixtures(left1, model, legacyScript);
+                CreateFixtures(right1, model, qualifiedScript);
+
+                var exit1 = DumpDiffer.Execute(left1, right1, out1);
+                Assert.Equal(1, exit1);
+                var diff1 = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(out1))!;
+                Assert.True(diff1.HasDifferences);
+                Assert.True(diff1.hasAmbiguousMethodAddresses);
+
+                // Order 2: Qualified left, Legacy right
+                var dir2 = Path.Combine(tempDir, "run2");
+                var left2 = Path.Combine(dir2, "left");
+                var right2 = Path.Combine(dir2, "right");
+                var out2 = Path.Combine(dir2, "diff.json");
+                CreateFixtures(left2, model, qualifiedScript);
+                CreateFixtures(right2, model, legacyScript);
+
+                var exit2 = DumpDiffer.Execute(left2, right2, out2);
+                Assert.Equal(1, exit2);
+                var diff2 = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(out2))!;
+                Assert.True(diff2.HasDifferences);
+                Assert.True(diff2.hasAmbiguousMethodAddresses);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerP2_GenericInstance_BoxInt_WithGenericDefinitionBoxT_BothOrders_ReportsAddressChange()
+        {
+            // Reviewer Point 1: Single generic Ns.Box<int>$$Run going from 0x1000 to 0x2000,
+            // with Ns.Box<T> in dump.json. Both orders must succeed and report the address change.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer-generic-box-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "A",
+                            fullName = "Ns.Box<T>",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter>() }
+                            }
+                        }
+                    }
+                };
+
+                var script1 = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Box<int>$$Run", Signature = "void Run()", Address = 0x1000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+
+                // Legacy script lacking Image/Assembly on right
+                var script2 = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Box<int>$$Run", Signature = "void Run()", Address = 0x2000 }
+                    }
+                };
+
+                // Order 1: Qualified left, Legacy right
+                var dir1 = Path.Combine(tempDir, "run1");
+                var left1 = Path.Combine(dir1, "left");
+                var right1 = Path.Combine(dir1, "right");
+                var out1 = Path.Combine(dir1, "diff.json");
+                CreateFixtures(left1, model, script1);
+                CreateFixtures(right1, model, script2);
+
+                var exit1 = DumpDiffer.Execute(left1, right1, out1);
+                Assert.Equal(1, exit1);
+                var diff1 = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(out1))!;
+                Assert.NotNull(diff1.methods.addressChanged);
+                Assert.Single(diff1.methods.addressChanged);
+                Assert.Equal("Ns.Box<int>", diff1.methods.addressChanged[0].type);
+                Assert.Equal("0x1000", diff1.methods.addressChanged[0].left);
+                Assert.Equal("0x2000", diff1.methods.addressChanged[0].right);
+
+                // Order 2: Legacy left, Qualified right
+                var dir2 = Path.Combine(tempDir, "run2");
+                var left2 = Path.Combine(dir2, "left");
+                var right2 = Path.Combine(dir2, "right");
+                var out2 = Path.Combine(dir2, "diff.json");
+                CreateFixtures(left2, model, script2);
+                CreateFixtures(right2, model, script1);
+
+                var exit2 = DumpDiffer.Execute(left2, right2, out2);
+                Assert.Equal(1, exit2);
+                var diff2 = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(out2))!;
+                Assert.NotNull(diff2.methods.addressChanged);
+                Assert.Single(diff2.methods.addressChanged);
+                Assert.Equal("Ns.Box<int>", diff2.methods.addressChanged[0].type);
+                Assert.Equal("0x2000", diff2.methods.addressChanged[0].left);
+                Assert.Equal("0x1000", diff2.methods.addressChanged[0].right);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerP2_ExplicitIncompatibleOwners_DoNotPairAsAddressChange()
+        {
+            // Reviewer Point 1: Explicit incompatible owners (e.g. Left in A.dll, Right in B.dll)
+            // must NOT be paired as an address change.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer-incompatible-owners-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = CreateTwoImagesModel();
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x2000, Image = "B.dll", Assembly = "B" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+
+                // Since left belongs to A.dll and right belongs to B.dll, they are incompatible owners.
+                // No addressChanged should pair them together!
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerP2_OnlyAssembly_MultipleCandidates_PreservesAmbiguityWithoutFalseAttribution()
+        {
+            // Reviewer Point 2: When A.dll and B.dll share the same Assembly "Shared",
+            // exporting only Assembly: "Shared" must NOT falsely attribute changes to an arbitrary image.
+            // Multiple candidates must require ambiguity handling.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer-only-assembly-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "Shared",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter>() }
+                            }
+                        },
+                        new()
+                        {
+                            image = "B.dll",
+                            assembly = "Shared",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter>() }
+                            }
+                        }
+                    }
+                };
+
+                // Moving A from 0x1000 to 0x3000 while B stays at 0x2000, with ONLY Assembly: "Shared"
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000, Assembly = "Shared" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x2000, Assembly = "Shared" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x3000, Assembly = "Shared" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x2000, Assembly = "Shared" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                // Must NOT attribute falsely to B.dll without ambiguity
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void Issue90_SharedNativeImplementation_IdenticalAddresses_TreatedAsUnchangedWithoutFalseAmbiguity()
+        {
+            // Requirement 4: shared native implementation alone is not a bug.
+            // Two homonymous methods or generic instantiations share the exact same address 0x1000 on left and right.
+            // Even under permutation, every method remains at 0x1000. Must exit 0 without false ambiguity.
+            var tempDir = Path.Combine(Path.GetTempPath(), "issue90-shared-addr-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+
+                var model = CreateTwoImagesModel();
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000 },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000 }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000 },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000 }
+                    }
+                };
+
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+
+                Assert.Equal(0, exitCode);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+
+                Assert.False(diff.HasDifferences);
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Null(diff.methods.note);
+                Assert.Equal(0, diff.summary.addressChanges);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void StructGenerator_GeneratesScriptJsonWithImageAndAssemblyAttribution()
+        {
+            // Requirement 1: Preserve image/assembly ownership additively in method address exports
+            // Verify StructGenerator outputs Image and Assembly in script.json
+            var (metadata, il2Cpp, executor) = SyntheticEnvironment.Create(MetadataVersionFamily.V29);
+            using (metadata)
+            using (il2Cpp)
+            {
+                foreach (var imageDef in metadata.imageDefs)
+                {
+                    var imageName = metadata.GetStringFromIndex(imageDef.nameIndex);
+                    il2Cpp.codeGenModuleMethodPointers[imageName] = Enumerable.Repeat(0x1000ul, metadata.methodDefs.Length + 10).ToArray();
+                }
+
+                var tempDir = Path.Combine(Path.GetTempPath(), "struct-gen-ownership-" + Guid.NewGuid()) + Path.DirectorySeparatorChar;
+                Directory.CreateDirectory(tempDir);
+                try
+                {
+                    var generator = new StructGenerator(executor);
+                    generator.WriteScript(tempDir);
+
+                    var scriptJsonPath = Path.Combine(tempDir, "script.json");
+                    Assert.True(File.Exists(scriptJsonPath), "script.json should be generated.");
+
+                    var text = File.ReadAllText(scriptJsonPath);
+                    using var doc = JsonDocument.Parse(text);
+                    Assert.True(doc.RootElement.TryGetProperty("ScriptMethod", out var methods));
+
+                    var array = methods.EnumerateArray().ToList();
+                    Assert.NotEmpty(array);
+
+                    foreach (var item in array)
+                    {
+                        Assert.True(item.TryGetProperty("Image", out var imgEl), "ScriptMethod must have Image property.");
+                        Assert.False(string.IsNullOrEmpty(imgEl.GetString()), "Image property must not be empty.");
+
+                        Assert.True(item.TryGetProperty("Assembly", out var asmEl), "ScriptMethod must have Assembly property.");
+                        Assert.False(string.IsNullOrEmpty(asmEl.GetString()), "Assembly property must not be empty.");
+                    }
+                }
+                finally
+                {
+                    if (Directory.Exists(tempDir))
+                    {
+                        try { Directory.Delete(tempDir, true); } catch { }
+                    }
+                }
+            }
+        }
+
+        [Fact]
+        public void UniqueType_LegacyScriptWithoutOwnership_AttributedFromDumpJsonUnambiguously()
+        {
+            // If a type name is unique across all images in dump.json, legacy script entries for that type
+            // are safely attributed to that unique type's image/assembly without causing ambiguity.
+            // Reviewer Point 5: Emits simple type name in 'type', with additive image and assembly.
+            var tempDir = Path.Combine(Path.GetTempPath(), "unique-type-attr-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "GameAssembly.dll",
+                            assembly = "GameAssembly",
+                            fullName = "Game.UniquePlayer",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter>() }
+                            }
+                        }
+                    }
+                };
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Game.UniquePlayer$$Run", Signature = "void Run()", Address = 0x1000 }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Game.UniquePlayer$$Run", Signature = "void Run()", Address = 0x2000 }
+                    }
+                };
+
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+
+                Assert.Equal(1, exitCode);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+
+                Assert.True(diff.HasDifferences);
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Null(diff.methods.note);
+                Assert.Equal(1, diff.summary.addressChanges);
+
+                Assert.NotNull(diff.methods.addressChanged);
+                Assert.Single(diff.methods.addressChanged);
+                var change = diff.methods.addressChanged[0];
+                Assert.Equal("Game.UniquePlayer", change.type); // Reviewer Point 5: Simple type name!
+                Assert.Equal("GameAssembly.dll", change.image);
+                Assert.Equal("GameAssembly", change.assembly);
+                Assert.Equal("Run", change.method);
+                Assert.Equal("0x1000", change.left);
+                Assert.Equal("0x2000", change.right);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound2_P2_GenericInstances_DistinctTypeArgs_BoxIntVsBoxString_DoNotPair()
+        {
+            // Review 2, Point 1: Distinct generic instantiations must not be treated as the same method.
+            // With declaration Ns.Box<T> in A.dll, compare Ns.Box<int>$$Run at 0x1000 and Ns.Box<string>$$Run at 0x2000.
+            // Must NOT emit Ns.Box<int>.Run 0x1000 -> 0x2000.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer2-box-distinct-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "A",
+                            fullName = "Ns.Box<T>",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter>() }
+                            }
+                        }
+                    }
+                };
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Box<int>$$Run", Signature = "void Run()", Address = 0x1000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Box<string>$$Run", Signature = "void Run()", Address = 0x2000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+
+                // Distinct concrete type arguments must not be paired as an address change
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound2_P2_GenericInstances_SameTypeArg_BoxInt_ReportsAddressChange()
+        {
+            // Review 2, Point 1: Same generic instantiation Ns.Box<int> with changed RVA must report the change.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer2-box-same-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "A",
+                            fullName = "Ns.Box<T>",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter>() }
+                            }
+                        }
+                    }
+                };
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Box<int>$$Run", Signature = "void Run()", Address = 0x1000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Box<int>$$Run", Signature = "void Run()", Address = 0x2000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.NotNull(diff.methods.addressChanged);
+                Assert.Single(diff.methods.addressChanged);
+                Assert.Equal("Ns.Box<int>", diff.methods.addressChanged[0].type);
+                Assert.Equal("0x1000", diff.methods.addressChanged[0].left);
+                Assert.Equal("0x2000", diff.methods.addressChanged[0].right);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound2_P2_UnmatchedOverload_CarriedToPhase2_BothDirections()
+        {
+            // Review 2, Point 2: Premature marking in Phase 1 must not consume overloads that have no match in Phase 1.
+            // In A.dll: Run() is qualified on both sides. Run(int) is legacy on left, qualified as A.dll on right.
+            // RVA of Run(int) changes from 0x2000 to 0x3000.
+            // Must NOT exit 0 with 0 changes!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer2-unmatched-overload-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = CreateTwoImagesModel();
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000, Image = "A.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(int v)", Address = 0x2000 } // legacy / unparented
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000, Image = "A.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(int v)", Address = 0x3000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+
+                // Direction 1: Left has legacy Run(int), Right has qualified Run(int)
+                var dir1 = Path.Combine(tempDir, "run1");
+                var left1 = Path.Combine(dir1, "left");
+                var right1 = Path.Combine(dir1, "right");
+                var out1 = Path.Combine(dir1, "diff.json");
+                CreateFixtures(left1, model, leftScript);
+                CreateFixtures(right1, model, rightScript);
+
+                var exit1 = DumpDiffer.Execute(left1, right1, out1);
+                Assert.Equal(1, exit1);
+                var diff1 = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(out1))!;
+                Assert.True(diff1.HasDifferences);
+
+                // Direction 2: Inverted
+                var dir2 = Path.Combine(tempDir, "run2");
+                var left2 = Path.Combine(dir2, "left");
+                var right2 = Path.Combine(dir2, "right");
+                var out2 = Path.Combine(dir2, "diff.json");
+                CreateFixtures(left2, model, rightScript);
+                CreateFixtures(right2, model, leftScript);
+
+                var exit2 = DumpDiffer.Execute(left2, right2, out2);
+                Assert.Equal(1, exit2);
+                var diff2 = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(out2))!;
+                Assert.True(diff2.HasDifferences);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound2_P2_IndeterminateOwner_SignalsAmbiguityWithoutFalsePairing()
+        {
+            // Review 2, Point 3: When dump.json declares Ns.Player.Run in both A and B:
+            // Left provides ONLY legacy record of A at 0x1000 without owner.
+            // Right provides ONLY record of B qualified at 0x2000.
+            // An absent owner with multiple candidate declarations is indeterminate.
+            // Must NOT assert address change in B! Must signal ambiguity.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer2-indeterminate-owner-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = CreateTwoImagesModel();
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000 } // no owner, indeterminate
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x2000, Image = "B.dll", Assembly = "B" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound2_P2_CollidingSignaturesInSameImage_CancellingRVAsPreservesAmbiguity()
+        {
+            // Review 2, Point 4: In mscorlib.dll, System.Enum.ToObject has two entries with colliding C signature "uint16_t value".
+            // Left: [0x42D6D50, 0x42D7190].
+            // Right: [0x1000, 0x42D7190].
+            // Must NOT report 0x42D6D50 -> 0x1000 without ambiguity! Must detect ambiguity.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer2-dofus-colliding-sig-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "mscorlib.dll",
+                            assembly = "mscorlib",
+                            fullName = "System.Enum",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "ToObject", returnType = "object" },
+                                new() { name = "ToObject", returnType = "object" }
+                            }
+                        }
+                    }
+                };
+
+                var sigColliding = "Il2CppObject* System_Enum__ToObject (System_Type_o* enumType, uint16_t value, const MethodInfo* method);";
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = sigColliding, Address = 0x42D6D50, Image = "mscorlib.dll", Assembly = "mscorlib" },
+                        new() { Name = "System.Enum$$ToObject", Signature = sigColliding, Address = 0x42D7190, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = sigColliding, Address = 0x1000, Image = "mscorlib.dll", Assembly = "mscorlib" },
+                        new() { Name = "System.Enum$$ToObject", Signature = sigColliding, Address = 0x42D7190, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+                Assert.NotNull(diff.methods.note);
+                Assert.Contains(sigColliding, diff.methods.note);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+         }
+        [Fact]
+        public void ReviewerRound3_P2_NestedGenericHierarchy_PreservesSegmentsAndArity_AmbiguityOnHomonymousDeclarations()
+        {
+            // Review 3, Point 1: Nested generic type Ns.Outer<T>.Nested<U> declared in both A.dll and B.dll
+            // Left: legacy Ns.Outer.Nested<int, string>$$Run at 0x1000 (from A)
+            // Right: B's record Image: "B.dll" at 0x2000
+            // Must NOT attribute 0x1000 -> 0x2000 to B without ambiguity!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer3-nested-generic-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "A",
+                            fullName = "Ns.Outer<T>.Nested<U>",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void" }
+                            }
+                        },
+                        new()
+                        {
+                            image = "B.dll",
+                            assembly = "B",
+                            fullName = "Ns.Outer<T>.Nested<U>",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void" }
+                            }
+                        }
+                    }
+                };
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Outer.Nested<int, string>$$Run", Signature = "void Run()", Address = 0x1000 }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Outer.Nested<int, string>$$Run", Signature = "void Run()", Address = 0x2000, Image = "B.dll", Assembly = "B" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound3_P2_QualifiedPhaseUnitShortcut_DistinctOverloads_DoNotPairWithoutMatchingSignature()
+        {
+            // Review 3, Point 2: In A.dll, declare Run(int) and Run(string) in both dump.json.
+            // Left: RVA only to Run(int) at 0x1000.
+            // Right: RVA only to Run(string) at 0x2000.
+            // When 1 RVA exists on each side, must NOT pair Run(int) with Run(string) as an address change!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer3-distinct-overloads-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "A",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter> { new() { name = "x", type = "int" } } },
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter> { new() { name = "s", type = "string" } } }
+                            }
+                        }
+                    }
+                };
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(int)", Address = 0x1000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(string)", Address = 0x2000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(0, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound3_P2_LegacyPhaseMultiEntry_DisjointExplicitOwners_DoNotTriggerFalseAmbiguity()
+        {
+            // Review 3, Point 3: Ns.Player.Run in 4 images (A, B, C, D).
+            // Left: RVAs for A and B.
+            // Right: RVAs for C and D.
+            // All entries have explicit owners, but Left owners {A, B} and Right owners {C, D} are completely disjoint.
+            // Must NOT trigger false ambiguity! Must remain unmatched without flagging ambiguity.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer3-disjoint-owners-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new() { image = "A.dll", assembly = "A", fullName = "Ns.Player", methods = new List<JsonDumpMethod> { new() { name = "Run", returnType = "void" } } },
+                        new() { image = "B.dll", assembly = "B", fullName = "Ns.Player", methods = new List<JsonDumpMethod> { new() { name = "Run", returnType = "void" } } },
+                        new() { image = "C.dll", assembly = "C", fullName = "Ns.Player", methods = new List<JsonDumpMethod> { new() { name = "Run", returnType = "void" } } },
+                        new() { image = "D.dll", assembly = "D", fullName = "Ns.Player", methods = new List<JsonDumpMethod> { new() { name = "Run", returnType = "void" } } }
+                    }
+                };
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1000, Image = "A.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x1100, Image = "B.dll", Assembly = "B" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x2000, Image = "C.dll", Assembly = "C" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x2100, Image = "D.dll", Assembly = "D" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(0, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+         }
+        [Fact]
+        public void ReviewerRound4_P2_CrossQualifiedOverloads_UniqueDeclaration_EmitsTransitions()
+        {
+            // When Ns.Player is uniquely declared in A.dll, cross-qualified overloads resolve to A.dll unambiguously
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer4-cross-qualified-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "A",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter> { new() { name = "x", type = "int" } } },
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter> { new() { name = "s", type = "string" } } }
+                            }
+                        }
+                    }
+                };
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(int)", Address = 0x1000, Image = "A.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(string)", Address = 0x2000 }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(int)", Address = 0x3000 },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(string)", Address = 0x4000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.NotNull(diff.methods.addressChanged);
+                Assert.Equal(2, diff.methods.addressChanged.Count);
+
+                var changeInt = diff.methods.addressChanged.FirstOrDefault(c => c.method == "void Run(int)");
+                Assert.NotNull(changeInt);
+                Assert.Equal("0x1000", changeInt.left);
+                Assert.Equal("0x3000", changeInt.right);
+
+                var changeStr = diff.methods.addressChanged.FirstOrDefault(c => c.method == "void Run(string)");
+                Assert.NotNull(changeStr);
+                Assert.Equal("0x2000", changeStr.left);
+                Assert.Equal("0x4000", changeStr.right);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound4_P2_LegacySignaturelessGroups_DetectsAmbiguityWithMultipleCandidates()
+        {
+            // Review 4, Point 2: Ns.Player.Run in A and B.
+            // Left: two legacy records without signature at 0x1000 and 0x2000.
+            // Right: two qualified records with signature at 0x3000 and 0x4000 (A and B).
+            // Diff must signal ambiguity in both directions!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer4-legacy-sigless-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = CreateTwoImagesModel();
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Address = 0x1000 },
+                        new() { Name = "Ns.Player$$Run", Address = 0x2000 }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x3000, Image = "A.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", Address = 0x4000, Image = "B.dll", Assembly = "B" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+
+                // Test reverse direction
+                var outPathRev = Path.Combine(tempDir, "diff_rev.json");
+                var exitCodeRev = DumpDiffer.Execute(rightDir, leftDir, outPathRev);
+                Assert.Equal(1, exitCodeRev);
+                var diffRev = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPathRev))!;
+                Assert.True(diffRev.hasAmbiguousMethodAddresses);
+                Assert.Empty(diffRev.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound4_P2_ArrayRankComma_DoesNotAlterGenericArity()
+        {
+            // Review 4, Point 3: Declare Box<T> in A and B and also Box<T, U> in B.
+            // Left: legacy Box<int[,]>$$Run at 0x1000 (from A).
+            // Right: Box<int[,]>.Run at 0x2000 in B with Image "B.dll".
+            // The comma in [,] must not count as generic parameter separator!
+            // Box<int[,]> must resolve to arity 1 (present in both A and B), causing IsIndeterminate = true and ambiguity!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer4-array-rank-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "A",
+                            fullName = "Box<T>",
+                            methods = new List<JsonDumpMethod> { new() { name = "Run", returnType = "void" } }
+                        },
+                        new()
+                        {
+                            image = "B.dll",
+                            assembly = "B",
+                            fullName = "Box<T>",
+                            methods = new List<JsonDumpMethod> { new() { name = "Run", returnType = "void" } }
+                        },
+                        new()
+                        {
+                            image = "B.dll",
+                            assembly = "B",
+                            fullName = "Box<T, U>",
+                            methods = new List<JsonDumpMethod> { new() { name = "Run", returnType = "void" } }
+                        }
+                    }
+                };
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Box<int[,]>$$Run", Signature = "void Run()", Address = 0x1000 }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Box<int[,]>$$Run", Signature = "void Run()", Address = 0x2000, Image = "B.dll", Assembly = "B" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound4_P2_RenamedParameterInSingleMethod_EmitsRvaTransition()
+        {
+            // Review 4, Point 4: In A, single method Run(int). Rename 'value' to 'count'. RVA 0x1000 -> 0x2000.
+            // Must report the RVA transition!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer4-renamed-param-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var leftModel = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "A",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "Run",
+                                    returnType = "void",
+                                    parameters = new List<JsonDumpParameter> { new() { name = "value", type = "int" } }
+                                }
+                            }
+                        }
+                    }
+                };
+                var rightModel = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "A",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "Run",
+                                    returnType = "void",
+                                    parameters = new List<JsonDumpParameter> { new() { name = "count", type = "int" } }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(int value)", Address = 0x1000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(int count)", Address = 0x2000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, leftModel, leftScript);
+                CreateFixtures(rightDir, rightModel, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.NotNull(diff.methods.addressChanged);
+                Assert.Single(diff.methods.addressChanged);
+                var change = diff.methods.addressChanged[0];
+                Assert.Equal("Ns.Player", change.type);
+                Assert.Equal("Run", change.method);
+                Assert.Equal("0x1000", change.left);
+                Assert.Equal("0x2000", change.right);
+                Assert.Equal("A.dll", change.image);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+        [Fact]
+        public void ReviewerRound5_P2_HomonymousType_RunStringWithExplicitAssemblyB_DoesNotPairWithQualifiedA()
+        {
+            // Review 5, Point 1: Homonymous type Ns.Player in A and B.
+            // Left: Run(int) in A at 0x1000 (Image "A.dll", Assembly "A"), Run(string) in B at 0x2000 with Assembly: "B".
+            // Right: Run(string) qualified in A at 0x3000 (Image "A.dll", Assembly "A").
+            // Must NOT emit 0x2000 -> 0x3000 in A!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer5-explicit-asm-b-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "A",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter> { new() { name = "x", type = "int" } } },
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter> { new() { name = "s", type = "string" } } }
+                            }
+                        },
+                        new()
+                        {
+                            image = "B.dll",
+                            assembly = "B",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter> { new() { name = "x", type = "int" } } },
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter> { new() { name = "s", type = "string" } } }
+                            }
+                        }
+                    }
+                };
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(int)", Address = 0x1000, Image = "A.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(string)", Address = 0x2000, Assembly = "B" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(string)", Address = 0x3000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+
+                // Incompatible owners (B vs A): must NOT pair as address change in A!
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound5_P2_HomonymousType_RunStringWithoutOwner_SignalsAmbiguityWithoutFalsePairingToA()
+        {
+            // Review 5, Point 1: Homonymous type Ns.Player in A and B.
+            // Left: Run(int) in A at 0x1000 (Image "A.dll", Assembly "A"), Run(string) at 0x2000 WITHOUT owner.
+            // Right: Run(string) qualified in A at 0x3000 (Image "A.dll", Assembly "A").
+            // Absent owner with multiple candidate declarations is indeterminate. Must NOT pair with A; must signal ambiguity!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer5-no-owner-indeterminate-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "A",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter> { new() { name = "x", type = "int" } } },
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter> { new() { name = "s", type = "string" } } }
+                            }
+                        },
+                        new()
+                        {
+                            image = "B.dll",
+                            assembly = "B",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter> { new() { name = "x", type = "int" } } },
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter> { new() { name = "s", type = "string" } } }
+                            }
+                        }
+                    }
+                };
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(int)", Address = 0x1000, Image = "A.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(string)", Address = 0x2000 }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(string)", Address = 0x3000, Image = "A.dll", Assembly = "A" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound5_P2_CollidingSignature_SingleRvaEachSide_SignalsAmbiguityWithoutFalseTransition()
+        {
+            // Review 5, Point 2: In mscorlib.dll, System.Enum.ToObject has overloads with char and ushort parameters.
+            // Both map to C signature "object System.Enum$$ToObject (uint16_t value)".
+            // Left has ONLY 0x42D7190; Right has ONLY 0x42D6D50.
+            // When C signature represents more than one declaration and cannot be distinguished, must signal ambiguity!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer5-dofus-single-rva-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "mscorlib.dll",
+                            assembly = "mscorlib",
+                            fullName = "System.Enum",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "char" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "ushort" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var sigColliding = "Il2CppObject* System_Enum__ToObject (System_Type_o* enumType, uint16_t value, const MethodInfo* method);";
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = sigColliding, Address = 0x42D7190, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = sigColliding, Address = 0x42D6D50, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+                Assert.NotNull(diff.methods.note);
+                Assert.Contains(sigColliding, diff.methods.note);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound5_P2_IdenticalLegacyMaps_HomonymousSameRva_UnchangedWithoutFalseAmbiguity()
+        {
+            // Review 5, Point 3: Two identical legacy maps, each with two homonymous entries without signature at 0x1000.
+            // Any correlation preserves 0x1000. Must return 0 without false ambiguity!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer5-identical-legacy-same-rva-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = CreateTwoImagesModel();
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Address = 0x1000 },
+                        new() { Name = "Ns.Player$$Run", Address = 0x1000 }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Address = 0x1000 },
+                        new() { Name = "Ns.Player$$Run", Address = 0x1000 }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(0, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound5_P2_DisjointSignaturesInRemaining_DoNotTriggerFalseAmbiguity()
+        {
+            // Review 5, Point 3: Left has Run(int) and Run(string). Right has Run(float) and Run(double).
+            // All signatures are known and distinct with no compatible pair.
+            // Must NOT flag ambiguity! Must return 0 without changes.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer5-disjoint-sigs-remaining-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "A",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter> { new() { name = "x", type = "int" } } },
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter> { new() { name = "s", type = "string" } } },
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter> { new() { name = "f", type = "float" } } },
+                                new() { name = "Run", returnType = "void", parameters = new List<JsonDumpParameter> { new() { name = "d", type = "double" } } }
+                            }
+                        }
+                    }
+                };
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(int)", Address = 0x1000 },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(string)", Address = 0x2000 }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(float)", Address = 0x3000 },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run(double)", Address = 0x4000 }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(0, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+        [Fact]
+        public void ReviewerRound6_P2_Dofus_EnumToObject_RealNativeSignature_SignalsAmbiguityWithoutDelta()
+        {
+            // Review 6, Point 1: System.Enum.ToObject(Type, char) vs ToObject(Type, ushort)
+            // Real native signature: Il2CppObject* System_Enum__ToObject (System_Type_o* enumType, uint16_t value, const MethodInfo* method);
+            // Must NOT emit false delta 0x42D7190 -> 0x42D6D50!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer6-enum-toobject-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "mscorlib.dll",
+                            assembly = "mscorlib",
+                            fullName = "System.Enum",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "char" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "ushort" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var sigReal = "Il2CppObject* System_Enum__ToObject (System_Type_o* enumType, uint16_t value, const MethodInfo* method);";
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = sigReal, Address = 0x42D7190, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = sigReal, Address = 0x42D6D50, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+                Assert.NotNull(diff.methods.note);
+                Assert.Contains(sigReal, diff.methods.note);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound6_P2_String_IndexOf_RealNativeSignature_ReportsRvaChange()
+        {
+            // Review 6, Point 2: System.String.IndexOf(string) valid RVA change 0x40AE360 -> 0x40AE370
+            // Real native signature: int32_t System_String__IndexOf (System_String_o* __this, System_String_o* value, const MethodInfo* method);
+            // Must NOT be suppressed as ambiguous! Must cleanly report address change!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer6-string-indexof-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "mscorlib.dll",
+                            assembly = "mscorlib",
+                            fullName = "System.String",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "IndexOf",
+                                    returnType = "int",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "value", type = "char" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "IndexOf",
+                                    returnType = "int",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "value", type = "string" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "IndexOf",
+                                    returnType = "int",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "value", type = "string" },
+                                        new() { name = "startIndex", type = "int" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "IndexOf",
+                                    returnType = "int",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "value", type = "string" },
+                                        new() { name = "comparisonType", type = "StringComparison" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var sigReal = "int32_t System_String__IndexOf (System_String_o* __this, System_String_o* value, const MethodInfo* method);";
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.String$$IndexOf", Signature = sigReal, Address = 0x40AE360, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.String$$IndexOf", Signature = sigReal, Address = 0x40AE370, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Single(diff.methods.addressChanged!);
+                var change = diff.methods.addressChanged![0];
+                Assert.Equal("System.String", change.type);
+                Assert.Equal("0x40AE360", change.left);
+                Assert.Equal("0x40AE370", change.right);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound6_P2_BitConverter_GetBytes_RealNativeSignature_SignalsAmbiguityWithoutDelta()
+        {
+            // Review 6, Point 1: BitConverter.GetBytes(char) vs GetBytes(ushort)
+            // Real native signature: Il2CppArray* System_BitConverter__GetBytes (uint16_t value, const MethodInfo* method);
+            // Must NOT emit false delta!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer6-bitconverter-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "mscorlib.dll",
+                            assembly = "mscorlib",
+                            fullName = "System.BitConverter",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "GetBytes",
+                                    returnType = "byte[]",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "value", type = "char" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "GetBytes",
+                                    returnType = "byte[]",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "value", type = "ushort" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var sigReal = "Il2CppArray* System_BitConverter__GetBytes (uint16_t value, const MethodInfo* method);";
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.BitConverter$$GetBytes", Signature = sigReal, Address = 0x1000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.BitConverter$$GetBytes", Signature = sigReal, Address = 0x2000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound6_MethodSignature_DistinguishesOverloadsWithoutCollision()
+        {
+            // When MethodSignature is present, overloads with identical C signatures (e.g. char vs ushort)
+            // are unambiguously resolved by managed signature!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer6-methodsig-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "mscorlib.dll",
+                            assembly = "mscorlib",
+                            fullName = "System.Enum",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "char" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "ushort" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var cSig = "Il2CppObject* System_Enum__ToObject (System_Type_o* enumType, uint16_t value, const MethodInfo* method);";
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "ToObject(Type, char)", Address = 0x1000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "ToObject(Type, char)", Address = 0x2000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Single(diff.methods.addressChanged!);
+                Assert.Equal("0x1000", diff.methods.addressChanged![0].left);
+                Assert.Equal("0x2000", diff.methods.addressChanged![0].right);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+        [Fact]
+        public void ReviewerRound7_P2_ToObject_MultipleEntries_SameCSig_OneRvaChanged_ReportsDeltaWithoutAmbiguity()
+        {
+            // Review 7, Point 1: ToObject(Type, char) and ToObject(Type, ushort) in the same image with shared C signature.
+            // When char RVA changes (0x1000 -> 0x2000) and ushort is unchanged (0x3000), must report 1 delta and NO ambiguity!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer7-toobject-delta-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "mscorlib.dll",
+                            assembly = "mscorlib",
+                            fullName = "System.Enum",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "char" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "ushort" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var cSig = "Il2CppObject* System_Enum__ToObject (System_Type_o* enumType, uint16_t value, const MethodInfo* method);";
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "ToObject(System.Type, char)", Address = 0x1000, Image = "mscorlib.dll", Assembly = "mscorlib" },
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "ToObject(System.Type, ushort)", Address = 0x3000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "ToObject(System.Type, char)", Address = 0x2000, Image = "mscorlib.dll", Assembly = "mscorlib" },
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "ToObject(System.Type, ushort)", Address = 0x3000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Single(diff.methods.addressChanged!);
+                Assert.Equal("0x1000", diff.methods.addressChanged![0].left);
+                Assert.Equal("0x2000", diff.methods.addressChanged![0].right);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound7_P2_ToObject_SelfComparison_ReturnsZeroWithoutAmbiguity()
+        {
+            // Review 7, Point 1: Comparing the qualified map containing multiple overloads with shared C signature against itself
+            // must return exit code 0, 0 address changes and false ambiguity!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer7-toobject-self-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "mscorlib.dll",
+                            assembly = "mscorlib",
+                            fullName = "System.Enum",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "char" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "ushort" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var cSig = "Il2CppObject* System_Enum__ToObject (System_Type_o* enumType, uint16_t value, const MethodInfo* method);";
+                var script = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "ToObject(System.Type, char)", Address = 0x1000, Image = "mscorlib.dll", Assembly = "mscorlib" },
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "ToObject(System.Type, ushort)", Address = 0x3000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, script);
+                CreateFixtures(rightDir, model, script);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(0, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound7_P2_ToObject_DisjointEntries_CharLeft_UshortRight_IntCommon_DoesNotEmitFalseDelta()
+        {
+            // Review 7, Point 1: char only on left, ushort only on right, int common on both.
+            // Shared C signature for char and ushort must NOT fabricate 0x42D7190 -> 0x42D6D50 delta!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer7-toobject-disjoint-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "mscorlib.dll",
+                            assembly = "mscorlib",
+                            fullName = "System.Enum",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "char" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "ushort" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "int" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var cSigCharUshort = "Il2CppObject* System_Enum__ToObject (System_Type_o* enumType, uint16_t value, const MethodInfo* method);";
+                var cSigInt = "Il2CppObject* System_Enum__ToObject_int (System_Type_o* enumType, int32_t value, const MethodInfo* method);";
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = cSigCharUshort, MethodSignature = "ToObject(System.Type, char)", Address = 0x42D7190, Image = "mscorlib.dll", Assembly = "mscorlib" },
+                        new() { Name = "System.Enum$$ToObject", Signature = cSigInt, MethodSignature = "ToObject(System.Type, int)", Address = 0x4000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = cSigCharUshort, MethodSignature = "ToObject(System.Type, ushort)", Address = 0x42D6D50, Image = "mscorlib.dll", Assembly = "mscorlib" },
+                        new() { Name = "System.Enum$$ToObject", Signature = cSigInt, MethodSignature = "ToObject(System.Type, int)", Address = 0x4000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(0, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound7_P2_ArrayHelpers_Clear_ValVsRef_PreservesByref_DoesNotEmitFalseDelta()
+        {
+            // Review 7, Point 2: Dofus real case
+            // Clear<TValue>(TValue[], int) vs Clear<TValue>(TValue[], ref int)
+            // Left has val overload at 0x3460310, Right has ref overload at 0x34602E0.
+            // With MethodSignature preserving 'ref int', they must NOT be paired into a false delta!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer7-clear-byref-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "UnityEngine.InputSystem.dll",
+                            assembly = "UnityEngine.InputSystem",
+                            fullName = "UnityEngine.InputSystem.Utilities.ArrayHelpers",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "Clear",
+                                    returnType = "void",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "array", type = "TValue[]" },
+                                        new() { name = "count", type = "int" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "Clear",
+                                    returnType = "void",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "array", type = "TValue[]" },
+                                        new() { name = "count", type = "ref int" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new()
+                        {
+                            Name = "UnityEngine.InputSystem.Utilities.ArrayHelpers$$Clear",
+                            Signature = "void ArrayHelpers_Clear (Il2CppArray* array, int32_t count, const MethodInfo* method);",
+                            MethodSignature = "Clear<TValue>(TValue[], int)",
+                            Address = 0x3460310,
+                            Image = "UnityEngine.InputSystem.dll",
+                            Assembly = "UnityEngine.InputSystem"
+                        }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new()
+                        {
+                            Name = "UnityEngine.InputSystem.Utilities.ArrayHelpers$$Clear",
+                            Signature = "void ArrayHelpers_Clear_ref (Il2CppArray* array, int32_t* count, const MethodInfo* method);",
+                            MethodSignature = "Clear<TValue>(TValue[], ref int)",
+                            Address = 0x34602E0,
+                            Image = "UnityEngine.InputSystem.dll",
+                            Assembly = "UnityEngine.InputSystem"
+                        }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(0, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+        [Fact]
+        public void ReviewerRound8_P2_Phase2_MultiEntryDisjointOwners_AB_Left_CD_Right_ReturnsZeroWithoutAmbiguity()
+        {
+            // Review 8, Point 1: Ns.Player.Run in 4 images (A, B, C, D).
+            // Left has RVAs in A and B only. Right has RVAs in C and D only.
+            // All entries have image, assembly, and MethodSignature.
+            // All owners are disjoint -> zero compatible pairs -> must return 0 without ambiguity!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer8-disjoint-legacy-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new() { image = "A.dll", assembly = "A", fullName = "Ns.Player", methods = new List<JsonDumpMethod> { new() { name = "Run", returnType = "void", parameters = new() } } },
+                        new() { image = "B.dll", assembly = "B", fullName = "Ns.Player", methods = new List<JsonDumpMethod> { new() { name = "Run", returnType = "void", parameters = new() } } },
+                        new() { image = "C.dll", assembly = "C", fullName = "Ns.Player", methods = new List<JsonDumpMethod> { new() { name = "Run", returnType = "void", parameters = new() } } },
+                        new() { image = "D.dll", assembly = "D", fullName = "Ns.Player", methods = new List<JsonDumpMethod> { new() { name = "Run", returnType = "void", parameters = new() } } }
+                    }
+                };
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", MethodSignature = "void Run()", Address = 0x1000, Image = "A.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", MethodSignature = "void Run()", Address = 0x2000, Image = "B.dll", Assembly = "B" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", MethodSignature = "void Run()", Address = 0x3000, Image = "C.dll", Assembly = "C" },
+                        new() { Name = "Ns.Player$$Run", Signature = "void Run()", MethodSignature = "void Run()", Address = 0x4000, Image = "D.dll", Assembly = "D" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(0, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound8_P2_ConversionOperators_ReturnTypesDistinguishOverloads_DoesNotEmitFalseDelta()
+        {
+            // Review 8, Point 2: Dofus real case - System.Threading.Channels.Channel<TWrite, TRead> in gdio_unity_agent.dll
+            // Two op_Implicit operators with identical parameter Channel<TWrite, TRead> but distinct return types:
+            // ChannelReader<TRead> and ChannelWriter<TWrite>.
+            // Formatted MethodSignature includes return type, distinguishing them and preventing 0x3CAE4F0 -> 0x3CAE4C0 false delta!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer8-operators-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "gdio_unity_agent.dll",
+                            assembly = "gdio_unity_agent",
+                            fullName = "System.Threading.Channels.Channel`2",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "op_Implicit",
+                                    returnType = "System.Threading.Channels.ChannelReader<TRead>",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "channel", type = "System.Threading.Channels.Channel<TWrite, TRead>" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "op_Implicit",
+                                    returnType = "System.Threading.Channels.ChannelWriter<TWrite>",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "channel", type = "System.Threading.Channels.Channel<TWrite, TRead>" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var sigC = "void* Channel__op_Implicit (void* channel, const MethodInfo* method);";
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new()
+                        {
+                            Name = "System.Threading.Channels.Channel`2$$op_Implicit",
+                            Signature = sigC,
+                            MethodSignature = "System.Threading.Channels.ChannelReader<TRead> op_Implicit(System.Threading.Channels.Channel<TWrite, TRead>)",
+                            Address = 0x3CAE4F0,
+                            Image = "gdio_unity_agent.dll",
+                            Assembly = "gdio_unity_agent"
+                        }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new()
+                        {
+                            Name = "System.Threading.Channels.Channel`2$$op_Implicit",
+                            Signature = sigC,
+                            MethodSignature = "System.Threading.Channels.ChannelWriter<TWrite> op_Implicit(System.Threading.Channels.Channel<TWrite, TRead>)",
+                            Address = 0x3CAE4C0,
+                            Image = "gdio_unity_agent.dll",
+                            Assembly = "gdio_unity_agent"
+                        }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(0, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound8_P2_DumpDiffAddressChange_Emits_MethodSignature_For_Overloads()
+        {
+            // Review 8, Point 3: When two overloads with same C signature both change RVAs,
+            // DumpDiffAddressChange preserves 'method' (C signature) AND emits 'methodSignature' identifying each overload!
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer8-both-deltas-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "mscorlib.dll",
+                            assembly = "mscorlib",
+                            fullName = "System.Enum",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "char" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "ToObject",
+                                    returnType = "object",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "enumType", type = "Type" },
+                                        new() { name = "value", type = "ushort" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var cSig = "Il2CppObject* System_Enum__ToObject (System_Type_o* enumType, uint16_t value, const MethodInfo* method);";
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "object ToObject(System.Type, char)", Address = 0x1000, Image = "mscorlib.dll", Assembly = "mscorlib" },
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "object ToObject(System.Type, ushort)", Address = 0x3000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "object ToObject(System.Type, char)", Address = 0x2000, Image = "mscorlib.dll", Assembly = "mscorlib" },
+                        new() { Name = "System.Enum$$ToObject", Signature = cSig, MethodSignature = "object ToObject(System.Type, ushort)", Address = 0x4000, Image = "mscorlib.dll", Assembly = "mscorlib" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(1, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Equal(2, diff.methods.addressChanged!.Count);
+
+                var deltaChar = diff.methods.addressChanged.First(c => c.left == "0x1000");
+                Assert.Equal("0x2000", deltaChar.right);
+                Assert.Equal(cSig, deltaChar.method);
+                Assert.Equal("object ToObject(System.Type, char)", deltaChar.methodSignature);
+
+                var deltaUshort = diff.methods.addressChanged.First(c => c.left == "0x3000");
+                Assert.Equal("0x4000", deltaUshort.right);
+                Assert.Equal(cSig, deltaUshort.method);
+                Assert.Equal("object ToObject(System.Type, ushort)", deltaUshort.methodSignature);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound9_P2_DisjointManagedGroupPreservesLegacyCandidates_BothOrders_ReportsAddressChanges()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "round9-repro-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "A",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "Run",
+                                    returnType = "void",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "payload", type = "Ns.Payload" }
+                                    }
+                                }
+                            }
+                        },
+                        new()
+                        {
+                            image = "B.dll",
+                            assembly = "B",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "Run",
+                                    returnType = "void",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "payload", type = "Ns.Payload" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                // Native signatures differ by image: Ns_Payload_o* for A, Ns_Payload_1_o* for B
+                var nativeSigA = "void Ns_Player__Run (Ns_Player_o* __this, Ns_Payload_o* payload, const MethodInfo* method);";
+                var nativeSigB = "void Ns_Player__Run (Ns_Player_o* __this, Ns_Payload_1_o* payload, const MethodInfo* method);";
+
+                // Left: A qualified @ 0x1000, B legacy @ 0x2000
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA, MethodSignature = "void Run(Ns.Payload)", Address = 0x1000, Image = "A.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigB, Address = 0x2000 }
+                    }
+                };
+
+                // Right: A legacy @ 0x3000, B qualified @ 0x4000
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA, Address = 0x3000 },
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigB, MethodSignature = "void Run(Ns.Payload)", Address = 0x4000, Image = "B.dll", Assembly = "B" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                // Order 1: Left has A qualified + B legacy; Right has A legacy + B qualified
+                // Must preserve candidates for the legacy phase, detect differences, and never exit with false 0
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.Equal(1, exitCode);
+                Assert.True(diff.HasDifferences);
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.NotNull(diff.methods.note);
+                Assert.Contains("Ns_Player__Run", diff.methods.note);
+
+                // Order 2: Reverse (Right on Left, Left on Right)
+                var outReverse = Path.Combine(tempDir, "diff_rev.json");
+                var exitCodeRev = DumpDiffer.Execute(rightDir, leftDir, outReverse);
+                var diffRev = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outReverse))!;
+                Assert.Equal(1, exitCodeRev);
+                Assert.True(diffRev.HasDifferences);
+                Assert.True(diffRev.hasAmbiguousMethodAddresses);
+                Assert.NotNull(diffRev.methods.note);
+                Assert.Contains("Ns_Player__Run", diffRev.methods.note);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+                [Fact]
+        public void ReviewerRound9_P2_IndeterminateGroupWith4000Entries_DoesNotMaterializeCartesianProduct_DetectsAmbiguityFast()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "round9-scale-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = CreateTwoImagesModel();
+                const int count = 4000;
+                var leftMethods = new List<ScriptMethod>(count);
+                var rightMethods = new List<ScriptMethod>(count);
+
+                for (int i = 0; i < count; i++)
+                {
+                    leftMethods.Add(new ScriptMethod
+                    {
+                        Name = "Ns.Player$$Run",
+                        MethodSignature = "void Run()",
+                        Signature = "void Run()",
+                        Address = (ulong)(0x1000 + i * 4)
+                    });
+
+                    rightMethods.Add(new ScriptMethod
+                    {
+                        Name = "Ns.Player$$Run",
+                        MethodSignature = "void Run()",
+                        Signature = "void Run()",
+                        Address = (ulong)(0x10000 + i * 4)
+                    });
+                }
+
+                var leftScript = new ScriptJson { ScriptMethod = leftMethods };
+                var rightScript = new ScriptJson { ScriptMethod = rightMethods };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                sw.Stop();
+
+                Assert.Equal(1, exitCode);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.NotNull(diff.methods.note);
+                Assert.Empty(diff.methods.addressChanged!);
+                Assert.True(sw.ElapsedMilliseconds < 5000, $"Execution took {sw.ElapsedMilliseconds} ms, expected under 5000ms");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+
+        [Fact]
+        public void ReviewerRound10_P2_SameRVAAcrossDifferentOwners_DoesNotSwallowEntries_PreservesFallbackAndSignalsDifference()
+        {
+            // Reviewer Round 10 Defect 1:
+            // Left: A qualified @ 0x1000 ("A.dll"), B legacy @ 0x2000
+            // Right: A legacy @ 0x3000, B qualified @ 0x1000 ("B.dll")
+            // Both qualified entries share same MethodSignature and same RVA (0x1000), but different explicit owners.
+            // Premature shared RVA shortcut must NOT swallow them. Diff must detect differences in both directions (never exit with false 0).
+            var tempDir = Path.Combine(Path.GetTempPath(), "round10-same-rva-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "A",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "Run",
+                                    returnType = "void",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "payload", type = "Ns.Payload" }
+                                    }
+                                }
+                            }
+                        },
+                        new()
+                        {
+                            image = "B.dll",
+                            assembly = "B",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "Run",
+                                    returnType = "void",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "payload", type = "Ns.Payload" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var nativeSigA = "void Ns_Player__Run (Ns_Player_o* __this, Ns_Payload_o* payload, const MethodInfo* method);";
+                var nativeSigB = "void Ns_Player__Run (Ns_Player_o* __this, Ns_Payload_1_o* payload, const MethodInfo* method);";
+
+                // Left: A qualified @ 0x1000, B legacy @ 0x2000
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA, MethodSignature = "void Run(Ns.Payload)", Address = 0x1000, Image = "A.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigB, Address = 0x2000 }
+                    }
+                };
+
+                // Right: A legacy @ 0x3000, B qualified @ 0x1000 (same RVA as Left A!)
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA, Address = 0x3000 },
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigB, MethodSignature = "void Run(Ns.Payload)", Address = 0x1000, Image = "B.dll", Assembly = "B" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                // Order 1: Left -> Right
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.Equal(1, exitCode);
+                Assert.True(diff.HasDifferences);
+
+                // Order 2: Right -> Left
+                var outReverse = Path.Combine(tempDir, "diff_rev.json");
+                var exitCodeRev = DumpDiffer.Execute(rightDir, leftDir, outReverse);
+                var diffRev = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outReverse))!;
+                Assert.Equal(1, exitCodeRev);
+                Assert.True(diffRev.HasDifferences);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound10_P2_DisjointAssemblies_IndeterminateImages_ReturnsZeroWithoutAmbiguity()
+        {
+            // Reviewer Round 10 Defect 2:
+            // Type declared in A1.dll and A2.dll of assembly A, and in B1.dll and B2.dll of assembly B.
+            // Left has 2 records with Assembly: "A", same MethodSignature, different RVAs.
+            // Right has 2 records with Assembly: "B", same MethodSignature, different RVAs.
+            // Image choice is indeterminate within each assembly, but assemblies are explicit and disjoint.
+            // Must return 0 without false ambiguity!
+            var tempDir = Path.Combine(Path.GetTempPath(), "round10-disjoint-asm-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new() { image = "A1.dll", assembly = "A", fullName = "Ns.Common", methods = new List<JsonDumpMethod> { new() { name = "Run", returnType = "void", parameters = new() } } },
+                        new() { image = "A2.dll", assembly = "A", fullName = "Ns.Common", methods = new List<JsonDumpMethod> { new() { name = "Run", returnType = "void", parameters = new() } } },
+                        new() { image = "B1.dll", assembly = "B", fullName = "Ns.Common", methods = new List<JsonDumpMethod> { new() { name = "Run", returnType = "void", parameters = new() } } },
+                        new() { image = "B2.dll", assembly = "B", fullName = "Ns.Common", methods = new List<JsonDumpMethod> { new() { name = "Run", returnType = "void", parameters = new() } } }
+                    }
+                };
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Common$$Run", MethodSignature = "void Run()", Address = 0x1000, Assembly = "A" },
+                        new() { Name = "Ns.Common$$Run", MethodSignature = "void Run()", Address = 0x2000, Assembly = "A" }
+                    }
+                };
+
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Common$$Run", MethodSignature = "void Run()", Address = 0x3000, Assembly = "B" },
+                        new() { Name = "Ns.Common$$Run", MethodSignature = "void Run()", Address = 0x4000, Assembly = "B" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                Assert.Equal(0, exitCode);
+
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.False(diff.HasDifferences);
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Null(diff.methods.note);
+                Assert.Empty(diff.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound11_P2_SameRVAAcrossIndeterminateImagesInSameAssembly_DoesNotSwallowWrongPair_SignalsDifferenceOrAmbiguity()
+        {
+            // Reviewer Round 11 Defect:
+            // Ns.Player.Run in A1.dll and A2.dll of assembly A.
+            // Left:
+            // A1: 0x1000, assembly A, MethodSignature, no image
+            // A2: 0x2000, image A2.dll, assembly A, no MethodSignature
+            // Right:
+            // A1: 0x3000, image A1.dll, assembly A, no MethodSignature
+            // A2: 0x1000, assembly A, MethodSignature, no image
+            // In Round 10, commonMethodSigs matched Left A1 and Right A2 as unchanged @ 0x1000 (false 0).
+            // Left A1 is A1, Right A2 is A2! They are not the same entity!
+            // When images are indeterminate and plausible candidates with different RVAs exist outside the group,
+            // the shortcut must NOT collapse them. Must detect difference/ambiguity in both directions (exit code 1).
+            var tempDir = Path.Combine(Path.GetTempPath(), "round11-same-rva-indeterminate-image-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A1.dll",
+                            assembly = "A",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new() }
+                            }
+                        },
+                        new()
+                        {
+                            image = "A2.dll",
+                            assembly = "A",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new() }
+                            }
+                        }
+                    }
+                };
+
+                var nativeSigA1 = "void Ns_Player_A1__Run (Ns_Player_o* __this, const MethodInfo* method);";
+                var nativeSigA2 = "void Ns_Player_A2__Run (Ns_Player_o* __this, const MethodInfo* method);";
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA1, MethodSignature = "void Run()", Address = 0x1000, Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA2, Address = 0x2000, Image = "A2.dll", Assembly = "A" }
+                    }
+                };
+
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA1, Address = 0x3000, Image = "A1.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA2, MethodSignature = "void Run()", Address = 0x1000, Assembly = "A" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                // Direction 1: Left -> Right
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.Equal(1, exitCode);
+                Assert.True(diff.HasDifferences);
+
+                // Direction 2: Right -> Left
+                var outRev = Path.Combine(tempDir, "diff_rev.json");
+                var exitCodeRev = DumpDiffer.Execute(rightDir, leftDir, outRev);
+                var diffRev = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outRev))!;
+                Assert.Equal(1, exitCodeRev);
+                Assert.True(diffRev.HasDifferences);
+
+                // Control case: when images are fully qualified on both records, deltas are proven and reported
+                var leftControlScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA1, MethodSignature = "void Run()", Address = 0x1000, Image = "A1.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA2, Address = 0x2000, Image = "A2.dll", Assembly = "A" }
+                    }
+                };
+                var rightControlScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA1, Address = 0x3000, Image = "A1.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA2, MethodSignature = "void Run()", Address = 0x1000, Image = "A2.dll", Assembly = "A" }
+                    }
+                };
+                var leftCtrlDir = Path.Combine(tempDir, "left_ctrl");
+                var rightCtrlDir = Path.Combine(tempDir, "right_ctrl");
+                var outCtrl = Path.Combine(tempDir, "diff_ctrl.json");
+                CreateFixtures(leftCtrlDir, model, leftControlScript);
+                CreateFixtures(rightCtrlDir, model, rightControlScript);
+                var exitCodeCtrl = DumpDiffer.Execute(leftCtrlDir, rightCtrlDir, outCtrl);
+                var diffCtrl = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outCtrl))!;
+                Assert.Equal(1, exitCodeCtrl);
+                Assert.True(diffCtrl.HasDifferences);
+                Assert.Equal(2, diffCtrl.methods.addressChanged!.Count);
+                Assert.Contains(diffCtrl.methods.addressChanged, c => c.image == "A1.dll" && c.left == "0x1000" && c.right == "0x3000");
+                Assert.Contains(diffCtrl.methods.addressChanged, c => c.image == "A2.dll" && c.left == "0x2000" && c.right == "0x1000");
+
+                // Control case: when all candidates actually share the same RVA (0x1000), unchanged without false ambiguity
+                var leftSharedScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA1, MethodSignature = "void Run()", Address = 0x1000, Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA2, Address = 0x1000, Image = "A2.dll", Assembly = "A" }
+                    }
+                };
+                var rightSharedScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA1, Address = 0x1000, Image = "A1.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA2, MethodSignature = "void Run()", Address = 0x1000, Assembly = "A" }
+                    }
+                };
+                var leftSharedDir = Path.Combine(tempDir, "left_shared");
+                var rightSharedDir = Path.Combine(tempDir, "right_shared");
+                var outShared = Path.Combine(tempDir, "diff_shared.json");
+                CreateFixtures(leftSharedDir, model, leftSharedScript);
+                CreateFixtures(rightSharedDir, model, rightSharedScript);
+                var exitCodeShared = DumpDiffer.Execute(leftSharedDir, rightSharedDir, outShared);
+                var diffShared = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outShared))!;
+                Assert.Equal(0, exitCodeShared);
+                Assert.False(diffShared.HasDifferences);
+                Assert.False(diffShared.hasAmbiguousMethodAddresses);
+                Assert.Empty(diffShared.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound12_P2_MovedGenericMethodWithEmbeddedRvaInMethodInfo_ReportsAddressChangeInBothOrders()
+        {
+            // Review 12, Point 1: StructGenerator embeds the RVA in the trailing auxiliary parameter of generic method instances:
+            // `const MethodInfo_<HEX_RVA>* method`.
+            // In the real Dofus excerpt for ArrayHelpers.Clear<object>, comparing a legacy record at 0x3460310
+            // against a moved record at 0x3460320 must report the address change in both directions and preserve overload distinction.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer12-generic-methodinfo-rva-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "Unity.InputSystem.dll",
+                            assembly = "Unity.InputSystem",
+                            fullName = "UnityEngine.InputSystem.Utilities.ArrayHelpers",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "Clear",
+                                    returnType = "void",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "array", type = "T[]" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "Clear",
+                                    returnType = "void",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "array", type = "T[]" },
+                                        new() { name = "count", type = "int" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var sig310 = "void UnityEngine_InputSystem_Utilities_ArrayHelpers__Clear_Il2CppObject_ (Il2CppObject_array* array, const MethodInfo_3460310* method);";
+                var sig320 = "void UnityEngine_InputSystem_Utilities_ArrayHelpers__Clear_Il2CppObject_ (Il2CppObject_array* array, const MethodInfo_3460320* method);";
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new()
+                        {
+                            Name = "UnityEngine.InputSystem.Utilities.ArrayHelpers$$Clear<object>",
+                            Signature = sig310,
+                            Address = 0x3460310,
+                            Image = "Unity.InputSystem.dll",
+                            Assembly = "Unity.InputSystem"
+                        }
+                    }
+                };
+
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new()
+                        {
+                            Name = "UnityEngine.InputSystem.Utilities.ArrayHelpers$$Clear<object>",
+                            Signature = sig320,
+                            MethodSignature = "void Clear<object>(T[])",
+                            Address = 0x3460320,
+                            Image = "Unity.InputSystem.dll",
+                            Assembly = "Unity.InputSystem"
+                        }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                // Direction 1: Legacy (0x3460310) -> New (0x3460320)
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.Equal(1, exitCode);
+                Assert.True(diff.HasDifferences);
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Single(diff.methods.addressChanged!);
+                Assert.Equal("0x3460310", diff.methods.addressChanged![0].left);
+                Assert.Equal("0x3460320", diff.methods.addressChanged![0].right);
+
+                // Direction 2: New (0x3460320) -> Legacy (0x3460310)
+                var outRev = Path.Combine(tempDir, "diff_rev.json");
+                var exitCodeRev = DumpDiffer.Execute(rightDir, leftDir, outRev);
+                var diffRev = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outRev))!;
+                Assert.Equal(1, exitCodeRev);
+                Assert.True(diffRev.HasDifferences);
+                Assert.False(diffRev.hasAmbiguousMethodAddresses);
+                Assert.Single(diffRev.methods.addressChanged!);
+                Assert.Equal("0x3460320", diffRev.methods.addressChanged![0].left);
+                Assert.Equal("0x3460310", diffRev.methods.addressChanged![0].right);
+
+                // Multi-overload check: both Clear<object>(T[]) and Clear<object>(T[], int) present with MethodInfo_<RVA>*
+                // Ensures native grouping (leftBySig / rightBySig) pairs matching overloads and preserves original signature.
+                var sigCount410 = "void UnityEngine_InputSystem_Utilities_ArrayHelpers__Clear_Il2CppObject_ (Il2CppObject_array* array, int32_t count, const MethodInfo_3460410* method);";
+                var sigCount420 = "void UnityEngine_InputSystem_Utilities_ArrayHelpers__Clear_Il2CppObject_ (Il2CppObject_array* array, int32_t count, const MethodInfo_3460420* method);";
+
+                var leftMultiScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new()
+                        {
+                            Name = "UnityEngine.InputSystem.Utilities.ArrayHelpers$$Clear<object>",
+                            Signature = sig310,
+                            Address = 0x3460310,
+                            Image = "Unity.InputSystem.dll",
+                            Assembly = "Unity.InputSystem"
+                        },
+                        new()
+                        {
+                            Name = "UnityEngine.InputSystem.Utilities.ArrayHelpers$$Clear<object>",
+                            Signature = sigCount410,
+                            Address = 0x3460410,
+                            Image = "Unity.InputSystem.dll",
+                            Assembly = "Unity.InputSystem"
+                        }
+                    }
+                };
+
+                var rightMultiScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new()
+                        {
+                            Name = "UnityEngine.InputSystem.Utilities.ArrayHelpers$$Clear<object>",
+                            Signature = sig320,
+                            MethodSignature = "void Clear<object>(T[])",
+                            Address = 0x3460320,
+                            Image = "Unity.InputSystem.dll",
+                            Assembly = "Unity.InputSystem"
+                        },
+                        new()
+                        {
+                            Name = "UnityEngine.InputSystem.Utilities.ArrayHelpers$$Clear<object>",
+                            Signature = sigCount420,
+                            MethodSignature = "void Clear<object>(T[], int)",
+                            Address = 0x3460420,
+                            Image = "Unity.InputSystem.dll",
+                            Assembly = "Unity.InputSystem"
+                        }
+                    }
+                };
+
+                var leftMultiDir = Path.Combine(tempDir, "left_multi");
+                var rightMultiDir = Path.Combine(tempDir, "right_multi");
+                var outMulti = Path.Combine(tempDir, "diff_multi.json");
+                CreateFixtures(leftMultiDir, model, leftMultiScript);
+                CreateFixtures(rightMultiDir, model, rightMultiScript);
+
+                var exitMulti = DumpDiffer.Execute(leftMultiDir, rightMultiDir, outMulti);
+                var diffMulti = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outMulti))!;
+                Assert.Equal(1, exitMulti);
+                Assert.True(diffMulti.HasDifferences);
+                Assert.False(diffMulti.hasAmbiguousMethodAddresses);
+                Assert.Equal(2, diffMulti.methods.addressChanged!.Count);
+                Assert.Contains(diffMulti.methods.addressChanged, c => c.left == "0x3460310" && c.right == "0x3460320" && c.method == sig310);
+                Assert.Contains(diffMulti.methods.addressChanged, c => c.left == "0x3460410" && c.right == "0x3460420" && c.method == sigCount410);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound12_P2_SameRVAAcrossIndeterminateImagesWithMethodInfoRva_PreservesExternalCandidatesAndSignalsAmbiguity()
+        {
+            // Review 12, Point 2: Variation of the two-image single-assembly fixture where each signature carries
+            // `MethodInfo_<RVA>* method` (with or without `const`).
+            // The external candidate search must normalize `MethodInfo_<RVA>* method` so that legacy records at
+            // different RVAs (0x3000 and 0x2000) remain recognized as compatible external candidates in both orders.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer12-indeterminate-methodinfo-rva-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A1.dll",
+                            assembly = "A",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new() }
+                            }
+                        },
+                        new()
+                        {
+                            image = "A2.dll",
+                            assembly = "A",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new() }
+                            }
+                        }
+                    }
+                };
+
+                var sigA1_1000 = "void Ns_Player_A1__Run (Ns_Player_o* __this, const MethodInfo_1000* method);";
+                var sigA1_3000 = "void Ns_Player_A1__Run (Ns_Player_o* __this, const MethodInfo_3000* method);";
+                var sigA2_2000 = "void Ns_Player_A2__Run (Ns_Player_o* __this, MethodInfo_2000* method);";
+                var sigA2_1000 = "void Ns_Player_A2__Run (Ns_Player_o* __this, MethodInfo_1000* method);";
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run<object>", Signature = sigA1_1000, MethodSignature = "void Run<object>()", Address = 0x1000, Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run<object>", Signature = sigA2_2000, Address = 0x2000, Image = "A2.dll", Assembly = "A" }
+                    }
+                };
+
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run<object>", Signature = sigA1_3000, Address = 0x3000, Image = "A1.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run<object>", Signature = sigA2_1000, MethodSignature = "void Run<object>()", Address = 0x1000, Assembly = "A" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                // Direction 1: Left -> Right
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.Equal(1, exitCode);
+                Assert.True(diff.HasDifferences);
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+
+                // Direction 2: Right -> Left
+                var outRev = Path.Combine(tempDir, "diff_rev.json");
+                var exitCodeRev = DumpDiffer.Execute(rightDir, leftDir, outRev);
+                var diffRev = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outRev))!;
+                Assert.Equal(1, exitCodeRev);
+                Assert.True(diffRev.HasDifferences);
+                Assert.True(diffRev.hasAmbiguousMethodAddresses);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+    }
+}

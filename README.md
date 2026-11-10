@@ -303,6 +303,7 @@ Types are correlated across builds using the stable composite key `<image>!<full
 * **Legacy compatibility:** Legacy dumps lacking `image`/`assembly` metadata continue to correlate by `fullName` when names are globally unique.
 * **Ambiguity policy:** If legacy input contains duplicate type full names without image/assembly identity, comparators exit with code `2` (input error) and report an explicit collision error instead of silently collapsing types or hiding deltas.
 * **Additive schema fields:** In `dump-diff.json`, `DumpDiffTypeChange` emits additive `image` and `assembly` fields when available.
+* **Method address ownership & ambiguity policy:** `ScriptMethod` records preserve additive `Image`, `Assembly`, and optional `MethodSignature` input fields; in `dump-diff.json`, `DumpDiffAddressChange` emits additive `image`, `assembly`, and `methodSignature` output fields when available. Qualified methods correlate independently across images. Legacy exports lacking ownership detect unresolved homonymous permutations instead of asserting equivalence based solely on address multiset equality, setting `hasAmbiguousMethodAddresses` to `true` and exiting with code `1`. Shared generic addresses and valid unique methods remain supported without false ambiguity.
 
 #### Schema reference (`dump-diff.json`)
 ```json
@@ -360,9 +361,9 @@ Types are correlated across builds using the stable composite key `<image>!<full
 ```
 
 **Português:** Ferramenta autônoma de comparação estruturada (`Il2CppDumper.Diff`), consumindo dois dumps estruturados (`dump.json` e mapas de endereço de `script.json`) e emitindo um delta legível por máquina (`dump-diff.json`).
-* **Entradas:** diretórios ou caminhos diretos para `dump.json` de ambas as versões. `dump.cs` nunca é consumido.
+* **Entradas:** diretórios ou caminhos diretos para `dump.json` (e opcionalmente `script.json`, `stringliteral-indexed.json`, `dump-metadata.json`) de ambas as versões. `ScriptMethod.MethodSignature` é consumido como entrada opcional para distinguir sobrecargas e operadores de conversão. `dump.cs` nunca é consumido.
 * **Códigos de saída:** `0` = idênticos, `1` = diferenças encontradas, `2` = erro de uso ou entrada.
-* **Identidade de tipos e ambiguidade:** tipos são correlacionados pela chave estável `<image>!<fullName>` (ou `<assembly>!<fullName>`). Dumps legados com nomes únicos mantêm compatibilidade via `fullName`; colisões sem imagem/assembly geram erro explícito com código `2`. `DumpDiffTypeChange` emite campos aditivos `image` e `assembly`.
+* **Identidade de tipos e ambiguidade:** tipos são correlacionados pela chave estável `<image>!<fullName>` (ou `<assembly>!<fullName>`). Dumps legados com nomes únicos mantêm compatibilidade via `fullName`; colisões sem imagem/assembly geram erro explícito com código `2`. `DumpDiffTypeChange` emite campos aditivos `image` e `assembly`; `DumpDiffAddressChange` emite adicionalmente `methodSignature` como saída quando disponível. Permutações de métodos homônimos sem posse geram ambiguidade explícita em vez de falso negativo por igualdade de multiconjunto.
 * **Esquema:** inclui hashes de proveniência (`dump-metadata.json` quando disponível ou SHA-256 do arquivo em streaming), tipos adicionados/removidos/alterados, métodos com endereços alterados, literais por índice e sumário.
 
 #### Field offset drift report (`field-offset-drift.json`)

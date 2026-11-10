@@ -300,6 +300,7 @@ Il2CppDumper.Diff <left> <right> <output>
 * **向后兼容性 (Legacy compatibility):** 缺少 `image`/`assembly` 元数据的旧版 dump 只要全名全局唯一，仍继续按 `fullName` 正常比对。
 * **歧义处理策略 (Ambiguity policy):** 若旧版输入中存在没有镜像/程序集身份区分的重名类型冲突，比对工具将直接输出显式歧义错误并以状态码 `2`（输入错误）退出，绝不静默合并或隐藏变更。
 * **增量数据模式字段 (Additive schema fields):** 在 `dump-diff.json` 中，`DumpDiffTypeChange` 在可用时输出增量字段 `image` 与 `assembly`。
+* **方法地址所属权与歧义策略 (Method address ownership & ambiguity policy):** `ScriptMethod` 记录保留增量字段 `Image` 与 `Assembly`；在 `dump-diff.json` 中，`DumpDiffAddressChange` 在可用时输出增量字段 `image` 与 `assembly`。具备所属权的限定方法在跨镜像间独立比对。缺少所属权的旧版导出若存在同名同签名的方法地址置换，将不再仅凭多重集相等判定为未变，而是检测出未决歧义并置 `hasAmbiguousMethodAddresses` 为 `true`，以退出代码 `1` 退出。共享泛型地址与常规唯一方法继续正常支持，无假阳性。
 
 #### 数据模式参考 (Schema reference - `dump-diff.json`)
 ```json
@@ -359,7 +360,7 @@ Il2CppDumper.Diff <left> <right> <output>
 **Português:** Ferramenta autônoma de comparação estruturada (`Il2CppDumper.Diff`), consumindo dois dumps estruturados (`dump.json` e mapas de endereço de `script.json`) e emitindo um delta legível por máquina (`dump-diff.json`).
 * **Entradas:** diretórios ou caminhos diretos para `dump.json` de ambas as versões. `dump.cs` nunca é consumido.
 * **Códigos de saída:** `0` = idênticos, `1` = diferenças encontradas, `2` = erro de uso ou entrada.
-* **Identidade de tipos e ambiguidade:** tipos são correlacionados pela chave estável `<image>!<fullName>` (ou `<assembly>!<fullName>`). Dumps legados com nomes únicos mantêm compatibilidade via `fullName`; colisões sem imagem/assembly geram erro explícito com código `2`. `DumpDiffTypeChange` emite campos aditivos `image` e `assembly`.
+* **Identidade de tipos e ambiguidade:** tipos são correlacionados pela chave estável `<image>!<fullName>` (ou `<assembly>!<fullName>`). Dumps legados com nomes únicos mantêm compatibilidade via `fullName`; colisões sem imagem/assembly geram erro explícito com código `2`. `DumpDiffTypeChange` e `DumpDiffAddressChange` emitem campos aditivos `image` e `assembly`. Permutações de métodos homônimos sem posse geram ambiguidade explícita em vez de falso negativo por igualdade de multiconjunto.
 * **Esquema:** inclui hashes de proveniência (`dump-metadata.json` quando disponível ou SHA-256 do arquivo em streaming), tipos adicionados/removidos/alterados, métodos com endereços alterados, literais por índice e sumário.
 
 #### 结构体字段偏移漂移报告 (Field offset drift report - `field-offset-drift.json`)

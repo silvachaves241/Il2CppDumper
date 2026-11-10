@@ -1,3 +1,4 @@
+#nullable enable
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
@@ -18,6 +19,15 @@ namespace Il2CppDumper
         public string Name;
         public string Signature;
         public string TypeSignature;
+        /// <summary>Canonical managed method signature including namespace-qualified parameter types and byref qualifiers (e.g. 'Clear(TValue[], ref int)'). Present in new dumps to definitively correlate homonymous overloads; absent in legacy dumps.</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? MethodSignature;
+        /// <summary>Name of the containing image (e.g. 'Assembly-CSharp.dll'). Present in new dumps; absent in legacy dumps.</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? Image;
+        /// <summary>Name of the containing assembly (e.g. 'Assembly-CSharp'). Present in new dumps; absent in legacy dumps.</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? Assembly;
     }
 
     public class ScriptString
