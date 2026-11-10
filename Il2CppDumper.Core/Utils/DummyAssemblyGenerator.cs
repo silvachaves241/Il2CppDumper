@@ -53,6 +53,7 @@ namespace Il2CppDumper
 
             var parameterDefinitionDic = new Dictionary<int, ParameterDefinition>();
             var eventDefinitionDic = new Dictionary<int, EventDefinition>();
+            TypeDefinition enumTypeDefinition = null;
 
             //创建程序集，同时创建所有类
             foreach (var imageDef in metadata.imageDefs)
@@ -105,6 +106,10 @@ namespace Il2CppDumper
                     if (typeDef.declaringTypeIndex == -1)
                     {
                         moduleDefinition.Types.Add(typeDefinition);
+                        if (enumTypeDefinition == null && namespaceName == "System" && typeName == "Enum")
+                        {
+                            enumTypeDefinition = typeDefinition;
+                        }
                     }
                 }
             }
@@ -172,7 +177,13 @@ namespace Il2CppDumper
                     }
 
                     //parent
-                    if (typeDef.parentIndex >= 0)
+                    if (typeDef.IsEnum)
+                    {
+                        typeDefinition.BaseType = enumTypeDefinition != null
+                            ? typeDefinition.Module.ImportReference(enumTypeDefinition)
+                            : typeDefinition.Module.ImportReference(typeof(Enum));
+                    }
+                    else if (typeDef.parentIndex >= 0)
                     {
                         var parentType = il2Cpp.types[typeDef.parentIndex];
                         var parentTypeRef = GetTypeReference(typeDefinition, parentType);
@@ -185,6 +196,28 @@ namespace Il2CppDumper
                         var interfaceType = il2Cpp.types[metadata.interfaceIndices[typeDef.interfacesStart + i]];
                         var interfaceTypeRef = GetTypeReference(typeDefinition, interfaceType);
                         typeDefinition.Interfaces.Add(new InterfaceImplementation(interfaceTypeRef));
+                    }
+                }
+            }
+            foreach (var imageDef in metadata.imageDefs)
+            {
+                var typeEnd = imageDef.typeStart + imageDef.typeCount;
+                for (var index = imageDef.typeStart; index < typeEnd; ++index)
+                {
+                    var typeDef = metadata.typeDefs[index];
+                    var typeDefinition = typeDefinitionDic[typeDef];
+
+                    //field definitions
+                    var fieldEnd = typeDef.fieldStart + typeDef.field_count;
+                    for (var i = typeDef.fieldStart; i < fieldEnd; ++i)
+                    {
+                        var fieldDef = metadata.fieldDefs[i];
+                        var fieldType = il2Cpp.types[fieldDef.typeIndex];
+                        var fieldName = metadata.GetStringFromIndex(fieldDef.nameIndex);
+                        var fieldTypeRef = GetTypeReference(typeDefinition, fieldType);
+                        var fieldDefinition = new FieldDefinition(fieldName, (FieldAttributes)fieldType.attrs, fieldTypeRef);
+                        typeDefinition.Fields.Add(fieldDefinition);
+                        fieldDefinitionDic.Add(i, fieldDefinition);
                     }
                 }
             }
@@ -203,12 +236,7 @@ namespace Il2CppDumper
                     for (var i = typeDef.fieldStart; i < fieldEnd; ++i)
                     {
                         var fieldDef = metadata.fieldDefs[i];
-                        var fieldType = il2Cpp.types[fieldDef.typeIndex];
-                        var fieldName = metadata.GetStringFromIndex(fieldDef.nameIndex);
-                        var fieldTypeRef = GetTypeReference(typeDefinition, fieldType);
-                        var fieldDefinition = new FieldDefinition(fieldName, (FieldAttributes)fieldType.attrs, fieldTypeRef);
-                        typeDefinition.Fields.Add(fieldDefinition);
-                        fieldDefinitionDic.Add(i, fieldDefinition);
+                        var fieldDefinition = fieldDefinitionDic[i];
 
                         if (addToken)
                         {
@@ -224,11 +252,13 @@ namespace Il2CppDumper
                             {
                                 if (!TrySetConstant(fieldDefinition, fieldDefinition.FieldType, value))
                                 {
+                                    fieldDefinition.Attributes &= ~FieldAttributes.HasDefault;
                                     AddMetadataOffsetAttribute(typeDefinition.Module, metadataOffsetAttribute, fieldDefinition.CustomAttributes, metadata.GetDefaultValueFromIndex(fieldDefault.dataIndex));
                                 }
                             }
                             else
                             {
+                                fieldDefinition.Attributes &= ~FieldAttributes.HasDefault;
                                 AddMetadataOffsetAttribute(typeDefinition.Module, metadataOffsetAttribute, fieldDefinition.CustomAttributes, (uint)value);
                             }
                         }
@@ -319,11 +349,13 @@ namespace Il2CppDumper
                                 {
                                     if (!TrySetConstant(parameterDefinition, parameterDefinition.ParameterType, value))
                                     {
+                                        parameterDefinition.Attributes &= ~ParameterAttributes.HasDefault;
                                         AddMetadataOffsetAttribute(typeDefinition.Module, metadataOffsetAttribute, parameterDefinition.CustomAttributes, metadata.GetDefaultValueFromIndex(parameterDefault.dataIndex));
                                     }
                                 }
                                 else
                                 {
+                                    parameterDefinition.Attributes &= ~ParameterAttributes.HasDefault;
                                     AddMetadataOffsetAttribute(typeDefinition.Module, metadataOffsetAttribute, parameterDefinition.CustomAttributes, (uint)value);
                                 }
                             }
@@ -427,7 +459,7 @@ namespace Il2CppDumper
                         var typeDef = metadata.typeDefs[index];
                         var typeDefinition = typeDefinitionDic[typeDef];
                         //typeAttribute
-                        CreateCustomAttribute(imageDef, typeDef.customAttributeIndex, typeDef.token, typeDefinition.Module, typeDefinition.CustomAttributes);
+                        CreateCustomAttribute(imageDef, typeDef.customAttributeIndex, typeDef.token, typeDefinition.Module, typeDefinition.CustomAttributes, typeDefinition.FullName);
 
                         //field
                         var fieldEnd = typeDef.fieldStart + typeDef.field_count;
@@ -436,7 +468,7 @@ namespace Il2CppDumper
                             var fieldDef = metadata.fieldDefs[i];
                             var fieldDefinition = fieldDefinitionDic[i];
                             //fieldAttribute
-                            CreateCustomAttribute(imageDef, fieldDef.customAttributeIndex, fieldDef.token, typeDefinition.Module, fieldDefinition.CustomAttributes);
+                            CreateCustomAttribute(imageDef, fieldDef.customAttributeIndex, fieldDef.token, typeDefinition.Module, fieldDefinition.CustomAttributes, $"{typeDefinition.FullName}.{fieldDefinition.Name}");
                         }
 
                         //method
@@ -446,7 +478,7 @@ namespace Il2CppDumper
                             var methodDef = metadata.methodDefs[i];
                             var methodDefinition = methodDefinitionDic[i];
                             //methodAttribute
-                            CreateCustomAttribute(imageDef, methodDef.customAttributeIndex, methodDef.token, typeDefinition.Module, methodDefinition.CustomAttributes);
+                            CreateCustomAttribute(imageDef, methodDef.customAttributeIndex, methodDef.token, typeDefinition.Module, methodDefinition.CustomAttributes, $"{typeDefinition.FullName}.{methodDefinition.Name}");
 
                             //method parameter
                             for (var j = 0; j < methodDef.parameterCount; ++j)
@@ -454,7 +486,7 @@ namespace Il2CppDumper
                                 var parameterDef = metadata.parameterDefs[methodDef.parameterStart + j];
                                 var parameterDefinition = parameterDefinitionDic[methodDef.parameterStart + j];
                                 //parameterAttribute
-                                CreateCustomAttribute(imageDef, parameterDef.customAttributeIndex, parameterDef.token, typeDefinition.Module, parameterDefinition.CustomAttributes);
+                                CreateCustomAttribute(imageDef, parameterDef.customAttributeIndex, parameterDef.token, typeDefinition.Module, parameterDefinition.CustomAttributes, $"{typeDefinition.FullName}.{methodDefinition.Name}({parameterDefinition.Name})");
                             }
                         }
 
@@ -465,7 +497,7 @@ namespace Il2CppDumper
                             var propertyDef = metadata.propertyDefs[i];
                             var propertyDefinition = propertyDefinitionDic[i];
                             //propertyAttribute
-                            CreateCustomAttribute(imageDef, propertyDef.customAttributeIndex, propertyDef.token, typeDefinition.Module, propertyDefinition.CustomAttributes);
+                            CreateCustomAttribute(imageDef, propertyDef.customAttributeIndex, propertyDef.token, typeDefinition.Module, propertyDefinition.CustomAttributes, $"{typeDefinition.FullName}.{propertyDefinition.Name}");
                         }
 
                         //event
@@ -475,7 +507,7 @@ namespace Il2CppDumper
                             var eventDef = metadata.eventDefs[i];
                             var eventDefinition = eventDefinitionDic[i];
                             //eventAttribute
-                            CreateCustomAttribute(imageDef, eventDef.customAttributeIndex, eventDef.token, typeDefinition.Module, eventDefinition.CustomAttributes);
+                            CreateCustomAttribute(imageDef, eventDef.customAttributeIndex, eventDef.token, typeDefinition.Module, eventDefinition.CustomAttributes, $"{typeDefinition.FullName}.{eventDefinition.Name}");
                         }
                     }
                 }
@@ -946,11 +978,13 @@ namespace Il2CppDumper
             }
         }
 
-        private void CreateCustomAttribute(Il2CppImageDefinition imageDef, int customAttributeIndex, uint token, ModuleDefinition moduleDefinition, Collection<CustomAttribute> customAttributes)
+        private void CreateCustomAttribute(Il2CppImageDefinition imageDef, int customAttributeIndex, uint token, ModuleDefinition moduleDefinition, Collection<CustomAttribute> customAttributes, string owner = null)
         {
             var attributeIndex = metadata.GetCustomAttributeIndex(imageDef, customAttributeIndex, token);
             if (attributeIndex >= 0)
             {
+                var assemblyName = moduleDefinition.Assembly?.Name?.Name ?? moduleDefinition.Name;
+                var ownerName = !string.IsNullOrWhiteSpace(owner) ? owner : $"token 0x{token:X8}";
                 try
                 {
                     if (il2Cpp.Version < 29)
@@ -988,39 +1022,76 @@ namespace Il2CppDumper
                         var reader = new CustomAttributeDataReader(executor, buff);
                         if (reader.Count != 0)
                         {
-                            for (var i = 0; i < reader.Count; i++)
+                            var availableCount = (int)Math.Min((long)reader.Count, (long)reader.AvailableConstructors);
+                            var truncatedCount = Math.Max(0L, (long)reader.Count - availableCount);
+                            for (var i = 0; i < availableCount; i++)
                             {
-                                var visitor = reader.VisitCustomAttributeData();
-                                var methodDefinition = methodDefinitionDic[visitor.CtorIndex];
-                                var customAttribute = new CustomAttribute(moduleDefinition.ImportReference(methodDefinition));
-                                foreach (var argument in visitor.Arguments)
+                                var attributeTypeName = reader.GetAttributeTypeName(i);
+                                CustomAttributeReaderVisitor visitor;
+                                try
                                 {
-                                    var parameterDefinition = methodDefinition.Parameters[argument.Index];
-                                    var customAttributeArgument = CreateCustomAttributeArgument(parameterDefinition.ParameterType, argument.Value, methodDefinition);
-                                    customAttribute.ConstructorArguments.Add(customAttributeArgument);
+                                    visitor = reader.VisitCustomAttributeData();
                                 }
-                                foreach (var field in visitor.Fields)
+                                catch (Exception ex)
                                 {
-                                    var fieldDefinition = fieldDefinitionDic[field.Index];
-                                    var customAttributeArgument = CreateCustomAttributeArgument(fieldDefinition.FieldType, field.Value, fieldDefinition);
-                                    var customAttributeNamedArgument = new CustomAttributeNamedArgument(fieldDefinition.Name, customAttributeArgument);
-                                    customAttribute.Fields.Add(customAttributeNamedArgument);
+                                    DummyAssemblyExporter.ReportOmittedCustomAttribute(assemblyName, ownerName, attributeTypeName, ex.Message);
+                                    for (var j = i + 1; j < availableCount; j++)
+                                    {
+                                        var remainingTypeName = reader.GetAttributeTypeName(j);
+                                        DummyAssemblyExporter.ReportOmittedCustomAttribute(
+                                            assemblyName,
+                                            ownerName,
+                                            remainingTypeName,
+                                            "Skipped due to previous attribute decoding failure in the same blob");
+                                    }
+                                    break;
                                 }
-                                foreach (var property in visitor.Properties)
+
+                                try
                                 {
-                                    var propertyDefinition = propertyDefinitionDic[property.Index];
-                                    var customAttributeArgument = CreateCustomAttributeArgument(propertyDefinition.PropertyType, property.Value, propertyDefinition);
-                                    var customAttributeNamedArgument = new CustomAttributeNamedArgument(propertyDefinition.Name, customAttributeArgument);
-                                    customAttribute.Properties.Add(customAttributeNamedArgument);
+                                    var methodDefinition = methodDefinitionDic[visitor.CtorIndex];
+                                    var customAttribute = new CustomAttribute(moduleDefinition.ImportReference(methodDefinition));
+                                    foreach (var argument in visitor.Arguments)
+                                    {
+                                        var parameterDefinition = methodDefinition.Parameters[argument.Index];
+                                        var customAttributeArgument = CreateCustomAttributeArgument(parameterDefinition.ParameterType, argument.Value, methodDefinition);
+                                        customAttribute.ConstructorArguments.Add(customAttributeArgument);
+                                    }
+                                    foreach (var field in visitor.Fields)
+                                    {
+                                        var fieldDefinition = fieldDefinitionDic[field.Index];
+                                        var customAttributeArgument = CreateCustomAttributeArgument(fieldDefinition.FieldType, field.Value, fieldDefinition);
+                                        var customAttributeNamedArgument = new CustomAttributeNamedArgument(fieldDefinition.Name, customAttributeArgument);
+                                        customAttribute.Fields.Add(customAttributeNamedArgument);
+                                    }
+                                    foreach (var property in visitor.Properties)
+                                    {
+                                        var propertyDefinition = propertyDefinitionDic[property.Index];
+                                        var customAttributeArgument = CreateCustomAttributeArgument(propertyDefinition.PropertyType, property.Value, propertyDefinition);
+                                        var customAttributeNamedArgument = new CustomAttributeNamedArgument(propertyDefinition.Name, customAttributeArgument);
+                                        customAttribute.Properties.Add(customAttributeNamedArgument);
+                                    }
+                                    customAttributes.Add(customAttribute);
                                 }
-                                customAttributes.Add(customAttribute);
+                                catch (Exception ex)
+                                {
+                                    DummyAssemblyExporter.ReportOmittedCustomAttribute(assemblyName, ownerName, attributeTypeName, ex.Message);
+                                }
+                            }
+                            if (truncatedCount > 0)
+                            {
+                                DummyAssemblyExporter.ReportOmittedCustomAttribute(
+                                    assemblyName,
+                                    ownerName,
+                                    "UnknownAttribute",
+                                    $"Custom attribute blob declares {reader.Count} attribute(s) but buffer only contains {availableCount} constructor record(s); {truncatedCount} missing attribute(s) skipped.");
                             }
                         }
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
-                    CoreLogger.WriteLine($"ERROR: Error while restoring attributeIndex {attributeIndex}");
+                    DummyAssemblyExporter.ReportOmittedCustomAttribute(assemblyName, ownerName, $"attributeIndex_{attributeIndex}", ex.Message);
                 }
             }
         }
