@@ -117,23 +117,34 @@ namespace Il2CppDumper
 
             var remainingBudget = MaxCustomAttributeWriteProbeAttempts;
             byte[] lastSuccessfulBytes = baselineBytes;
+            var pendingRanges = new Queue<(int Start, int Count, string Reason)>();
+            pendingRanges.Enqueue((0, entries.Count, initialReason));
 
-            void IsolateRange(int start, int count, string fallbackReason)
+            while (pendingRanges.Count > 0)
             {
-                if (count <= 0)
-                {
-                    return;
-                }
-
                 if (remainingBudget <= 0)
                 {
-                    var budgetReason = $"Write-recovery probe limit ({MaxCustomAttributeWriteProbeAttempts}) reached while isolating '{fallbackReason}'; attribute omitted.";
-                    for (var i = 0; i < count; i++)
+                    var pendingAttributeCount = 0;
+                    var pendingRangeCount = pendingRanges.Count;
+                    var lastReason = initialReason;
+                    while (pendingRanges.Count > 0)
                     {
-                        var entry = entries[start + i];
-                        ReportOmittedCustomAttribute(assemblyName, entry.Owner, GetCustomAttributeTypeName(entry.Attribute), budgetReason);
+                        var pending = pendingRanges.Dequeue();
+                        pendingAttributeCount += pending.Count;
+                        if (!string.IsNullOrWhiteSpace(pending.Reason))
+                        {
+                            lastReason = pending.Reason;
+                        }
                     }
-                    return;
+
+                    throw new System.InvalidOperationException(
+                        $"Inconclusive custom attribute write recovery for assembly '{assemblyName}': probe limit ({MaxCustomAttributeWriteProbeAttempts}) reached with {pendingAttributeCount} pending custom attribute(s) across {pendingRangeCount} batch(es). Last writer failure: {lastReason}");
+                }
+
+                var (start, count, fallbackReason) = pendingRanges.Dequeue();
+                if (count <= 0)
+                {
+                    continue;
                 }
 
                 for (var i = 0; i < count; i++)
@@ -146,7 +157,6 @@ namespace Il2CppDumper
                 try
                 {
                     lastSuccessfulBytes = writer(assembly);
-                    return;
                 }
                 catch (System.Exception batchEx) when (IsCustomAttributeWriteException(batchEx))
                 {
@@ -161,16 +171,15 @@ namespace Il2CppDumper
                     {
                         var failing = entries[start];
                         ReportOmittedCustomAttribute(assemblyName, failing.Owner, GetCustomAttributeTypeName(failing.Attribute), reason);
-                        return;
+                        continue;
                     }
 
                     var mid = count / 2;
-                    IsolateRange(start, mid, reason);
-                    IsolateRange(start + mid, count - mid, reason);
+                    pendingRanges.Enqueue((start, mid, reason));
+                    pendingRanges.Enqueue((start + mid, count - mid, reason));
                 }
             }
 
-            IsolateRange(0, entries.Count, initialReason);
             return lastSuccessfulBytes;
         }
 

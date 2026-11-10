@@ -351,6 +351,168 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
+        public void WriteAssembly_WithMultipleLeadingFailingAttributesFollowedByValidBatch_TestsSiblingBatchesAndPreservesValidAttributes()
+        {
+            using var assembly = AssemblyDefinition.CreateAssembly(
+                new AssemblyNameDefinition("LeadingFailuresSample", new Version(1, 0, 0, 0)),
+                "LeadingFailuresSample.dll",
+                ModuleKind.Dll);
+
+            var module = assembly.MainModule;
+            var validAttrType = CreateAttributeType(module, "LeadingFailuresSample", "ValidMarkerAttribute", module.TypeSystem.Int32);
+            var validCtor = validAttrType.Methods.Single(m => m.Name == ".ctor");
+
+            var validEnumDef = new TypeDefinition(
+                "LeadingFailuresSample",
+                "LateCorruptedEnum",
+                Mono.Cecil.TypeAttributes.Public | Mono.Cecil.TypeAttributes.Sealed,
+                module.ImportReference(typeof(Enum)));
+            validEnumDef.Fields.Add(new FieldDefinition(
+                "value__",
+                Mono.Cecil.FieldAttributes.Public | Mono.Cecil.FieldAttributes.SpecialName | Mono.Cecil.FieldAttributes.RTSpecialName,
+                module.TypeSystem.Int32));
+            module.Types.Add(validEnumDef);
+
+            var lateFailingAttrType = CreateAttributeType(module, "LeadingFailuresSample", "LateFailingEnumAttribute", validEnumDef);
+            var lateFailingCtor = lateFailingAttrType.Methods.Single(m => m.Name == ".ctor");
+
+            var containerType = new TypeDefinition(
+                "LeadingFailuresSample",
+                "BigContainer",
+                Mono.Cecil.TypeAttributes.Public | Mono.Cecil.TypeAttributes.Class,
+                module.TypeSystem.Object);
+            module.Types.Add(containerType);
+
+            // Place 24 failing attributes at the very beginning, followed by 1,000 valid attributes.
+            // With depth-first left-first probing, 24 leading failures consume 59 probes on the left half before exhausting the 64-probe budget,
+            // never reaching the right sibling batch [512..1023]. With breadth-first sibling probing, all 5 healthy sibling batches
+            // are validated first and all 24 failing attributes are isolated within 63 probes!
+            const int failingCount = 24;
+            const int validCount = 1000;
+            for (var i = 0; i < failingCount; i++)
+            {
+                var failingProp = new PropertyDefinition($"BadProp{i}", Mono.Cecil.PropertyAttributes.None, module.TypeSystem.Int32);
+                var failingAttr = new CustomAttribute(lateFailingCtor);
+                failingAttr.ConstructorArguments.Add(new CustomAttributeArgument(validEnumDef, 1));
+                failingProp.CustomAttributes.Add(failingAttr);
+                containerType.Properties.Add(failingProp);
+            }
+
+            for (var i = 0; i < validCount; i++)
+            {
+                var prop = new PropertyDefinition($"ValidProp{i}", Mono.Cecil.PropertyAttributes.None, module.TypeSystem.Int32);
+                var attr = new CustomAttribute(validCtor);
+                attr.ConstructorArguments.Add(new CustomAttributeArgument(module.TypeSystem.Int32, i));
+                prop.CustomAttributes.Add(attr);
+                containerType.Properties.Add(prop);
+            }
+
+            var warnings = new List<string>();
+            byte[] emittedBytes;
+            using (CoreLogger.Scope(null, warnings))
+            {
+                DummyAssemblyExporter.SanitizeCustomAttributes(assembly);
+                validEnumDef.BaseType = module.TypeSystem.Object;
+
+                emittedBytes = DummyAssemblyExporter.WriteAssembly(
+                    assembly,
+                    asm =>
+                    {
+                        using var ms = new MemoryStream();
+                        asm.Write(ms);
+                        return ms.ToArray();
+                    },
+                    customAttributesSanitized: true);
+            }
+
+            Assert.Equal(failingCount, warnings.Count);
+            using var reopened = AssemblyDefinition.ReadAssembly(new MemoryStream(emittedBytes));
+            var reopenedContainer = reopened.MainModule.GetType("LeadingFailuresSample.BigContainer");
+            Assert.Equal(validCount, reopenedContainer.Properties.Count(p => p.Name.StartsWith("ValidProp") && p.CustomAttributes.Count == 1));
+            Assert.All(reopenedContainer.Properties.Where(p => p.Name.StartsWith("BadProp")), p => Assert.Empty(p.CustomAttributes));
+        }
+
+        [Fact]
+        public void WriteAssembly_WhenLeadingFailingAttributesExceedProbeLimit_PreservesValidSiblingBatchesBeforeFailingInconclusively()
+        {
+            using var assembly = AssemblyDefinition.CreateAssembly(
+                new AssemblyNameDefinition("InconclusiveRecoverySample", new Version(1, 0, 0, 0)),
+                "InconclusiveRecoverySample.dll",
+                ModuleKind.Dll);
+
+            var module = assembly.MainModule;
+            var validAttrType = CreateAttributeType(module, "InconclusiveRecoverySample", "ValidMarkerAttribute", module.TypeSystem.Int32);
+            var validCtor = validAttrType.Methods.Single(m => m.Name == ".ctor");
+
+            var validEnumDef = new TypeDefinition(
+                "InconclusiveRecoverySample",
+                "LateCorruptedEnum",
+                Mono.Cecil.TypeAttributes.Public | Mono.Cecil.TypeAttributes.Sealed,
+                module.ImportReference(typeof(Enum)));
+            validEnumDef.Fields.Add(new FieldDefinition(
+                "value__",
+                Mono.Cecil.FieldAttributes.Public | Mono.Cecil.FieldAttributes.SpecialName | Mono.Cecil.FieldAttributes.RTSpecialName,
+                module.TypeSystem.Int32));
+            module.Types.Add(validEnumDef);
+
+            var lateFailingAttrType = CreateAttributeType(module, "InconclusiveRecoverySample", "LateFailingEnumAttribute", validEnumDef);
+            var lateFailingCtor = lateFailingAttrType.Methods.Single(m => m.Name == ".ctor");
+
+            var containerType = new TypeDefinition(
+                "InconclusiveRecoverySample",
+                "BigContainer",
+                Mono.Cecil.TypeAttributes.Public | Mono.Cecil.TypeAttributes.Class,
+                module.TypeSystem.Object);
+            module.Types.Add(containerType);
+
+            // 32 failing attributes at the start + 1,000 valid attributes after:
+            // Breadth-first batch probing validates and keeps the healthy sibling batches ([516..1031], [258..515], [129..257], [64..128], [32..63])
+            // before exhausting the 64-probe budget on the 32 leading bad attributes, then throws an explicit inconclusive recovery exception
+            // instead of returning a partial PE!
+            const int failingCount = 32;
+            const int validCount = 1000;
+            for (var i = 0; i < failingCount; i++)
+            {
+                var failingProp = new PropertyDefinition($"BadProp{i}", Mono.Cecil.PropertyAttributes.None, module.TypeSystem.Int32);
+                var failingAttr = new CustomAttribute(lateFailingCtor);
+                failingAttr.ConstructorArguments.Add(new CustomAttributeArgument(validEnumDef, 1));
+                failingProp.CustomAttributes.Add(failingAttr);
+                containerType.Properties.Add(failingProp);
+            }
+
+            for (var i = 0; i < validCount; i++)
+            {
+                var prop = new PropertyDefinition($"ValidProp{i}", Mono.Cecil.PropertyAttributes.None, module.TypeSystem.Int32);
+                var attr = new CustomAttribute(validCtor);
+                attr.ConstructorArguments.Add(new CustomAttributeArgument(module.TypeSystem.Int32, i));
+                prop.CustomAttributes.Add(attr);
+                containerType.Properties.Add(prop);
+            }
+
+            DummyAssemblyExporter.SanitizeCustomAttributes(assembly);
+            validEnumDef.BaseType = module.TypeSystem.Object;
+
+            var ex = Assert.Throws<InvalidOperationException>(() =>
+                DummyAssemblyExporter.WriteAssembly(
+                    assembly,
+                    asm =>
+                    {
+                        using var ms = new MemoryStream();
+                        asm.Write(ms);
+                        return ms.ToArray();
+                    },
+                    customAttributesSanitized: true));
+
+            Assert.Contains("Inconclusive custom attribute write recovery", ex.Message);
+            Assert.Contains("InconclusiveRecoverySample", ex.Message);
+            Assert.Contains(DummyAssemblyExporter.MaxCustomAttributeWriteProbeAttempts.ToString(), ex.Message);
+
+            // Because sibling batches are tested breadth-first before deepening failing splits, all 1,000 valid attributes
+            // were already validated and restored on the in-memory assembly before the budget was exhausted on the 32 bad ones.
+            Assert.Equal(validCount, containerType.Properties.Count(p => p.Name.StartsWith("ValidProp") && p.CustomAttributes.Count == 1));
+        }
+
+        [Fact]
         public void Export_CrossModuleStructAndEnumFieldsInEarlierAssembly_PreserveIsValueTypeInReopenedAssembly()
         {
             var (metadata, il2Cpp) = CreateCrossModuleStructAndEnumFieldEnvironment();
