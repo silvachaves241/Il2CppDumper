@@ -3367,5 +3367,280 @@ namespace Il2CppDumper.Tests
             }
         }
 
+        [Fact]
+        public void ReviewerRound12_P2_MovedGenericMethodWithEmbeddedRvaInMethodInfo_ReportsAddressChangeInBothOrders()
+        {
+            // Review 12, Point 1: StructGenerator embeds the RVA in the trailing auxiliary parameter of generic method instances:
+            // `const MethodInfo_<HEX_RVA>* method`.
+            // In the real Dofus excerpt for ArrayHelpers.Clear<object>, comparing a legacy record at 0x3460310
+            // against a moved record at 0x3460320 must report the address change in both directions and preserve overload distinction.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer12-generic-methodinfo-rva-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "Unity.InputSystem.dll",
+                            assembly = "Unity.InputSystem",
+                            fullName = "UnityEngine.InputSystem.Utilities.ArrayHelpers",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "Clear",
+                                    returnType = "void",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "array", type = "T[]" }
+                                    }
+                                },
+                                new()
+                                {
+                                    name = "Clear",
+                                    returnType = "void",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "array", type = "T[]" },
+                                        new() { name = "count", type = "int" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var sig310 = "void UnityEngine_InputSystem_Utilities_ArrayHelpers__Clear_Il2CppObject_ (Il2CppObject_array* array, const MethodInfo_3460310* method);";
+                var sig320 = "void UnityEngine_InputSystem_Utilities_ArrayHelpers__Clear_Il2CppObject_ (Il2CppObject_array* array, const MethodInfo_3460320* method);";
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new()
+                        {
+                            Name = "UnityEngine.InputSystem.Utilities.ArrayHelpers$$Clear<object>",
+                            Signature = sig310,
+                            Address = 0x3460310,
+                            Image = "Unity.InputSystem.dll",
+                            Assembly = "Unity.InputSystem"
+                        }
+                    }
+                };
+
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new()
+                        {
+                            Name = "UnityEngine.InputSystem.Utilities.ArrayHelpers$$Clear<object>",
+                            Signature = sig320,
+                            MethodSignature = "void Clear<object>(T[])",
+                            Address = 0x3460320,
+                            Image = "Unity.InputSystem.dll",
+                            Assembly = "Unity.InputSystem"
+                        }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                // Direction 1: Legacy (0x3460310) -> New (0x3460320)
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.Equal(1, exitCode);
+                Assert.True(diff.HasDifferences);
+                Assert.False(diff.hasAmbiguousMethodAddresses);
+                Assert.Single(diff.methods.addressChanged!);
+                Assert.Equal("0x3460310", diff.methods.addressChanged![0].left);
+                Assert.Equal("0x3460320", diff.methods.addressChanged![0].right);
+
+                // Direction 2: New (0x3460320) -> Legacy (0x3460310)
+                var outRev = Path.Combine(tempDir, "diff_rev.json");
+                var exitCodeRev = DumpDiffer.Execute(rightDir, leftDir, outRev);
+                var diffRev = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outRev))!;
+                Assert.Equal(1, exitCodeRev);
+                Assert.True(diffRev.HasDifferences);
+                Assert.False(diffRev.hasAmbiguousMethodAddresses);
+                Assert.Single(diffRev.methods.addressChanged!);
+                Assert.Equal("0x3460320", diffRev.methods.addressChanged![0].left);
+                Assert.Equal("0x3460310", diffRev.methods.addressChanged![0].right);
+
+                // Multi-overload check: both Clear<object>(T[]) and Clear<object>(T[], int) present with MethodInfo_<RVA>*
+                // Ensures native grouping (leftBySig / rightBySig) pairs matching overloads and preserves original signature.
+                var sigCount410 = "void UnityEngine_InputSystem_Utilities_ArrayHelpers__Clear_Il2CppObject_ (Il2CppObject_array* array, int32_t count, const MethodInfo_3460410* method);";
+                var sigCount420 = "void UnityEngine_InputSystem_Utilities_ArrayHelpers__Clear_Il2CppObject_ (Il2CppObject_array* array, int32_t count, const MethodInfo_3460420* method);";
+
+                var leftMultiScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new()
+                        {
+                            Name = "UnityEngine.InputSystem.Utilities.ArrayHelpers$$Clear<object>",
+                            Signature = sig310,
+                            Address = 0x3460310,
+                            Image = "Unity.InputSystem.dll",
+                            Assembly = "Unity.InputSystem"
+                        },
+                        new()
+                        {
+                            Name = "UnityEngine.InputSystem.Utilities.ArrayHelpers$$Clear<object>",
+                            Signature = sigCount410,
+                            Address = 0x3460410,
+                            Image = "Unity.InputSystem.dll",
+                            Assembly = "Unity.InputSystem"
+                        }
+                    }
+                };
+
+                var rightMultiScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new()
+                        {
+                            Name = "UnityEngine.InputSystem.Utilities.ArrayHelpers$$Clear<object>",
+                            Signature = sig320,
+                            MethodSignature = "void Clear<object>(T[])",
+                            Address = 0x3460320,
+                            Image = "Unity.InputSystem.dll",
+                            Assembly = "Unity.InputSystem"
+                        },
+                        new()
+                        {
+                            Name = "UnityEngine.InputSystem.Utilities.ArrayHelpers$$Clear<object>",
+                            Signature = sigCount420,
+                            MethodSignature = "void Clear<object>(T[], int)",
+                            Address = 0x3460420,
+                            Image = "Unity.InputSystem.dll",
+                            Assembly = "Unity.InputSystem"
+                        }
+                    }
+                };
+
+                var leftMultiDir = Path.Combine(tempDir, "left_multi");
+                var rightMultiDir = Path.Combine(tempDir, "right_multi");
+                var outMulti = Path.Combine(tempDir, "diff_multi.json");
+                CreateFixtures(leftMultiDir, model, leftMultiScript);
+                CreateFixtures(rightMultiDir, model, rightMultiScript);
+
+                var exitMulti = DumpDiffer.Execute(leftMultiDir, rightMultiDir, outMulti);
+                var diffMulti = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outMulti))!;
+                Assert.Equal(1, exitMulti);
+                Assert.True(diffMulti.HasDifferences);
+                Assert.False(diffMulti.hasAmbiguousMethodAddresses);
+                Assert.Equal(2, diffMulti.methods.addressChanged!.Count);
+                Assert.Contains(diffMulti.methods.addressChanged, c => c.left == "0x3460310" && c.right == "0x3460320" && c.method == sig310);
+                Assert.Contains(diffMulti.methods.addressChanged, c => c.left == "0x3460410" && c.right == "0x3460420" && c.method == sigCount410);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void ReviewerRound12_P2_SameRVAAcrossIndeterminateImagesWithMethodInfoRva_PreservesExternalCandidatesAndSignalsAmbiguity()
+        {
+            // Review 12, Point 2: Variation of the two-image single-assembly fixture where each signature carries
+            // `MethodInfo_<RVA>* method` (with or without `const`).
+            // The external candidate search must normalize `MethodInfo_<RVA>* method` so that legacy records at
+            // different RVAs (0x3000 and 0x2000) remain recognized as compatible external candidates in both orders.
+            var tempDir = Path.Combine(Path.GetTempPath(), "reviewer12-indeterminate-methodinfo-rva-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A1.dll",
+                            assembly = "A",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new() }
+                            }
+                        },
+                        new()
+                        {
+                            image = "A2.dll",
+                            assembly = "A",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new() }
+                            }
+                        }
+                    }
+                };
+
+                var sigA1_1000 = "void Ns_Player_A1__Run (Ns_Player_o* __this, const MethodInfo_1000* method);";
+                var sigA1_3000 = "void Ns_Player_A1__Run (Ns_Player_o* __this, const MethodInfo_3000* method);";
+                var sigA2_2000 = "void Ns_Player_A2__Run (Ns_Player_o* __this, MethodInfo_2000* method);";
+                var sigA2_1000 = "void Ns_Player_A2__Run (Ns_Player_o* __this, MethodInfo_1000* method);";
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run<object>", Signature = sigA1_1000, MethodSignature = "void Run<object>()", Address = 0x1000, Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run<object>", Signature = sigA2_2000, Address = 0x2000, Image = "A2.dll", Assembly = "A" }
+                    }
+                };
+
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run<object>", Signature = sigA1_3000, Address = 0x3000, Image = "A1.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run<object>", Signature = sigA2_1000, MethodSignature = "void Run<object>()", Address = 0x1000, Assembly = "A" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                // Direction 1: Left -> Right
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.Equal(1, exitCode);
+                Assert.True(diff.HasDifferences);
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+
+                // Direction 2: Right -> Left
+                var outRev = Path.Combine(tempDir, "diff_rev.json");
+                var exitCodeRev = DumpDiffer.Execute(rightDir, leftDir, outRev);
+                var diffRev = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outRev))!;
+                Assert.Equal(1, exitCodeRev);
+                Assert.True(diffRev.HasDifferences);
+                Assert.True(diffRev.hasAmbiguousMethodAddresses);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
     }
 }

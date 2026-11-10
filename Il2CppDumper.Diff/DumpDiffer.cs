@@ -391,12 +391,12 @@ namespace Il2CppDumper.Diff
                         // Overloads within the same qualified type
                         var leftBySig = remLeft
                             .Where(m => !string.IsNullOrEmpty(m.Entry.Signature))
-                            .GroupBy(m => m.Entry.Signature!)
+                            .GroupBy(m => BuildNativeSignatureKey(m.Entry.Signature!))
                             .ToDictionary(g => g.Key, g => g.ToList());
 
                         var rightBySig = remRight
                             .Where(m => !string.IsNullOrEmpty(m.Entry.Signature))
-                            .GroupBy(m => m.Entry.Signature!)
+                            .GroupBy(m => BuildNativeSignatureKey(m.Entry.Signature!))
                             .ToDictionary(g => g.Key, g => g.ToList());
 
                         var commonSigs = leftBySig.Keys.Intersect(rightBySig.Keys)
@@ -426,15 +426,16 @@ namespace Il2CppDumper.Diff
                                     continue;
                                 }
 
+                                var rawSig = lm.Entry.Signature ?? rm.Entry.Signature ?? sig;
                                 if (IsSignatureColliding(lm, qKey.MethodName) || IsSignatureColliding(rm, qKey.MethodName))
                                 {
                                     result.hasAmbiguousMethodAddresses = true;
-                                    var desc = !string.IsNullOrEmpty(sig) ? sig : $"{lm.Entry.TypeName}.{qKey.MethodName}";
+                                    var desc = !string.IsNullOrEmpty(rawSig) ? rawSig : $"{lm.Entry.TypeName}.{qKey.MethodName}";
                                     ambiguityNotes.Add(desc);
                                 }
                                 else if (lm.Entry.Address != rm.Entry.Address)
                                 {
-                                    var displayMethod = !string.IsNullOrEmpty(sig) ? sig : qKey.MethodName;
+                                    var displayMethod = !string.IsNullOrEmpty(rawSig) ? rawSig : qKey.MethodName;
                                     var displayImage = rm.Identity.Image ?? lm.Identity.Image ?? rm.Entry.Image ?? lm.Entry.Image;
                                     var displayAssembly = rm.Identity.Assembly ?? lm.Identity.Assembly ?? rm.Entry.Assembly ?? lm.Entry.Assembly;
                                     var displayMethodSig = rm.Entry.MethodSignature ?? lm.Entry.MethodSignature;
@@ -464,7 +465,8 @@ namespace Il2CppDumper.Diff
                                 else
                                 {
                                     result.hasAmbiguousMethodAddresses = true;
-                                    var desc = !string.IsNullOrEmpty(sig) ? sig : $"{leftSig[0].Entry.TypeName}.{qKey.MethodName}";
+                                    var rawSig = leftSig[0].Entry.Signature ?? rightSig[0].Entry.Signature ?? sig;
+                                    var desc = !string.IsNullOrEmpty(rawSig) ? rawSig : $"{leftSig[0].Entry.TypeName}.{qKey.MethodName}";
                                     ambiguityNotes.Add(desc);
                                 }
                             }
@@ -697,12 +699,12 @@ namespace Il2CppDumper.Diff
 
                     var leftBySig = remLeftEntries
                         .Where(m => !string.IsNullOrEmpty(m.Entry.Signature))
-                        .GroupBy(m => m.Entry.Signature!)
+                        .GroupBy(m => BuildNativeSignatureKey(m.Entry.Signature!))
                         .ToDictionary(g => g.Key, g => g.ToList());
 
                     var rightBySig = remRightEntries
                         .Where(m => !string.IsNullOrEmpty(m.Entry.Signature))
-                        .GroupBy(m => m.Entry.Signature!)
+                        .GroupBy(m => BuildNativeSignatureKey(m.Entry.Signature!))
                         .ToDictionary(g => g.Key, g => g.ToList());
 
                     var commonSigs = leftBySig.Keys.Intersect(rightBySig.Keys)
@@ -732,10 +734,11 @@ namespace Il2CppDumper.Diff
                                 continue;
                             }
 
+                            var rawSig = l.Entry.Signature ?? r.Entry.Signature ?? sig;
                             if (IsSignatureColliding(l, remKey.MethodName) || IsSignatureColliding(r, remKey.MethodName))
                             {
                                 result.hasAmbiguousMethodAddresses = true;
-                                ambiguityNotes.Add(sig);
+                                ambiguityNotes.Add(rawSig);
                             }
                             else
                             {
@@ -743,7 +746,7 @@ namespace Il2CppDumper.Diff
                                 if (isIndeterminate)
                                 {
                                     result.hasAmbiguousMethodAddresses = true;
-                                    ambiguityNotes.Add(sig);
+                                    ambiguityNotes.Add(rawSig);
                                 }
                                 else if (AreOwnersCompatible(l, r))
                                 {
@@ -757,7 +760,7 @@ namespace Il2CppDumper.Diff
                                             type = remKey.TypeName,
                                             image = displayImage,
                                             assembly = displayAssembly,
-                                            method = sig,
+                                            method = rawSig,
                                             methodSignature = displayMethodSig,
                                             left = $"0x{l.Entry.Address:X}",
                                             right = $"0x{r.Entry.Address:X}"
@@ -802,7 +805,8 @@ namespace Il2CppDumper.Diff
                             }
 
                             result.hasAmbiguousMethodAddresses = true;
-                            ambiguityNotes.Add(sig);
+                            var rawSig = leftSig[0].Entry.Signature ?? rightSig[0].Entry.Signature ?? sig;
+                            ambiguityNotes.Add(rawSig);
                         }
                     }
 
@@ -1060,7 +1064,7 @@ namespace Il2CppDumper.Diff
             var lSig = lm.Entry.Signature ?? "";
             var rSig = rm.Entry.Signature ?? "";
 
-            if (string.Equals(lSig, rSig, StringComparison.Ordinal))
+            if (string.Equals(BuildNativeSignatureKey(lSig), BuildNativeSignatureKey(rSig), StringComparison.Ordinal))
                 return true;
 
             // Check managed declaration in dump.json
@@ -1089,62 +1093,85 @@ namespace Il2CppDumper.Diff
             return string.Equals(lNorm, rNorm, StringComparison.Ordinal);
         }
 
+        private static string BuildNativeSignatureKey(string sig)
+        {
+            if (string.IsNullOrEmpty(sig)) return "";
+            var rawParams = ExtractNormalizedParameters(sig, out var prefix, out var suffix, out var normalized);
+            if (rawParams == null || !normalized)
+                return sig;
+
+            var formattedParams = rawParams.Select(p => string.IsNullOrEmpty(p.Name) ? p.Type : $"{p.Type} {p.Name}");
+            return $"{prefix}({string.Join(", ", formattedParams)}){suffix}";
+        }
+
         private static string StripParameterNamesFromSignature(string sig)
         {
             if (string.IsNullOrEmpty(sig)) return "";
-            var openParen = sig.IndexOf('(');
-            var closeParen = sig.LastIndexOf(')');
-            if (openParen < 0 || closeParen <= openParen)
+            var rawParams = ExtractNormalizedParameters(sig, out var prefix, out _, out _);
+            if (rawParams == null)
                 return sig;
 
-            var prefix = sig.Substring(0, openParen);
-            var paramStr = sig.Substring(openParen + 1, closeParen - openParen - 1).Trim();
-            if (string.IsNullOrEmpty(paramStr))
-                return $"{prefix}()";
+            return $"{prefix}({string.Join(", ", rawParams.Select(p => p.Type))})";
+        }
 
-            // Split parameters by commas outside of angle brackets <...> and square brackets [...]
-            var paramList = new List<string>();
-            int depth = 0;
-            int bracketDepth = 0;
-            int lastStart = 0;
-            for (int i = 0; i < paramStr.Length; i++)
+        private static List<CParamInfo>? ExtractNormalizedParameters(string sig, out string prefix, out string suffix, out bool normalized)
+        {
+            prefix = "";
+            suffix = "";
+            normalized = false;
+
+            var rawParams = ExtractRawParameters(sig);
+            if (rawParams == null)
+                return null;
+
+            var openParen = sig.IndexOf('(');
+            var closeParen = sig.LastIndexOf(')');
+            prefix = sig.Substring(0, openParen);
+            suffix = sig.Substring(closeParen + 1);
+
+            if (rawParams.Count > 0 &&
+                string.Equals(rawParams[^1].Name, "method", StringComparison.Ordinal) &&
+                TryNormalizeAuxiliaryMethodInfoType(rawParams[^1].Type, out var normalizedType))
             {
-                char c = paramStr[i];
-                if (c == '<') depth++;
-                else if (c == '>') { if (depth > 0) depth--; }
-                else if (c == '[') bracketDepth++;
-                else if (c == ']') { if (bracketDepth > 0) bracketDepth--; }
-                else if (c == ',' && depth == 0 && bracketDepth == 0)
-                {
-                    paramList.Add(paramStr.Substring(lastStart, i - lastStart).Trim());
-                    lastStart = i + 1;
-                }
-            }
-            if (lastStart < paramStr.Length)
-            {
-                paramList.Add(paramStr.Substring(lastStart).Trim());
+                rawParams[^1].Type = normalizedType;
+                normalized = true;
             }
 
-            var normalizedParams = new List<string>();
-            foreach (var p in paramList)
-            {
-                var trimmed = p.Trim();
-                if (string.IsNullOrEmpty(trimmed)) continue;
+            return rawParams;
+        }
 
-                var parts = trimmed.Split(new[] { ' ', '	' }, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length > 1)
-                {
-                    var last = parts[^1];
-                    if (!last.EndsWith('*') && !last.EndsWith('&'))
-                    {
-                        normalizedParams.Add(string.Join(" ", parts.Take(parts.Length - 1)));
-                        continue;
-                    }
-                }
-                normalizedParams.Add(trimmed);
+        private static bool TryNormalizeAuxiliaryMethodInfoType(string type, out string normalizedType)
+        {
+            normalizedType = type;
+            if (string.IsNullOrEmpty(type))
+                return false;
+
+            var trimmed = type.Trim();
+            bool hasConst = false;
+            if (trimmed.StartsWith("const ", StringComparison.Ordinal))
+            {
+                hasConst = true;
+                trimmed = trimmed.Substring(6).TrimStart();
             }
 
-            return $"{prefix}({string.Join(", ", normalizedParams)})";
+            const string methodInfoPrefix = "MethodInfo_";
+            if (!trimmed.StartsWith(methodInfoPrefix, StringComparison.Ordinal) || !trimmed.EndsWith("*", StringComparison.Ordinal))
+                return false;
+
+            var hexPart = trimmed.Substring(methodInfoPrefix.Length, trimmed.Length - methodInfoPrefix.Length - 1).Trim();
+            if (hexPart.Length == 0)
+                return false;
+
+            for (int i = 0; i < hexPart.Length; i++)
+            {
+                char c = hexPart[i];
+                bool isHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+                if (!isHex)
+                    return false;
+            }
+
+            normalizedType = hasConst ? "const MethodInfo*" : "MethodInfo*";
+            return true;
         }
 
         private static bool IsUnitPairIndeterminate(MethodDiffItem l, MethodDiffItem r)
