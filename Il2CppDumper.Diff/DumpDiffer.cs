@@ -515,31 +515,6 @@ namespace Il2CppDumper.Diff
                         var leftMs = leftByMethodSig[msig];
                         var rightMs = rightByMethodSig[msig];
 
-                        // If shared identical implementation across all entries: unchanged
-                        var sortedLeft = leftMs.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
-                        var sortedRight = rightMs.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
-
-                        if (sortedLeft.Count == sortedRight.Count &&
-                            sortedLeft.Distinct().Count() <= 1 &&
-                            sortedLeft.SequenceEqual(sortedRight))
-                        {
-                            foreach (var e in leftMs) leftMatched.Add(e);
-                            foreach (var e in rightMs) rightMatched.Add(e);
-                            continue;
-                        }
-
-                        // Fast-path for indeterminate groups: if all entries have indeterminate owners and there are multiple candidates
-                        bool allLeftIndeterminate = leftMs.All(e => e.Identity.IsIndeterminate);
-                        bool allRightIndeterminate = rightMs.All(e => e.Identity.IsIndeterminate);
-                        if (allLeftIndeterminate && allRightIndeterminate && (leftMs.Count > 1 || rightMs.Count > 1))
-                        {
-                            result.hasAmbiguousMethodAddresses = true;
-                            ambiguityNotes.Add(msig);
-                            foreach (var e in leftMs) leftMatched.Add(e);
-                            foreach (var e in rightMs) rightMatched.Add(e);
-                            continue;
-                        }
-
                         // Evaluate owner compatibility without materializing Cartesian edge lists
                         var leftMatchCount = new Dictionary<MethodDiffItem, int>(leftMs.Count);
                         var leftSingleMatch = new Dictionary<MethodDiffItem, MethodDiffItem?>(leftMs.Count);
@@ -632,49 +607,33 @@ namespace Il2CppDumper.Diff
                             }
                         }
 
-                        // Check remaining unpaired entries for true ambiguity
+                        // Check remaining unpaired entries for shared RVA or ambiguity
                         var unpLeft = leftMs.Where(e => !pairedLeft.Contains(e)).ToList();
                         var unpRight = rightMs.Where(e => !pairedRight.Contains(e)).ToList();
 
-                        bool hasUnresolvedCandidate = false;
-                        foreach (var l in unpLeft)
-                        {
-                            if (l.Identity.IsIndeterminate || leftMatchCount[l] > 0)
-                            {
-                                hasUnresolvedCandidate = true;
-                                break;
-                            }
-                        }
-                        if (!hasUnresolvedCandidate)
-                        {
-                            foreach (var r in unpRight)
-                            {
-                                if (r.Identity.IsIndeterminate || rightMatchCount[r] > 0)
-                                {
-                                    hasUnresolvedCandidate = true;
-                                    break;
-                                }
-                            }
-                        }
+                        var compLeft = unpLeft.Where(l => leftMatchCount[l] > 0).ToList();
+                        var compRight = unpRight.Where(r => rightMatchCount[r] > 0).ToList();
 
-                        if (hasUnresolvedCandidate)
+                        if (compLeft.Count > 0)
                         {
-                            result.hasAmbiguousMethodAddresses = true;
-                            ambiguityNotes.Add(msig);
-                            // Mark only entries that actually participated in this ambiguity
-                            foreach (var l in unpLeft)
+                            // Shared identical implementation across compatible entries: unchanged
+                            if (compLeft.Count == compRight.Count &&
+                                compLeft.Select(e => e.Entry.Address).Distinct().Count() == 1 &&
+                                compRight.Select(e => e.Entry.Address).Distinct().Count() == 1 &&
+                                compLeft[0].Entry.Address == compRight[0].Entry.Address)
                             {
-                                if (l.Identity.IsIndeterminate || leftMatchCount[l] > 0)
-                                    leftMatched.Add(l);
+                                foreach (var e in compLeft) leftMatched.Add(e);
+                                foreach (var e in compRight) rightMatched.Add(e);
                             }
-                            foreach (var r in unpRight)
+                            else
                             {
-                                if (r.Identity.IsIndeterminate || rightMatchCount[r] > 0)
-                                    rightMatched.Add(r);
+                                result.hasAmbiguousMethodAddresses = true;
+                                ambiguityNotes.Add(msig);
+                                foreach (var l in compLeft) leftMatched.Add(l);
+                                foreach (var r in compRight) rightMatched.Add(r);
                             }
                         }
                     }
-
 
                     // Step 2: Process exact non-empty signature matches for entries without managed match
                     var remLeftEntries = leftEntries.Where(e => !leftMatched.Contains(e)).ToList();
@@ -765,20 +724,6 @@ namespace Il2CppDumper.Diff
                                 continue;
                             }
 
-                            bool anyIndeterminate = leftSig.Any(e => e.Identity.IsIndeterminate) || rightSig.Any(e => e.Identity.IsIndeterminate);
-
-                            bool allOwnersKnown = true;
-                            foreach (var l in leftSig)
-                            {
-                                var lOwner = l.Identity.Image ?? l.Entry.Image ?? l.Identity.Assembly ?? l.Entry.Assembly;
-                                if (string.IsNullOrEmpty(lOwner)) allOwnersKnown = false;
-                            }
-                            foreach (var r in rightSig)
-                            {
-                                var rOwner = r.Identity.Image ?? r.Entry.Image ?? r.Identity.Assembly ?? r.Entry.Assembly;
-                                if (string.IsNullOrEmpty(rOwner)) allOwnersKnown = false;
-                            }
-
                             bool hasCompatiblePair = false;
                             foreach (var l in leftSig)
                             {
@@ -793,9 +738,9 @@ namespace Il2CppDumper.Diff
                                 if (hasCompatiblePair) break;
                             }
 
-                            if (!anyIndeterminate && allOwnersKnown && !hasCompatiblePair)
+                            if (!hasCompatiblePair)
                             {
-                                // All owners are known and disjoint: zero compatible pairings exist.
+                                // Disjoint owners: zero compatible pairings exist.
                                 // They remain unmatched without triggering false ambiguity.
                                 continue;
                             }
