@@ -2870,5 +2870,175 @@ namespace Il2CppDumper.Tests
                 }
             }
         }
+
+        [Fact]
+        public void ReviewerRound9_P2_DisjointManagedGroupPreservesLegacyCandidates_BothOrders_ReportsAddressChanges()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "round9-repro-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A.dll",
+                            assembly = "A",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "Run",
+                                    returnType = "void",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "payload", type = "Ns.Payload" }
+                                    }
+                                }
+                            }
+                        },
+                        new()
+                        {
+                            image = "B.dll",
+                            assembly = "B",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new()
+                                {
+                                    name = "Run",
+                                    returnType = "void",
+                                    parameters = new List<JsonDumpParameter>
+                                    {
+                                        new() { name = "payload", type = "Ns.Payload" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                // Native signatures differ by image: Ns_Payload_o* for A, Ns_Payload_1_o* for B
+                var nativeSigA = "void Ns_Player__Run (Ns_Player_o* __this, Ns_Payload_o* payload, const MethodInfo* method);";
+                var nativeSigB = "void Ns_Player__Run (Ns_Player_o* __this, Ns_Payload_1_o* payload, const MethodInfo* method);";
+
+                // Left: A qualified @ 0x1000, B legacy @ 0x2000
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA, MethodSignature = "void Run(Ns.Payload)", Address = 0x1000, Image = "A.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigB, Address = 0x2000 }
+                    }
+                };
+
+                // Right: A legacy @ 0x3000, B qualified @ 0x4000
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA, Address = 0x3000 },
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigB, MethodSignature = "void Run(Ns.Payload)", Address = 0x4000, Image = "B.dll", Assembly = "B" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                // Order 1: Left has A qualified + B legacy; Right has A legacy + B qualified
+                // Must preserve candidates for the legacy phase, detect differences, and never exit with false 0
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.Equal(1, exitCode);
+                Assert.True(diff.HasDifferences);
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.NotNull(diff.methods.note);
+                Assert.Contains("Ns_Player__Run", diff.methods.note);
+
+                // Order 2: Reverse (Right on Left, Left on Right)
+                var outReverse = Path.Combine(tempDir, "diff_rev.json");
+                var exitCodeRev = DumpDiffer.Execute(rightDir, leftDir, outReverse);
+                var diffRev = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outReverse))!;
+                Assert.Equal(1, exitCodeRev);
+                Assert.True(diffRev.HasDifferences);
+                Assert.True(diffRev.hasAmbiguousMethodAddresses);
+                Assert.NotNull(diffRev.methods.note);
+                Assert.Contains("Ns_Player__Run", diffRev.methods.note);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+                [Fact]
+        public void ReviewerRound9_P2_IndeterminateGroupWith4000Entries_DoesNotMaterializeCartesianProduct_DetectsAmbiguityFast()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "round9-scale-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = CreateTwoImagesModel();
+                const int count = 4000;
+                var leftMethods = new List<ScriptMethod>(count);
+                var rightMethods = new List<ScriptMethod>(count);
+
+                for (int i = 0; i < count; i++)
+                {
+                    leftMethods.Add(new ScriptMethod
+                    {
+                        Name = "Ns.Player$$Run",
+                        MethodSignature = "void Run()",
+                        Signature = "void Run()",
+                        Address = (ulong)(0x1000 + i * 4)
+                    });
+
+                    rightMethods.Add(new ScriptMethod
+                    {
+                        Name = "Ns.Player$$Run",
+                        MethodSignature = "void Run()",
+                        Signature = "void Run()",
+                        Address = (ulong)(0x10000 + i * 4)
+                    });
+                }
+
+                var leftScript = new ScriptJson { ScriptMethod = leftMethods };
+                var rightScript = new ScriptJson { ScriptMethod = rightMethods };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                sw.Stop();
+
+                Assert.Equal(1, exitCode);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.True(diff.hasAmbiguousMethodAddresses);
+                Assert.NotNull(diff.methods.note);
+                Assert.Empty(diff.methods.addressChanged!);
+                Assert.True(sw.ElapsedMilliseconds < 5000, $"Execution took {sw.ElapsedMilliseconds} ms, expected under 5000ms");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
     }
 }

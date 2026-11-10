@@ -515,9 +515,6 @@ namespace Il2CppDumper.Diff
                         var leftMs = leftByMethodSig[msig];
                         var rightMs = rightByMethodSig[msig];
 
-                        foreach (var e in leftMs) leftMatched.Add(e);
-                        foreach (var e in rightMs) rightMatched.Add(e);
-
                         // If shared identical implementation across all entries: unchanged
                         var sortedLeft = leftMs.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
                         var sortedRight = rightMs.Select(e => e.Entry.Address).OrderBy(a => a).ToList();
@@ -526,34 +523,74 @@ namespace Il2CppDumper.Diff
                             sortedLeft.Distinct().Count() <= 1 &&
                             sortedLeft.SequenceEqual(sortedRight))
                         {
+                            foreach (var e in leftMs) leftMatched.Add(e);
+                            foreach (var e in rightMs) rightMatched.Add(e);
                             continue;
                         }
 
-                        // Evaluate owner compatibility between left and right candidates
-                        var leftToRight = new Dictionary<MethodDiffItem, List<MethodDiffItem>>();
+                        // Fast-path for indeterminate groups: if all entries have indeterminate owners and there are multiple candidates
+                        bool allLeftIndeterminate = leftMs.All(e => e.Identity.IsIndeterminate);
+                        bool allRightIndeterminate = rightMs.All(e => e.Identity.IsIndeterminate);
+                        if (allLeftIndeterminate && allRightIndeterminate && (leftMs.Count > 1 || rightMs.Count > 1))
+                        {
+                            result.hasAmbiguousMethodAddresses = true;
+                            ambiguityNotes.Add(msig);
+                            foreach (var e in leftMs) leftMatched.Add(e);
+                            foreach (var e in rightMs) rightMatched.Add(e);
+                            continue;
+                        }
+
+                        // Evaluate owner compatibility without materializing Cartesian edge lists
+                        var leftMatchCount = new Dictionary<MethodDiffItem, int>(leftMs.Count);
+                        var leftSingleMatch = new Dictionary<MethodDiffItem, MethodDiffItem?>(leftMs.Count);
                         foreach (var l in leftMs)
                         {
-                            leftToRight[l] = rightMs.Where(r => AreOwnersCompatible(l, r)).ToList();
+                            int count = 0;
+                            MethodDiffItem? single = null;
+                            foreach (var r in rightMs)
+                            {
+                                if (AreOwnersCompatible(l, r))
+                                {
+                                    count++;
+                                    if (count == 1)
+                                    {
+                                        single = r;
+                                    }
+                                    else
+                                    {
+                                        single = null;
+                                        break; // Distinguish 0, 1, or multiple without scanning entire set
+                                    }
+                                }
+                            }
+                            leftMatchCount[l] = count;
+                            leftSingleMatch[l] = single;
                         }
 
-                        var rightToLeft = new Dictionary<MethodDiffItem, List<MethodDiffItem>>();
+                        var rightMatchCount = new Dictionary<MethodDiffItem, int>(rightMs.Count);
+                        var rightSingleMatch = new Dictionary<MethodDiffItem, MethodDiffItem?>(rightMs.Count);
                         foreach (var r in rightMs)
                         {
-                            rightToLeft[r] = leftMs.Where(l => AreOwnersCompatible(l, r)).ToList();
-                        }
-
-                        bool hasAnyCompatible = leftToRight.Values.Any(v => v.Count > 0);
-                        if (!hasAnyCompatible)
-                        {
-                            bool allOwnersKnown = leftMs.All(e => !string.IsNullOrEmpty(e.Identity.Image ?? e.Entry.Image ?? e.Identity.Assembly ?? e.Entry.Assembly)) &&
-                                                  rightMs.All(e => !string.IsNullOrEmpty(e.Identity.Image ?? e.Entry.Image ?? e.Identity.Assembly ?? e.Entry.Assembly)) &&
-                                                  !leftMs.Any(e => e.Identity.IsIndeterminate) &&
-                                                  !rightMs.Any(e => e.Identity.IsIndeterminate);
-                            if (allOwnersKnown)
+                            int count = 0;
+                            MethodDiffItem? single = null;
+                            foreach (var l in leftMs)
                             {
-                                // All owners are known and mutually disjoint: zero compatible pairings exist
-                                continue;
+                                if (AreOwnersCompatible(l, r))
+                                {
+                                    count++;
+                                    if (count == 1)
+                                    {
+                                        single = l;
+                                    }
+                                    else
+                                    {
+                                        single = null;
+                                        break; // Stop at multiple
+                                    }
+                                }
                             }
+                            rightMatchCount[r] = count;
+                            rightSingleMatch[r] = single;
                         }
 
                         // Greedily resolve uniquely compatible pairs (1-to-1)
@@ -562,13 +599,15 @@ namespace Il2CppDumper.Diff
 
                         foreach (var l in leftMs)
                         {
-                            if (leftToRight[l].Count == 1)
+                            if (leftMatchCount[l] == 1)
                             {
-                                var r = leftToRight[l][0];
-                                if (rightToLeft[r].Count == 1 && !IsUnitPairIndeterminate(l, r))
+                                var r = leftSingleMatch[l]!;
+                                if (rightMatchCount[r] == 1 && rightSingleMatch[r] == l && !IsUnitPairIndeterminate(l, r))
                                 {
                                     pairedLeft.Add(l);
                                     pairedRight.Add(r);
+                                    leftMatched.Add(l);
+                                    rightMatched.Add(r);
 
                                     if (l.Entry.Address != r.Entry.Address)
                                     {
@@ -593,14 +632,14 @@ namespace Il2CppDumper.Diff
                             }
                         }
 
-                        // Check remaining un-paired entries: signal ambiguity only when an unresolved plausible candidate remains
+                        // Check remaining unpaired entries for true ambiguity
                         var unpLeft = leftMs.Where(e => !pairedLeft.Contains(e)).ToList();
                         var unpRight = rightMs.Where(e => !pairedRight.Contains(e)).ToList();
 
                         bool hasUnresolvedCandidate = false;
                         foreach (var l in unpLeft)
                         {
-                            if (l.Identity.IsIndeterminate || leftToRight[l].Count > 0)
+                            if (l.Identity.IsIndeterminate || leftMatchCount[l] > 0)
                             {
                                 hasUnresolvedCandidate = true;
                                 break;
@@ -610,7 +649,7 @@ namespace Il2CppDumper.Diff
                         {
                             foreach (var r in unpRight)
                             {
-                                if (r.Identity.IsIndeterminate || rightToLeft[r].Count > 0)
+                                if (r.Identity.IsIndeterminate || rightMatchCount[r] > 0)
                                 {
                                     hasUnresolvedCandidate = true;
                                     break;
@@ -622,8 +661,20 @@ namespace Il2CppDumper.Diff
                         {
                             result.hasAmbiguousMethodAddresses = true;
                             ambiguityNotes.Add(msig);
+                            // Mark only entries that actually participated in this ambiguity
+                            foreach (var l in unpLeft)
+                            {
+                                if (l.Identity.IsIndeterminate || leftMatchCount[l] > 0)
+                                    leftMatched.Add(l);
+                            }
+                            foreach (var r in unpRight)
+                            {
+                                if (r.Identity.IsIndeterminate || rightMatchCount[r] > 0)
+                                    rightMatched.Add(r);
+                            }
                         }
                     }
+
 
                     // Step 2: Process exact non-empty signature matches for entries without managed match
                     var remLeftEntries = leftEntries.Where(e => !leftMatched.Contains(e)).ToList();
