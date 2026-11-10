@@ -1,7 +1,6 @@
-using System.IO;
-
-using Mono.Cecil;
 using System.Collections.Generic;
+using System.IO;
+using Mono.Cecil;
 
 namespace Il2CppDumper
 {
@@ -28,7 +27,7 @@ namespace Il2CppDumper
             return written;
         }
 
-        private static byte[] WriteAssembly(AssemblyDefinition assembly)
+        internal static byte[] WriteAssembly(AssemblyDefinition assembly)
         {
             try
             {
@@ -36,8 +35,7 @@ namespace Il2CppDumper
             }
             catch (System.Exception ex) when (IsCustomAttributeWriteException(ex))
             {
-                StripRestoredCustomAttributes(assembly);
-                return WriteAssemblyToBytes(assembly);
+                return WriteAssemblyIsolatingFailingCustomAttributes(assembly, ex.Message);
             }
         }
 
@@ -55,50 +53,96 @@ namespace Il2CppDumper
                 || ex.StackTrace?.Contains("AddCustomAttributes") == true;
         }
 
-        private static void StripRestoredCustomAttributes(AssemblyDefinition assembly)
+        private static byte[] WriteAssemblyIsolatingFailingCustomAttributes(AssemblyDefinition assembly, string initialReason)
+        {
+            SanitizeCustomAttributes(assembly);
+            try
+            {
+                return WriteAssemblyToBytes(assembly);
+            }
+            catch (System.Exception ex) when (IsCustomAttributeWriteException(ex))
+            {
+                var assemblyName = GetAssemblyName(assembly.MainModule);
+                var entries = new List<(string Owner, Mono.Collections.Generic.Collection<CustomAttribute> Collection, CustomAttribute Attribute)>();
+                foreach (var (owner, collection) in EnumerateCustomAttributeCollections(assembly))
+                {
+                    for (var i = 0; i < collection.Count; i++)
+                    {
+                        var attr = collection[i];
+                        if (!IsIl2CppDumperAttribute(attr))
+                        {
+                            entries.Add((owner, collection, attr));
+                        }
+                    }
+                    StripCustomAttributes(collection);
+                }
+
+                foreach (var (owner, collection, attribute) in entries)
+                {
+                    collection.Add(attribute);
+                    try
+                    {
+                        WriteAssemblyToBytes(assembly);
+                    }
+                    catch (System.Exception attrEx) when (IsCustomAttributeWriteException(attrEx))
+                    {
+                        collection.RemoveAt(collection.Count - 1);
+                        ReportOmittedCustomAttribute(assemblyName, owner, GetCustomAttributeTypeName(attribute), attrEx.Message ?? initialReason);
+                    }
+                }
+
+                return WriteAssemblyToBytes(assembly);
+            }
+        }
+
+        private static IEnumerable<(string Owner, Mono.Collections.Generic.Collection<CustomAttribute> Attributes)> EnumerateCustomAttributeCollections(AssemblyDefinition assembly)
         {
             var module = assembly.MainModule;
-            StripCustomAttributes(assembly.CustomAttributes);
-            StripCustomAttributes(module.CustomAttributes);
+            var assemblyName = GetAssemblyName(module);
+            yield return (assemblyName, assembly.CustomAttributes);
+            yield return (module.Name ?? assemblyName, module.CustomAttributes);
             foreach (var type in GetAllTypes(module.Types))
             {
-                StripCustomAttributes(type.CustomAttributes);
+                yield return (type.FullName, type.CustomAttributes);
                 foreach (var genericParameter in type.GenericParameters)
                 {
-                    StripCustomAttributes(genericParameter.CustomAttributes);
+                    var gpOwner = $"{type.FullName}.<{genericParameter.Name}>";
+                    yield return (gpOwner, genericParameter.CustomAttributes);
                     foreach (var constraint in genericParameter.Constraints)
                     {
-                        StripCustomAttributes(constraint.CustomAttributes);
+                        yield return (gpOwner, constraint.CustomAttributes);
                     }
                 }
                 foreach (var field in type.Fields)
                 {
-                    StripCustomAttributes(field.CustomAttributes);
+                    yield return ($"{type.FullName}.{field.Name}", field.CustomAttributes);
                 }
                 foreach (var method in type.Methods)
                 {
-                    StripCustomAttributes(method.CustomAttributes);
-                    StripCustomAttributes(method.MethodReturnType.CustomAttributes);
+                    var methodOwner = $"{type.FullName}.{method.Name}";
+                    yield return (methodOwner, method.CustomAttributes);
+                    yield return ($"{methodOwner}:return", method.MethodReturnType.CustomAttributes);
                     foreach (var genericParameter in method.GenericParameters)
                     {
-                        StripCustomAttributes(genericParameter.CustomAttributes);
+                        var gpOwner = $"{methodOwner}.<{genericParameter.Name}>";
+                        yield return (gpOwner, genericParameter.CustomAttributes);
                         foreach (var constraint in genericParameter.Constraints)
                         {
-                            StripCustomAttributes(constraint.CustomAttributes);
+                            yield return (gpOwner, constraint.CustomAttributes);
                         }
                     }
                     foreach (var parameter in method.Parameters)
                     {
-                        StripCustomAttributes(parameter.CustomAttributes);
+                        yield return ($"{methodOwner}({parameter.Name})", parameter.CustomAttributes);
                     }
                 }
                 foreach (var property in type.Properties)
                 {
-                    StripCustomAttributes(property.CustomAttributes);
+                    yield return ($"{type.FullName}.{property.Name}", property.CustomAttributes);
                 }
                 foreach (var @event in type.Events)
                 {
-                    StripCustomAttributes(@event.CustomAttributes);
+                    yield return ($"{type.FullName}.{@event.Name}", @event.CustomAttributes);
                 }
             }
         }
@@ -121,13 +165,13 @@ namespace Il2CppDumper
                 || declaringType?.Scope?.Name == "Il2CppDummyDll.dll";
         }
 
-        private static void SanitizeMemberReferences(AssemblyDefinition assembly)
+        internal static void SanitizeMemberReferences(AssemblyDefinition assembly)
         {
             var module = assembly.MainModule;
             foreach (var type in GetAllTypes(module.Types))
             {
                 type.BaseType = ImportTypeReference(module, type.BaseType);
-                SanitizeGenericParameters(module, type.GenericParameters);
+                SanitizeGenericParameterConstraints(module, type.GenericParameters);
                 foreach (var @interface in type.Interfaces)
                 {
                     @interface.InterfaceType = ImportTypeReference(module, @interface.InterfaceType);
@@ -139,7 +183,7 @@ namespace Il2CppDumper
                 foreach (var method in type.Methods)
                 {
                     method.ReturnType = ImportTypeReference(module, method.ReturnType);
-                    SanitizeGenericParameters(module, method.GenericParameters);
+                    SanitizeGenericParameterConstraints(module, method.GenericParameters);
                     for (var i = 0; i < method.Overrides.Count; i++)
                     {
                         method.Overrides[i] = ImportMethodReference(module, method.Overrides[i]);
@@ -189,15 +233,27 @@ namespace Il2CppDumper
             }
         }
 
-        private static void SanitizeGenericParameters(ModuleDefinition module, Mono.Collections.Generic.Collection<GenericParameter> genericParameters)
+        private static void SanitizeGenericParameterConstraints(ModuleDefinition module, Mono.Collections.Generic.Collection<GenericParameter> genericParameters)
         {
             foreach (var genericParameter in genericParameters)
             {
-                ImportCustomAttributes(module, genericParameter.CustomAttributes);
                 foreach (var constraint in genericParameter.Constraints)
                 {
                     constraint.ConstraintType = ImportTypeReference(module, constraint.ConstraintType);
-                    ImportCustomAttributes(module, constraint.CustomAttributes);
+                }
+            }
+        }
+
+        private static void SanitizeGenericParameterCustomAttributes(ModuleDefinition module, string parentOwner, Mono.Collections.Generic.Collection<GenericParameter> genericParameters)
+        {
+            foreach (var genericParameter in genericParameters)
+            {
+                var gpOwner = $"{parentOwner}.<{genericParameter.Name}>";
+                ImportCustomAttributes(module, genericParameter.CustomAttributes, gpOwner);
+                foreach (var constraint in genericParameter.Constraints)
+                {
+                    constraint.ConstraintType = ImportTypeReference(module, constraint.ConstraintType);
+                    ImportCustomAttributes(module, constraint.CustomAttributes, gpOwner);
                 }
             }
         }
@@ -211,54 +267,63 @@ namespace Il2CppDumper
             }
         }
 
-        private static void SanitizeCustomAttributes(AssemblyDefinition assembly)
+        internal static void SanitizeCustomAttributes(AssemblyDefinition assembly)
         {
             var module = assembly.MainModule;
-            ImportCustomAttributes(module, assembly.CustomAttributes);
-            ImportCustomAttributes(module, module.CustomAttributes);
+            var assemblyName = GetAssemblyName(module);
+            ImportCustomAttributes(module, assembly.CustomAttributes, assemblyName);
+            ImportCustomAttributes(module, module.CustomAttributes, module.Name ?? assemblyName);
             foreach (var type in GetAllTypes(module.Types))
             {
-                ImportCustomAttributes(module, type.CustomAttributes);
-                SanitizeGenericParameters(module, type.GenericParameters);
+                ImportCustomAttributes(module, type.CustomAttributes, type.FullName);
+                SanitizeGenericParameterCustomAttributes(module, type.FullName, type.GenericParameters);
                 foreach (var field in type.Fields)
                 {
-                    ImportCustomAttributes(module, field.CustomAttributes);
+                    ImportCustomAttributes(module, field.CustomAttributes, $"{type.FullName}.{field.Name}");
                 }
                 foreach (var method in type.Methods)
                 {
-                    ImportCustomAttributes(module, method.CustomAttributes);
-                    ImportCustomAttributes(module, method.MethodReturnType.CustomAttributes);
-                    SanitizeGenericParameters(module, method.GenericParameters);
+                    var methodOwner = $"{type.FullName}.{method.Name}";
+                    ImportCustomAttributes(module, method.CustomAttributes, methodOwner);
+                    ImportCustomAttributes(module, method.MethodReturnType.CustomAttributes, $"{methodOwner}:return");
+                    SanitizeGenericParameterCustomAttributes(module, methodOwner, method.GenericParameters);
                     foreach (var parameter in method.Parameters)
                     {
-                        ImportCustomAttributes(module, parameter.CustomAttributes);
+                        ImportCustomAttributes(module, parameter.CustomAttributes, $"{methodOwner}({parameter.Name})");
                     }
                 }
                 foreach (var property in type.Properties)
                 {
-                    ImportCustomAttributes(module, property.CustomAttributes);
+                    ImportCustomAttributes(module, property.CustomAttributes, $"{type.FullName}.{property.Name}");
                 }
                 foreach (var @event in type.Events)
                 {
-                    ImportCustomAttributes(module, @event.CustomAttributes);
+                    ImportCustomAttributes(module, @event.CustomAttributes, $"{type.FullName}.{@event.Name}");
                 }
             }
         }
 
-        private static void ImportCustomAttributes(ModuleDefinition module, Mono.Collections.Generic.Collection<CustomAttribute> customAttributes)
+        private static void ImportCustomAttributes(ModuleDefinition module, Mono.Collections.Generic.Collection<CustomAttribute> customAttributes, string owner)
         {
             if (module == null)
             {
                 return;
             }
+            var assemblyName = GetAssemblyName(module);
             for (var attributeIndex = customAttributes.Count - 1; attributeIndex >= 0; attributeIndex--)
             {
                 var customAttribute = customAttributes[attributeIndex];
                 try
                 {
-                    if (customAttribute.Constructor != null)
+                    if (customAttribute.Constructor == null)
                     {
-                        customAttribute.Constructor = ImportMethodReference(module, customAttribute.Constructor);
+                        throw new System.InvalidOperationException("Custom attribute constructor cannot be null.");
+                    }
+                    customAttribute.Constructor = ImportMethodReference(module, customAttribute.Constructor);
+                    if (customAttribute.Constructor.Parameters.Count != customAttribute.ConstructorArguments.Count)
+                    {
+                        throw new System.InvalidOperationException(
+                            $"Custom attribute constructor argument count ({customAttribute.ConstructorArguments.Count}) does not match parameter count ({customAttribute.Constructor.Parameters.Count}).");
                     }
                     for (var i = 0; i < customAttribute.ConstructorArguments.Count; i++)
                     {
@@ -275,11 +340,30 @@ namespace Il2CppDumper
                         customAttribute.Properties[i] = new CustomAttributeNamedArgument(property.Name, ImportCustomAttributeArgument(module, property.Argument));
                     }
                 }
-                catch
+                catch (System.Exception ex)
                 {
                     customAttributes.RemoveAt(attributeIndex);
+                    ReportOmittedCustomAttribute(assemblyName, owner, GetCustomAttributeTypeName(customAttribute), ex.Message);
                 }
             }
+        }
+
+        internal static void ReportOmittedCustomAttribute(string assemblyName, string owner, string attributeType, string reason)
+        {
+            CoreLogger.LogWarning($"WARNING: Omitted custom attribute '{attributeType}' on '{owner}' in assembly '{assemblyName}': {reason}");
+        }
+
+        private static string GetAssemblyName(ModuleDefinition module)
+        {
+            return module?.Assembly?.Name?.Name
+                ?? (!string.IsNullOrWhiteSpace(module?.Name) ? module.Name : "UnknownAssembly");
+        }
+
+        private static string GetCustomAttributeTypeName(CustomAttribute customAttribute)
+        {
+            return customAttribute?.AttributeType?.FullName
+                ?? customAttribute?.Constructor?.DeclaringType?.FullName
+                ?? "UnknownAttribute";
         }
 
         private static CustomAttributeArgument ImportCustomAttributeArgument(ModuleDefinition module, CustomAttributeArgument argument)
@@ -309,62 +393,54 @@ namespace Il2CppDumper
 
         private static object NormalizeCustomAttributeValue(TypeReference type, object value)
         {
-            if (TryGetEnumUnderlyingType(type, out var underlyingType))
-            {
-                return ConvertEnumValue(underlyingType, value);
-            }
-            return value;
-        }
-
-        private static bool TryGetEnumUnderlyingType(TypeReference type, out TypeReference underlyingType)
-        {
-            underlyingType = null;
             if (type == null)
             {
-                return false;
+                throw new System.InvalidOperationException("Custom attribute argument type cannot be null.");
             }
-            TypeDefinition typeDefinition;
-            try
+            if (type is ArrayType)
             {
-                typeDefinition = type as TypeDefinition ?? type.Resolve();
-            }
-            catch
-            {
-                return false;
-            }
-            if (typeDefinition == null || !typeDefinition.IsEnum)
-            {
-                return false;
-            }
-            foreach (var field in typeDefinition.Fields)
-            {
-                if (field.Name == "value__")
+                if (value != null && value is not CustomAttributeArgument[])
                 {
-                    underlyingType = field.FieldType;
-                    return underlyingType != null;
+                    throw new System.InvalidOperationException($"Invalid array custom attribute value for type '{type.FullName}'.");
                 }
+                return value;
             }
-            return false;
-        }
-
-        private static object ConvertEnumValue(TypeReference underlyingType, object value)
-        {
-            if (value == null)
+            if (type.FullName == "System.Type")
             {
-                throw new System.InvalidOperationException("Enum custom attribute value cannot be null.");
+                if (value != null && value is not TypeReference)
+                {
+                    throw new System.InvalidOperationException($"Invalid System.Type custom attribute argument value '{value}'.");
+                }
+                return value;
             }
-            return underlyingType.MetadataType switch
+            if (type.MetadataType == MetadataType.Object || type.FullName == "System.Object")
             {
-                MetadataType.SByte => System.Convert.ToSByte(value),
-                MetadataType.Byte => System.Convert.ToByte(value),
-                MetadataType.Int16 => System.Convert.ToInt16(value),
-                MetadataType.UInt16 => System.Convert.ToUInt16(value),
-                MetadataType.Int32 => System.Convert.ToInt32(value),
-                MetadataType.UInt32 => System.Convert.ToUInt32(value),
-                MetadataType.Int64 => System.Convert.ToInt64(value),
-                MetadataType.UInt64 => System.Convert.ToUInt64(value),
-                _ => throw new System.InvalidOperationException($"Unsupported enum underlying type: {underlyingType.FullName}")
-            };
+                if (value is not CustomAttributeArgument)
+                {
+                    throw new System.InvalidOperationException($"Boxed custom attribute argument for '{type.FullName}' must wrap a CustomAttributeArgument.");
+                }
+                return value;
+            }
+            if (DummyAssemblyGenerator.TryGetEnumUnderlyingType(type, out var underlyingType))
+            {
+                if (!DummyAssemblyGenerator.TryNormalizeConstant(type, value, out var normalizedEnum))
+                {
+                    throw new System.InvalidOperationException(
+                        $"Invalid enum custom attribute argument value '{value ?? "null"}' for enum '{type.FullName}' (underlying type '{underlyingType.FullName}').");
+                }
+                return normalizedEnum;
+            }
+            if (DummyAssemblyGenerator.CanWriteConstant(type))
+            {
+                if (!DummyAssemblyGenerator.TryNormalizeConstant(type, value, out var normalizedPrimitive))
+                {
+                    throw new System.InvalidOperationException(
+                        $"Invalid custom attribute argument value '{value ?? "null"}' for type '{type.FullName}'.");
+                }
+                return normalizedPrimitive;
+            }
+            throw new System.InvalidOperationException(
+                $"Unable to resolve valid enum underlying type for custom attribute argument type '{type.FullName}'.");
         }
 
         private static TypeReference ImportTypeReference(ModuleDefinition module, TypeReference typeReference)
@@ -496,6 +572,10 @@ namespace Il2CppDumper
                             field.Attributes &= ~FieldAttributes.HasDefault;
                         }
                     }
+                    else
+                    {
+                        field.Attributes &= ~FieldAttributes.HasDefault;
+                    }
                 }
                 foreach (var method in type.Methods)
                 {
@@ -513,6 +593,10 @@ namespace Il2CppDumper
                                 parameter.HasConstant = false;
                                 parameter.Attributes &= ~ParameterAttributes.HasDefault;
                             }
+                        }
+                        else
+                        {
+                            parameter.Attributes &= ~ParameterAttributes.HasDefault;
                         }
                     }
                 }
