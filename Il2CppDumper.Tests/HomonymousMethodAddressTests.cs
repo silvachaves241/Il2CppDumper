@@ -3213,5 +3213,159 @@ namespace Il2CppDumper.Tests
             }
         }
 
+        [Fact]
+        public void ReviewerRound11_P2_SameRVAAcrossIndeterminateImagesInSameAssembly_DoesNotSwallowWrongPair_SignalsDifferenceOrAmbiguity()
+        {
+            // Reviewer Round 11 Defect:
+            // Ns.Player.Run in A1.dll and A2.dll of assembly A.
+            // Left:
+            // A1: 0x1000, assembly A, MethodSignature, no image
+            // A2: 0x2000, image A2.dll, assembly A, no MethodSignature
+            // Right:
+            // A1: 0x3000, image A1.dll, assembly A, no MethodSignature
+            // A2: 0x1000, assembly A, MethodSignature, no image
+            // In Round 10, commonMethodSigs matched Left A1 and Right A2 as unchanged @ 0x1000 (false 0).
+            // Left A1 is A1, Right A2 is A2! They are not the same entity!
+            // When images are indeterminate and plausible candidates with different RVAs exist outside the group,
+            // the shortcut must NOT collapse them. Must detect difference/ambiguity in both directions (exit code 1).
+            var tempDir = Path.Combine(Path.GetTempPath(), "round11-same-rva-indeterminate-image-" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var model = new JsonDumpModel
+                {
+                    types = new List<JsonDumpType>
+                    {
+                        new()
+                        {
+                            image = "A1.dll",
+                            assembly = "A",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new() }
+                            }
+                        },
+                        new()
+                        {
+                            image = "A2.dll",
+                            assembly = "A",
+                            fullName = "Ns.Player",
+                            methods = new List<JsonDumpMethod>
+                            {
+                                new() { name = "Run", returnType = "void", parameters = new() }
+                            }
+                        }
+                    }
+                };
+
+                var nativeSigA1 = "void Ns_Player_A1__Run (Ns_Player_o* __this, const MethodInfo* method);";
+                var nativeSigA2 = "void Ns_Player_A2__Run (Ns_Player_o* __this, const MethodInfo* method);";
+
+                var leftScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA1, MethodSignature = "void Run()", Address = 0x1000, Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA2, Address = 0x2000, Image = "A2.dll", Assembly = "A" }
+                    }
+                };
+
+                var rightScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA1, Address = 0x3000, Image = "A1.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA2, MethodSignature = "void Run()", Address = 0x1000, Assembly = "A" }
+                    }
+                };
+
+                var leftDir = Path.Combine(tempDir, "left");
+                var rightDir = Path.Combine(tempDir, "right");
+                var outPath = Path.Combine(tempDir, "diff.json");
+                CreateFixtures(leftDir, model, leftScript);
+                CreateFixtures(rightDir, model, rightScript);
+
+                // Direction 1: Left -> Right
+                var exitCode = DumpDiffer.Execute(leftDir, rightDir, outPath);
+                var diff = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outPath))!;
+                Assert.Equal(1, exitCode);
+                Assert.True(diff.HasDifferences);
+
+                // Direction 2: Right -> Left
+                var outRev = Path.Combine(tempDir, "diff_rev.json");
+                var exitCodeRev = DumpDiffer.Execute(rightDir, leftDir, outRev);
+                var diffRev = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outRev))!;
+                Assert.Equal(1, exitCodeRev);
+                Assert.True(diffRev.HasDifferences);
+
+                // Control case: when images are fully qualified on both records, deltas are proven and reported
+                var leftControlScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA1, MethodSignature = "void Run()", Address = 0x1000, Image = "A1.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA2, Address = 0x2000, Image = "A2.dll", Assembly = "A" }
+                    }
+                };
+                var rightControlScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA1, Address = 0x3000, Image = "A1.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA2, MethodSignature = "void Run()", Address = 0x1000, Image = "A2.dll", Assembly = "A" }
+                    }
+                };
+                var leftCtrlDir = Path.Combine(tempDir, "left_ctrl");
+                var rightCtrlDir = Path.Combine(tempDir, "right_ctrl");
+                var outCtrl = Path.Combine(tempDir, "diff_ctrl.json");
+                CreateFixtures(leftCtrlDir, model, leftControlScript);
+                CreateFixtures(rightCtrlDir, model, rightControlScript);
+                var exitCodeCtrl = DumpDiffer.Execute(leftCtrlDir, rightCtrlDir, outCtrl);
+                var diffCtrl = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outCtrl))!;
+                Assert.Equal(1, exitCodeCtrl);
+                Assert.True(diffCtrl.HasDifferences);
+                Assert.Equal(2, diffCtrl.methods.addressChanged!.Count);
+                Assert.Contains(diffCtrl.methods.addressChanged, c => c.image == "A1.dll" && c.left == "0x1000" && c.right == "0x3000");
+                Assert.Contains(diffCtrl.methods.addressChanged, c => c.image == "A2.dll" && c.left == "0x2000" && c.right == "0x1000");
+
+                // Control case: when all candidates actually share the same RVA (0x1000), unchanged without false ambiguity
+                var leftSharedScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA1, MethodSignature = "void Run()", Address = 0x1000, Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA2, Address = 0x1000, Image = "A2.dll", Assembly = "A" }
+                    }
+                };
+                var rightSharedScript = new ScriptJson
+                {
+                    ScriptMethod = new List<ScriptMethod>
+                    {
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA1, Address = 0x1000, Image = "A1.dll", Assembly = "A" },
+                        new() { Name = "Ns.Player$$Run", Signature = nativeSigA2, MethodSignature = "void Run()", Address = 0x1000, Assembly = "A" }
+                    }
+                };
+                var leftSharedDir = Path.Combine(tempDir, "left_shared");
+                var rightSharedDir = Path.Combine(tempDir, "right_shared");
+                var outShared = Path.Combine(tempDir, "diff_shared.json");
+                CreateFixtures(leftSharedDir, model, leftSharedScript);
+                CreateFixtures(rightSharedDir, model, rightSharedScript);
+                var exitCodeShared = DumpDiffer.Execute(leftSharedDir, rightSharedDir, outShared);
+                var diffShared = JsonSerializer.Deserialize<DumpDiffResult>(File.ReadAllText(outShared))!;
+                Assert.Equal(0, exitCodeShared);
+                Assert.False(diffShared.HasDifferences);
+                Assert.False(diffShared.hasAmbiguousMethodAddresses);
+                Assert.Empty(diffShared.methods.addressChanged!);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
     }
 }

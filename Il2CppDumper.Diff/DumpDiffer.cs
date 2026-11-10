@@ -616,22 +616,78 @@ namespace Il2CppDumper.Diff
 
                         if (compLeft.Count > 0)
                         {
-                            // Shared identical implementation across compatible entries: unchanged
-                            if (compLeft.Count == compRight.Count &&
-                                compLeft.Select(e => e.Entry.Address).Distinct().Count() == 1 &&
-                                compRight.Select(e => e.Entry.Address).Distinct().Count() == 1 &&
-                                compLeft[0].Entry.Address == compRight[0].Entry.Address)
+                            var sharedAddress = compLeft[0].Entry.Address;
+                            bool allSameAddress = compLeft.Count == compRight.Count &&
+                                compLeft.All(e => e.Entry.Address == sharedAddress) &&
+                                compRight.All(e => e.Entry.Address == sharedAddress);
+
+                            bool hasExternalPlausibleCandidate = false;
+                            if (allSameAddress)
                             {
+                                // Verify if the equal RVA covers all relevant candidates across this group.
+                                // If any entry with indeterminate owner still has a compatible candidate
+                                // with a different RVA outside this matched set, it cannot be safely collapsed.
+                                foreach (var l in compLeft)
+                                {
+                                    if (l.Identity.IsIndeterminate)
+                                    {
+                                        foreach (var rOther in rightEntries)
+                                        {
+                                            if (!pairedRight.Contains(rOther) &&
+                                                rOther.Entry.Address != sharedAddress &&
+                                                AreOwnersCompatible(l, rOther) &&
+                                                (string.IsNullOrEmpty(rOther.Entry.MethodSignature) || string.Equals(l.Entry.MethodSignature, rOther.Entry.MethodSignature, StringComparison.Ordinal)) &&
+                                                (string.IsNullOrEmpty(l.Entry.Signature) || string.IsNullOrEmpty(rOther.Entry.Signature) || AreSignaturesCompatible(l, rOther, remKey.MethodName)))
+                                            {
+                                                hasExternalPlausibleCandidate = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if (hasExternalPlausibleCandidate) break;
+                                }
+
+                                if (!hasExternalPlausibleCandidate)
+                                {
+                                    foreach (var r in compRight)
+                                    {
+                                        if (r.Identity.IsIndeterminate)
+                                        {
+                                            foreach (var lOther in leftEntries)
+                                            {
+                                                if (!pairedLeft.Contains(lOther) &&
+                                                    lOther.Entry.Address != sharedAddress &&
+                                                    AreOwnersCompatible(lOther, r) &&
+                                                    (string.IsNullOrEmpty(lOther.Entry.MethodSignature) || string.Equals(r.Entry.MethodSignature, lOther.Entry.MethodSignature, StringComparison.Ordinal)) &&
+                                                    (string.IsNullOrEmpty(r.Entry.Signature) || string.IsNullOrEmpty(lOther.Entry.Signature) || AreSignaturesCompatible(lOther, r, remKey.MethodName)))
+                                                {
+                                                    hasExternalPlausibleCandidate = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        if (hasExternalPlausibleCandidate) break;
+                                    }
+                                }
+                            }
+
+                            if (allSameAddress && !hasExternalPlausibleCandidate)
+                            {
+                                // Shared identical implementation across all relevant compatible candidates: unchanged
                                 foreach (var e in compLeft) leftMatched.Add(e);
                                 foreach (var e in compRight) rightMatched.Add(e);
                             }
-                            else
+                            else if (!hasExternalPlausibleCandidate)
                             {
+                                // Candidates within this managed signature bucket have different RVAs or counts: ambiguous
                                 result.hasAmbiguousMethodAddresses = true;
                                 ambiguityNotes.Add(msig);
                                 foreach (var l in compLeft) leftMatched.Add(l);
                                 foreach (var r in compRight) rightMatched.Add(r);
                             }
+                            // If hasExternalPlausibleCandidate:
+                            // Indeterminate entries have plausible candidates with different RVAs in the legacy phase.
+                            // Leave them untouched in leftMatched/rightMatched so they remain available for Step 2 / Step 3.
                         }
                     }
 
