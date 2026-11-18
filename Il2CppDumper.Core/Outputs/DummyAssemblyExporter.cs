@@ -6,13 +6,19 @@ namespace Il2CppDumper
 {
     public static class DummyAssemblyExporter
     {
-        public static List<string> Export(Il2CppExecutor il2CppExecutor, string outputDir, bool addToken, ICollection<string> writtenFiles = null)
+        public static List<string> Export(Il2CppExecutor il2CppExecutor, string outputDir, bool addToken, ICollection<string> writtenFiles = null) =>
+            Export(il2CppExecutor, outputDir, addToken, writtenFiles, preserveExisting: false);
+
+        internal static List<string> Export(Il2CppExecutor il2CppExecutor, string outputDir, bool addToken,
+            ICollection<string> writtenFiles, bool preserveExisting)
         {
             var written = new List<string>();
             var dummyDllDirectory = Path.Combine(outputDir, "DummyDll");
-            if (Directory.Exists(dummyDllDirectory))
+            if (!preserveExisting && Directory.Exists(dummyDllDirectory))
                 Directory.Delete(dummyDllDirectory, true);
             Directory.CreateDirectory(dummyDllDirectory);
+            if (preserveExisting && (File.GetAttributes(dummyDllDirectory) & FileAttributes.ReparsePoint) != 0)
+                throw new IOException("The DummyDll output directory is a symlink or junction.");
             var dummy = new DummyAssemblyGenerator(il2CppExecutor, addToken);
             foreach (var assembly in dummy.Assemblies)
             {

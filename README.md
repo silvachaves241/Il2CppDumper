@@ -160,6 +160,31 @@ The checks reopen assembly metadata, verify PropertyMap, EventMap and NestedClas
 
 Per-image dumps are enabled by default. Set `"GeneratePerImageDump": false` in `config.json`, the batch entry's `config`, or `Config.GeneratePerImageDump` in the library for aggregate-only exports. `GenerateAggregateDump` (default `true`) controls the existing `dump.cs` independently. Set it to `false` for split-only exports. With both options off, no declaration files are produced. Other output switches remain independent.
 
+### Select declaration images
+
+Use repeatable `--image <name|id:N>` (or `--image=<name|id:N>`) to restrict declaration exports. For example, on a build whose image index lists these images:
+
+```sh
+Il2CppDumper GameAssembly.dll global-metadata.dat output --output-json --image Ankama.Dofus.Protocol.Game.dll --image id:66
+```
+
+Use the exact metadata image name, including its extension, with ordinal case-insensitive matching. `id:N` is a zero-based decimal image ID from the original input. Multiple selectors are a union. Duplicate matches are exported once in source order. Unknown names, invalid IDs, and names matching multiple images fail the run with an error. Use an ID to disambiguate a repeated name.
+
+For the library set `Config.ImageSelectors`, for example `new[] { "Game.dll", "id:66" }`. In `config.json` or a batch entry's `config` use `"ImageSelectors": ["Game.dll", "id:66"]`. CLI flags replace the base config list. Entry config overrides the batch base list. Null or an empty array selects every image. `DumpResult.ImageSelection` and batch results expose the resolved scope when a selection was used.
+
+| Artifact | Coverage with an image selection |
+| --- | --- |
+| `dump.cs`, `dump-by-image/`, `dump.json` | Selected image declarations in original coordinates. JSON includes `imageId`, `typeDefIndex`, and `typeToken` for each emitted type. A nested type whose declaring type was omitted keeps its qualified name and is emitted as a root. |
+| `DummyDll/` | Full generated assembly set when enabled, including dependencies. The existing directory is kept. Current-run DLLs replace files with matching names, and unrelated files are left in place. |
+| `script.json`, `il2cpp.h`, string literals, oneof maps, bookmarks | Full input when enabled. Frida stubs also cover the full address list and omit optional signature enrichment when using a scoped declaration model. |
+| Provenance and validation | Original input files are parsed and hashed in full. Validation inspects the current-run script and assemblies when enabled. |
+
+The manifest, split index and structured dump record the requested selectors, resolved IDs, and source image count. The manifest tags each recorded artifact as `selected-images` or `full-input`. Its declaration counters describe the C# formatting pass, including partial runs. JSON-only exports show their coverage in `dump.json`, and the manifest's string literal counter follows the full-input struct export. Use the manifest or index to identify files from this run in a reused directory. Compare structured dumps with matching image coverage when interpreting additions and removals.
+
+For a declaration-only run, disable unneeded global exporters in the same config. Reading the complete metadata and registering the binary are still required.
+
+**Português** Use `--image <nome|id:N>` várias vezes ou configure `ImageSelectors` para selecionar imagens nos dumps C# e JSON. Os IDs, índices e tokens continuam no espaço de coordenadas original. Quando habilitado, `DummyDll` inclui todas as dependências. Consulte o manifesto e o índice para distinguir os arquivos da execução atual em pastas reutilizadas.
+
 Each split file starts with its original image header and uses the same declaration formatting as `dump.cs`. `DumpTypeDefIndex` (default `true`) controls the inline TypeDefIndex and image labels in both formats. The index always retains the original image ID, name, first type index, and source type count. Filenames use the original image ID and a bounded, sanitized name. An empty image gets a header-only file.
 
 `dump-by-image/index.json` includes the metadata version and each image's status, declaration count, and path relative to the index. The status is `written`, `empty`, or `failed`. Failed images carry an error and no path. Successfully published files and the index appear in `DumpResult.ProducedFiles` and in the run manifest, which also records input and output hashes. `DumpResult.Outputs["dump-by-image/index.json"]` points to the current index when it was written. Reusing a directory leaves old files in place. Use the current index or manifest to determine membership. During a partial failure, completed images remain inventoried while failed images have no current file.

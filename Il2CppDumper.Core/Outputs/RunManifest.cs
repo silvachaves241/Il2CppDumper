@@ -33,6 +33,10 @@ namespace Il2CppDumper
         [JsonPropertyName("effectiveConfig")]
         public Config EffectiveConfig { get; set; } = new();
 
+        [JsonPropertyName("imageSelection")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public ImageSelection? ImageSelection { get; set; }
+
         [JsonPropertyName("counts")]
         public RunManifestCounts Counts { get; set; } = new();
 
@@ -179,6 +183,10 @@ namespace Il2CppDumper
 
     public class RunManifestOutput
     {
+        [JsonPropertyName("imageScope")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? ImageScope { get; set; }
+
         [JsonPropertyName("path")]
         public string Path { get; set; } = string.Empty;
 
@@ -357,7 +365,7 @@ namespace Il2CppDumper
 
         internal static RunManifest Write(string outputDir, Config config, DateTime startedAtUtc, long durationMs, bool success,
             RunManifestCounts counts, RunManifestWarnings warnings, IEnumerable<string>? producedFiles,
-            DumpMetadataInputs? inputs, OutputValidationReport? outputValidation)
+            DumpMetadataInputs? inputs, OutputValidationReport? outputValidation, ImageSelection? selection = null)
         {
             if (config != null && !config.GenerateRunManifest)
             {
@@ -367,6 +375,17 @@ namespace Il2CppDumper
             Directory.CreateDirectory(outputDir);
             var manifest = Create(config ?? new Config(), startedAtUtc, durationMs, success, counts, warnings, outputDir, producedFiles, inputs);
             manifest.OutputValidation = outputValidation;
+            manifest.ImageSelection = selection;
+            if (selection != null)
+            {
+                foreach (var artifact in manifest.Outputs)
+                {
+                    artifact.ImageScope = artifact.Path is "dump.cs" or JsonDumpGenerator.FileName
+                        || artifact.Path.StartsWith(ImageDeclarationExport.DirectoryName + "/", StringComparison.Ordinal)
+                        ? "selected-images"
+                        : "full-input";
+                }
+            }
             var manifestPath = Path.Combine(outputDir, FileName);
             var json = JsonSerializer.Serialize(manifest, JsonOptions);
             File.WriteAllText(manifestPath, json, new UTF8Encoding(false));

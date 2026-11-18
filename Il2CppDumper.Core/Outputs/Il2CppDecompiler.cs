@@ -49,7 +49,10 @@ namespace Il2CppDumper
             methodModifiers = new();
         }
 
-        public bool Decompile(Config config, string outputDir)
+        public bool Decompile(Config config, string outputDir) =>
+            Decompile(config, outputDir, ImageSelection.Resolve(metadata, config.ImageSelectors));
+
+        internal bool Decompile(Config config, string outputDir, ImageSelection selection)
         {
             var success = true;
             TypesCount = 0;
@@ -64,6 +67,7 @@ namespace Il2CppDumper
             DumpModel = null;
             var dumpCsPath = Path.Combine(outputDir, "dump.cs");
             var split = config.GeneratePerImageDump ? new ImageDeclarationExport(outputDir) : null;
+            var imageIds = ImageSelection.ImageIds(metadata, selection);
 
             void RecordOutputError(string message, Exception exception)
             {
@@ -98,7 +102,11 @@ namespace Il2CppDumper
             {
                 try
                 {
-                    for (int i = 0; i < metadata.imageDefs.Length; i++)
+                    if (selection != null)
+                    {
+                        aggregate.Write($"// Selected declaration images: {selection.Resolved.Count} of {selection.SourceImageCount}\n");
+                    }
+                    foreach (int i in imageIds)
                     {
                         var image = metadata.imageDefs[i];
                         aggregate.Write(ImageHeader(i, metadata.GetStringFromIndex(image.nameIndex), image.typeStart));
@@ -110,8 +118,10 @@ namespace Il2CppDumper
                     RecordOutputError("ERROR: Could not write dump.cs image headers", e);
                 }
             }
-            for (var imageIndex = 0; (aggregateHealthy || split != null) && imageIndex < metadata.imageDefs.Length; imageIndex++)
+            foreach (var imageIndex in imageIds)
             {
+                if (!aggregateHealthy && split == null)
+                    break;
                 var imageDef = metadata.imageDefs[imageIndex];
                 var imageName = metadata.GetStringFromIndex(imageDef.nameIndex);
                 var entry = split?.AddImage(imageIndex, imageName, imageDef.typeStart, imageDef.typeCount);
@@ -617,7 +627,7 @@ namespace Il2CppDumper
             {
                 try
                 {
-                    WrittenFiles.Add(split.WriteIndex(metadata.Version));
+                    WrittenFiles.Add(split.WriteIndex(metadata.Version, selection));
                 }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException)
                 {
@@ -628,7 +638,7 @@ namespace Il2CppDumper
             {
                 try
                 {
-                    DumpModel = JsonDumpGenerator.Create(this, executor, config);
+                    DumpModel = JsonDumpGenerator.Create(this, executor, config, selection);
                     var path = Path.Combine(outputDir, JsonDumpGenerator.FileName);
                     JsonDumpGenerator.WriteModel(path, DumpModel);
                     WrittenFiles.Add(path);

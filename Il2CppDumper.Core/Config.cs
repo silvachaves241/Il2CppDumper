@@ -1,8 +1,14 @@
 #nullable enable
+using System.Text.Json.Serialization;
+
 namespace Il2CppDumper
 {
     public class Config
     {
+        /// <summary>Exact image names or "id:N" selectors for declaration exports. Null or empty selects all images.</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string[]? ImageSelectors { get; set; }
+
         public bool GenerateAggregateDump { get; set; } = true;
         public bool GeneratePerImageDump { get; set; } = true;
         public bool DumpMethod { get; set; } = true;

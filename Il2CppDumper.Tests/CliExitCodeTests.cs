@@ -10,6 +10,26 @@ namespace Il2CppDumper.Tests
 {
     public class CliExitCodeTests
     {
+        [Theory]
+        [InlineData("--image", false)]
+        [InlineData("--image=", false)]
+        [InlineData("--image", true)]
+        public void ImageFlagWithoutSelector_ReturnsUsageError(string flag, bool followedByOption)
+        {
+            var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+            try
+            {
+                var args = followedByOption ? new[] { flag, "--output-json", "GameAssembly.dll" } : new[] { flag };
+                var (code, _, error) = RunCli(SetupIsolatedApp(root), args);
+                Assert.Equal(2, code);
+                Assert.Contains("--image requires", error);
+            }
+            finally
+            {
+                Directory.Delete(root, true);
+            }
+        }
+
         private static string GetBuildOutputDir()
         {
             var loc = typeof(Program).Assembly.Location;

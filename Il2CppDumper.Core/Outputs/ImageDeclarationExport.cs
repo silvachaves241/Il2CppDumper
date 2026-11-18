@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Il2CppDumper
 {
@@ -42,17 +43,15 @@ namespace Il2CppDumper
             return Open(fileName);
         }
 
-        internal string WriteIndex(double metadataVersion)
+        internal string WriteIndex(double metadataVersion, ImageSelection? selection)
         {
             using var index = Open(IndexFileName);
-            index.Writer.Write(JsonSerializer.Serialize(new
-            {
-                SchemaVersion = 1,
-                MetadataVersion = metadataVersion,
-                Images = entries
-            }, JsonOptions));
+            index.Writer.Write(JsonSerializer.Serialize(new DeclarationIndex(1, metadataVersion, entries, selection), JsonOptions));
             return index.Publish();
         }
+
+        private sealed record DeclarationIndex(int SchemaVersion, double MetadataVersion, List<ImageEntry> Images,
+            [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ImageSelection? ImageSelection);
 
         private StagedFile Open(string name)
         {
