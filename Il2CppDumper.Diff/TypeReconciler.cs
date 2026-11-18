@@ -46,6 +46,8 @@ namespace Il2CppDumper.Diff
             var leftItems = ExtractTypes(leftModel, "left");
             var rightItems = ExtractTypes(rightModel, "right");
 
+            DeclarationCoverage.EnsureComparable(leftModel?.ImageSelection, rightModel?.ImageSelection,
+                leftItems.Select(item => item.Type), rightItems.Select(item => item.Type));
             ValidateSingleSide(leftItems, "left");
             ValidateSingleSide(rightItems, "right");
 

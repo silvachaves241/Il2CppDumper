@@ -91,6 +91,7 @@ namespace Il2CppDumper.Diff
             Console.WriteLine("  <left>    Directory or dump.json file of the baseline build.");
             Console.WriteLine("  <right>   Directory or dump.json file of the updated build.");
             Console.WriteLine("  <output>  Destination path or directory for output JSON.");
+            Console.WriteLine("  Scoped dumps must cover the same image names in both inputs.");
             Console.WriteLine();
             Console.WriteLine("Exit codes:");
             Console.WriteLine("  0 = identical / no drift");

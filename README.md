@@ -394,6 +394,8 @@ Il2CppDumper.Diff <left> <right> <output>
 * `2`: Usage / input error.
 
 #### Type identity & ambiguity policy
+
+Both the regular diff and `--drift` require two unscoped dumps or two scoped dumps with the same exact resolved image names. Source image IDs and type ranges can change between builds. The comparators check each scoped dump's coordinates and declaration counts against its own `imageSelection`. Mixed coverage, different selections, ambiguous duplicate image names, and incomplete scoped declarations are input errors (CLI exit code `2`, library `InvalidDataException`). An input error leaves the report destination untouched. Optional native address and literal maps retain their own coverage.
 Types are correlated across builds using the stable composite key `<image>!<fullName>` (or `<assembly>!<fullName>` when image is absent).
 * **Legacy compatibility:** Legacy dumps lacking `image`/`assembly` metadata continue to correlate by `fullName` when names are globally unique.
 * **Ambiguity policy:** If legacy input contains duplicate type full names without image/assembly identity, comparators exit with code `2` (input error) and report an explicit collision error instead of silently collapsing types or hiding deltas.
