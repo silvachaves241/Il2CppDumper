@@ -468,7 +468,9 @@ Oneof member mapping extractor (`GenerateOneofMap`, default `false`). Recovers t
 }
 ```
 
-Alongside the mappings, an ambiguity channel (`oneof-ambiguities.json`) records non-clean const-run groupings (e.g. multiple `object` fields or consts without following instance storage).
+When an ordinary string field interrupts a run of tag constants immediately before the shared object slot, the extractor requires separate storage for both fields, a nested case enum next to the slot and a read-only property returning that enum. Its nonzero values must match distinct constants and leave exactly one constant for the ordinary field. The names of generated members may be obfuscated. A failed check leaves the ambiguity in `oneof-ambiguities.json`.
+
+The ambiguity file also records unsupported layouts such as multiple object fields. Trailing public constants after clean ordinary fields in a class with no object storage are ignored by oneof extraction.
 
 **Português:** Extrator de mapeamento de membros oneof (`oneof-members.json`, chave `GenerateOneofMap`, padrão `false`). Recupera o mapeamento canônico de tags membros de oneof protobuf que compartilham o mesmo slot de armazenamento polimórfico `object` em classes contêineres `IMessage`:
 

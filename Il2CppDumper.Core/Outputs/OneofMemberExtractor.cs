@@ -61,6 +61,7 @@ namespace Il2CppDumper
     {
         public const string FileName = "oneof-members.json";
         public const string AmbiguityFileName = "oneof-ambiguities.json";
+        private const int MaxProtobufFieldNumber = (1 << 29) - 1;
 
         public static readonly JsonSerializerOptions JsonOptions = new()
         {
@@ -140,6 +141,8 @@ namespace Il2CppDumper
             var objectFields = new List<(string Name, ulong Offset)>();
             var oneofGroups = new List<(string Property, string Offset, List<(string Name, int Tag)> Tags)>();
 
+            bool matchedOrdinaryField = false;
+            (int Field, int Offset, List<(string Name, int Tag)> Tags, OneofAmbiguity Warning)? interruptedRun = null;
             var fieldEnd = typeDef.fieldStart + typeDef.field_count;
             for (int i = typeDef.fieldStart; i < fieldEnd && i < metadata.fieldDefs.Length; i++)
             {
@@ -224,6 +227,13 @@ namespace Il2CppDumper
                         oneofGroups.Add((fieldName, $"0x{fieldOffset:X}", new List<(string Name, int Tag)>(pendingConsts)));
                         pendingConsts.Clear();
                     }
+                    else if (interruptedRun is { } run && run.Field == i - 1 &&
+                        run.Offset > 0 && run.Offset + (long)il2Cpp.PointerSize <= fieldOffset &&
+                        TryResolveInterleavedCases(typeDef, typeDefIndex, i, fieldOffset, run.Tags, out var caseTags))
+                    {
+                        oneofGroups.Add((fieldName, $"0x{fieldOffset:X}", caseTags));
+                        ambiguities.Remove(run.Warning);
+                    }
                     else
                     {
                         ambiguities.Add(new OneofAmbiguity
@@ -239,23 +249,30 @@ namespace Il2CppDumper
                     if (pendingConsts.Count == 1)
                     {
                         // Clean single field matching its non-object instance storage
+                        matchedOrdinaryField = true;
                         pendingConsts.Clear();
                     }
                     else if (pendingConsts.Count > 1)
                     {
-                        ambiguities.Add(new OneofAmbiguity
+                        var warning = new OneofAmbiguity
                         {
                             ClassName = className,
                             TypeDefIndex = typeDefIndex,
                             Reason = $"const run of {pendingConsts.Count} tags ({string.Join(", ", pendingConsts.Select(p => p.Name))}) followed by non-object field '{fieldName}' of type '{fieldTypeName}'"
-                        });
+                        };
+                        ambiguities.Add(warning);
+                        if (fieldType.type == Il2CppTypeEnum.IL2CPP_TYPE_STRING)
+                        {
+                            interruptedRun = (i, fieldOffset, new List<(string Name, int Tag)>(pendingConsts), warning);
+                        }
                         pendingConsts.Clear();
                     }
                     // pendingConsts.Count == 0: helper field without field number (e.g. discriminator case enum or _unknownFields); clean.
                 }
             }
 
-            if (pendingConsts.Count > 0)
+            // Constants after clean ordinary fields cannot describe object storage that is absent.
+            if (pendingConsts.Count > 0 && !(objectFields.Count == 0 && matchedOrdinaryField && ambiguities.Count == 0))
             {
                 ambiguities.Add(new OneofAmbiguity
                 {
@@ -322,6 +339,128 @@ namespace Il2CppDumper
             }
 
             return (null, ambiguities);
+        }
+
+        private bool TryResolveInterleavedCases(
+            Il2CppTypeDefinition owner, int ownerIndex, int objectIndex, int objectOffset,
+            List<(string Name, int Tag)> candidates, out List<(string Name, int Tag)> members)
+        {
+            members = new();
+            // Only recognize string field / object slot / case enum in consecutive instance fields.
+            var discriminatorIndex = objectIndex + 1;
+            if (objectOffset <= 0 || discriminatorIndex >= (long)owner.fieldStart + owner.field_count ||
+                discriminatorIndex >= metadata.fieldDefs.Length)
+            {
+                return false;
+            }
+
+            var typeIndex = metadata.fieldDefs[discriminatorIndex].typeIndex;
+            if ((uint)typeIndex >= (uint)il2Cpp.types.Length)
+            {
+                return false;
+            }
+            var discriminator = il2Cpp.types[typeIndex];
+            if (discriminator.type != Il2CppTypeEnum.IL2CPP_TYPE_VALUETYPE ||
+                (discriminator.attrs & (FIELD_ATTRIBUTE_STATIC | FIELD_ATTRIBUTE_LITERAL)) != 0 ||
+                il2Cpp.GetFieldOffsetFromIndex(ownerIndex, discriminatorIndex - owner.fieldStart,
+                    discriminatorIndex, false, false) != objectOffset + (long)il2Cpp.PointerSize)
+            {
+                return false;
+            }
+
+            try
+            {
+                var caseEnum = executor.GetTypeDefinitionFromIl2CppType(discriminator);
+                if (!caseEnum.IsEnum || !IsNestedCaseEnum(owner, caseEnum) ||
+                    !HasReadOnlyCaseProperty(owner, ownerIndex, caseEnum))
+                {
+                    return false;
+                }
+
+                // Generated case enums use one zero sentinel and positive, distinct wire field numbers.
+                int zeroCases = 0;
+                var tags = new HashSet<int>();
+                bool hasInt32Storage = false;
+                for (int i = 0; i < caseEnum.field_count; i++)
+                {
+                    var fieldIndex = checked(caseEnum.fieldStart + i);
+                    var fieldType = il2Cpp.types[metadata.fieldDefs[fieldIndex].typeIndex];
+                    if ((fieldType.attrs & FIELD_ATTRIBUTE_LITERAL) == 0)
+                    {
+                        if (hasInt32Storage || (fieldType.attrs & FIELD_ATTRIBUTE_STATIC) != 0 ||
+                            fieldType.type != Il2CppTypeEnum.IL2CPP_TYPE_I4)
+                        {
+                            return false;
+                        }
+                        hasInt32Storage = true;
+                        continue;
+                    }
+                    if (!metadata.GetFieldDefaultValueFromIndex(fieldIndex, out var entry) || entry.dataIndex < 0 ||
+                        !executor.TryGetDefaultValue(entry.typeIndex, entry.dataIndex, out var value) ||
+                        value is not int tag || tag < 0)
+                    {
+                        return false;
+                    }
+                    if (tag == 0)
+                    {
+                        zeroCases++;
+                    }
+                    else if (!tags.Add(tag))
+                    {
+                        return false;
+                    }
+                }
+
+                // Exactly one constant belongs to the ordinary field, and every case maps unambiguously.
+                if (!hasInt32Storage || zeroCases != 1 || tags.Count == 0 || tags.Count != candidates.Count - 1 ||
+                    candidates.Any(c => c.Tag > MaxProtobufFieldNumber) ||
+                    candidates.Select(c => c.Tag).Distinct().Count() != candidates.Count ||
+                    !tags.IsSubsetOf(candidates.Select(c => c.Tag)))
+                {
+                    return false;
+                }
+
+                members = candidates.Where(c => tags.Contains(c.Tag)).ToList();
+                return true;
+            }
+            catch (Exception e) when (e is IndexOutOfRangeException or ArgumentOutOfRangeException or EndOfStreamException or OverflowException)
+            {
+                return false;
+            }
+        }
+
+        private bool IsNestedCaseEnum(Il2CppTypeDefinition owner, Il2CppTypeDefinition caseEnum)
+        {
+            for (int i = 0; i < owner.nested_type_count; i++)
+            {
+                int childIndex = metadata.nestedTypeIndices[owner.nestedTypesStart + i];
+                if (ReferenceEquals(metadata.typeDefs[childIndex], caseEnum))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private bool HasReadOnlyCaseProperty(Il2CppTypeDefinition owner, int ownerIndex, Il2CppTypeDefinition caseEnum)
+        {
+            for (int i = 0; i < owner.property_count; i++)
+            {
+                var property = metadata.propertyDefs[owner.propertyStart + i];
+                if (property.set >= 0 || (uint)property.get >= owner.method_count)
+                {
+                    continue;
+                }
+                var getter = metadata.methodDefs[metadata.GetMethodIndexFromTypeDefinition(ownerIndex, property.get)];
+                var returnType = il2Cpp.types[getter.returnType];
+                if ((getter.flags & METHOD_ATTRIBUTE_STATIC) == 0 && getter.parameterCount == 0 &&
+                    returnType.type == Il2CppTypeEnum.IL2CPP_TYPE_VALUETYPE &&
+                    ReferenceEquals(executor.GetTypeDefinitionFromIl2CppType(returnType), caseEnum))
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         public void Write(string outputDir, Config config)

@@ -386,6 +386,86 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
+        public void TrailingPublicConstants_AfterOrdinaryFields_DoNotImplyAOneof()
+        {
+            using var env = CreateProtobufEnvironment("OrdinaryMessage", new[]
+            {
+                ("SecondsFieldNumber", (int?)1, Il2CppTypeEnum.IL2CPP_TYPE_I4, 0UL, true),
+                ("seconds", null, Il2CppTypeEnum.IL2CPP_TYPE_I8, 0x10UL, false),
+                ("NanosFieldNumber", 2, Il2CppTypeEnum.IL2CPP_TYPE_I4, 0UL, true),
+                ("nanos", null, Il2CppTypeEnum.IL2CPP_TYPE_I4, 0x18UL, false),
+                ("UnitScale", 1000000000, Il2CppTypeEnum.IL2CPP_TYPE_I4, 0UL, true),
+                ("TicksScale", 100, Il2CppTypeEnum.IL2CPP_TYPE_I4, 0UL, true)
+            });
+
+            var result = new OneofMemberExtractor(env.Executor).Extract(new Config());
+            Assert.Empty(result.Classes);
+            Assert.Empty(result.Ambiguities);
+        }
+
+        [Theory]
+        [InlineData(4, true, 0x20, 0x30, false, true)]
+        [InlineData(4, true, 0x20, 0x2C, true, true)]
+        [InlineData(9, true, 0x20, 0x30, false, false)]
+        [InlineData(3, true, 0x20, 0x30, false, false)]
+        [InlineData(4, false, 0x20, 0x30, false, false)]
+        [InlineData(4, true, 0x20, 0x38, false, false)]
+        [InlineData(4, true, 0x28, 0x30, false, false)]
+        [InlineData(4, true, 0x24, 0x30, false, false)]
+        [InlineData(4, true, 0x24, 0x2C, true, true)]
+        public void InterleavedTags_RequireMatchingCaseEnumAndProperty(
+            int secondCase, bool hasGetter, int ordinaryOffset, int caseOffset, bool is32Bit, bool recovered)
+        {
+            using var env = CreateProtobufEnvironment("abc", new[]
+            {
+                ("a", (int?)3, Il2CppTypeEnum.IL2CPP_TYPE_I4, 0UL, true),
+                ("b", 4, Il2CppTypeEnum.IL2CPP_TYPE_I4, 0UL, true),
+                ("c", 5, Il2CppTypeEnum.IL2CPP_TYPE_I4, 0UL, true),
+                ("d", null, Il2CppTypeEnum.IL2CPP_TYPE_STRING, (ulong)ordinaryOffset, false),
+                ("e", null, Il2CppTypeEnum.IL2CPP_TYPE_OBJECT, 0x28UL, false),
+                ("f", null, Il2CppTypeEnum.IL2CPP_TYPE_VALUETYPE, (ulong)caseOffset, false),
+                ("value__", null, Il2CppTypeEnum.IL2CPP_TYPE_I4, 0UL, false),
+                ("g", 0, Il2CppTypeEnum.IL2CPP_TYPE_I4, 0UL, true),
+                ("h", 3, Il2CppTypeEnum.IL2CPP_TYPE_I4, 0UL, true),
+                ("i", secondCase, Il2CppTypeEnum.IL2CPP_TYPE_I4, 0UL, true)
+            });
+            env.Il.Is32Bit = is32Bit;
+            var owner = env.M.typeDefs[1];
+            owner.field_count = 6;
+            owner.nested_type_count = 1;
+            owner.nestedTypesStart = 0;
+            owner.property_count = 1;
+            owner.propertyStart = 0;
+            owner.method_count = 1;
+            owner.methodStart = 0;
+            env.M.typeDefs = env.M.typeDefs.Append(new Il2CppTypeDefinition
+            {
+                fieldStart = 6, field_count = 4, bitfield = 2
+            }).ToArray();
+            env.M.nestedTypeIndices = new[] { 2 };
+            env.M.propertyDefs = new[] { new Il2CppPropertyDefinition { get = hasGetter ? 0 : -1, set = -1 } };
+            env.M.methodDefs = new[] { new Il2CppMethodDefinition { returnType = 6 } };
+            env.Il.types[6].data = new Il2CppType.Union { dummy = 2 };
+
+            var result = new OneofMemberExtractor(env.Executor).Extract(new Config());
+            if (recovered)
+            {
+                var group = Assert.Single(result.Classes).Value;
+                Assert.Equal("e", group.Group.Property);
+                Assert.Equal("0x28", group.Group.Offset);
+                Assert.Equal(new[] { 3, 4 }, group.Members.Select(m => m.Tag));
+                Assert.Equal(new[] { "a", "b" }, group.Members.SelectMany(m => m.ConstantFields));
+                Assert.Empty(result.Ambiguities);
+            }
+            else
+            {
+                Assert.Empty(result.Classes);
+                Assert.Contains(result.Ambiguities, a => a.Reason.Contains("const run of 3 tags"));
+                Assert.Contains(result.Ambiguities, a => a.Reason.Contains("without preceding const"));
+            }
+        }
+
+        [Fact]
         public void OneofExtraction_TrailingConsts_ReportsToAmbiguityChannel()
         {
             var fields = new (string name, int? constTag, Il2CppTypeEnum type, ulong offset, bool isStatic)[]
