@@ -73,6 +73,41 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
+        public void Diff_SkipsTerminalOffsets_AndRetainsRealEmptyLiterals()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "dump-diff-boundary-" + Guid.NewGuid());
+            try
+            {
+                var left = Path.Combine(root, "left");
+                var right = Path.Combine(root, "right");
+                var model = new JsonDumpModel();
+                CreateDumpFixtures(left, model, literals: new()
+                {
+                    new() { index = 0, value = "" },
+                    new() { index = 1, status = "boundary" }
+                });
+                CreateDumpFixtures(right, model, literals: new()
+                {
+                    new() { index = 0, value = "updated" },
+                    new() { index = 1, value = "" },
+                    new() { index = 2, status = "boundary" }
+                });
+
+                var diff = DumpDiffer.Compare(left, right).literals;
+                var changed = Assert.Single(diff.valueChangedByIndex);
+                Assert.Equal(0u, changed.index);
+                Assert.Equal("", changed.left);
+                var added = Assert.Single(diff.addedByIndex);
+                Assert.Equal(1u, added.index);
+                Assert.Equal("", added.value);
+            }
+            finally
+            {
+                Directory.Delete(root, true);
+            }
+        }
+
+        [Fact]
         public void Diff_SyntheticABPair_AssertsAllSevenChangeCategories()
         {
             var tempDir = Path.Combine(Path.GetTempPath(), "dump-diff-ab-" + Guid.NewGuid());

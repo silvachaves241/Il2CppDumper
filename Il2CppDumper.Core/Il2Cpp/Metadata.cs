@@ -993,6 +993,26 @@ namespace Il2CppDumper
 
         private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
+        internal bool IsStringLiteralBoundary(uint index)
+        {
+            if (Version != 39 || stringLiterals == null || index + 1L != stringLiterals.Length ||
+                stringLiterals[index] == null || header.stringLiteralData == null || header.stringLiterals == null)
+            {
+                return false;
+            }
+
+            var offsets = header.stringLiterals;
+            var data = header.stringLiteralData;
+            // Unity's v39 resolver reads offsets[i + 1] to end the last literal.
+            return offsets.count == stringLiterals.Length &&
+                offsets.sectionSize == (long)offsets.count * sizeof(int) &&
+                offsets.offset >= 0 && (ulong)((long)offsets.offset + offsets.sectionSize) <= Length &&
+                data.count >= 0 && (long)data.count + 1 == offsets.count &&
+                data.offset >= 0 && data.sectionSize >= 0 &&
+                (ulong)((long)data.offset + data.sectionSize) <= Length &&
+                stringLiterals[index].dataIndex == data.sectionSize;
+        }
+
         public bool TryGetStringLiteral(uint index, out string value, out int dataIndex, out int length)
         {
             return TryGetStringLiteral(index, out value, out dataIndex, out length, out _, out _, out _);
@@ -1031,11 +1051,16 @@ namespace Il2CppDumper
             }
 
             var stringLiteral = stringLiterals[index];
+            if (stringLiteral == null)
+            {
+                return false;
+            }
             dataIndex = stringLiteral.dataIndex;
             var dataOffset = Version >= 38 ? (uint)header.stringLiteralData.offset : header.stringLiteralDataOffset;
             var dataSize = Version >= 38 ? header.stringLiteralData.sectionSize : header.stringLiteralDataSize;
 
-            if (dataSize <= 0 || stringLiteral.dataIndex < 0 || stringLiteral.dataIndex >= dataSize)
+            if (dataSize < 0 || dataIndex < 0 || dataIndex > dataSize ||
+                (Version < 35 && dataIndex == dataSize) || IsStringLiteralBoundary(index))
             {
                 return false;
             }
@@ -1051,7 +1076,12 @@ namespace Il2CppDumper
                 if (index + 1 < stringLiterals.Length)
                 {
                     var nextStringLiteral = stringLiterals[index + 1];
-                    length = (int)(nextStringLiteral.dataIndex - stringLiteral.dataIndex);
+                    if (nextStringLiteral == null || nextStringLiteral.dataIndex < dataIndex ||
+                        nextStringLiteral.dataIndex > dataSize)
+                    {
+                        return false;
+                    }
+                    length = nextStringLiteral.dataIndex - dataIndex;
                 }
                 else
                 {
@@ -1190,6 +1220,13 @@ namespace Il2CppDumper
                     index = i,
                     dataIndex = stringLiteral?.dataIndex ?? 0
                 };
+
+                if (IsStringLiteralBoundary(i))
+                {
+                    record.status = StringLiteralRecord.BoundaryStatus;
+                    result.Add(record);
+                    continue;
+                }
 
                 bool hasLit = TryGetStringLiteral(i, out var val, out var dIdx, out var len, out var raw, out var decryptor, out var isInvalidUtf8);
                 if (!hasLit)

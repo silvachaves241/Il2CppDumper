@@ -24,7 +24,7 @@ namespace Il2CppDumper.Tests
             using (binary)
             {
                 SplitFixtureImages(metadata);
-                var config = new Config { DumpAttribute = false };
+                var config = new Config { DumpAttribute = false, GeneratePerImageDump = false };
                 var decompiler = new Il2CppDecompiler(executor);
                 Assert.True(decompiler.Decompile(config, root), decompiler.ErrorMessage);
                 var baseline = File.ReadAllText(Path.Combine(root, "dump.cs"));
