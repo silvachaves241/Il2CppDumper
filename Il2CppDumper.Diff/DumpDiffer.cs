@@ -63,19 +63,22 @@ namespace Il2CppDumper.Diff
 
         public static DumpDiffResult Compare(string leftPath, string rightPath)
         {
-            var leftArtifacts = ResolveArtifacts(leftPath, "left");
-            var rightArtifacts = ResolveArtifacts(rightPath, "right");
-            return Compare(leftArtifacts, rightArtifacts);
+            var (leftDir, leftArtifacts) = ReadDeclarations(leftPath, "left");
+            var (rightDir, rightArtifacts) = ReadDeclarations(rightPath, "right");
+            var reconciled = TypeReconciler.Reconcile(leftArtifacts.Model, rightArtifacts.Model);
+            ReadOptionalArtifacts(leftDir, "left", leftArtifacts);
+            ReadOptionalArtifacts(rightDir, "right", rightArtifacts);
+            return Compare(leftArtifacts, rightArtifacts, reconciled);
         }
 
         public static DumpDiffResult Compare(JsonDumpModel leftModel, JsonDumpModel rightModel)
         {
             var leftArtifacts = new ParsedArtifacts { Model = leftModel };
             var rightArtifacts = new ParsedArtifacts { Model = rightModel };
-            return Compare(leftArtifacts, rightArtifacts);
+            return Compare(leftArtifacts, rightArtifacts, TypeReconciler.Reconcile(leftModel, rightModel));
         }
 
-        private static DumpDiffResult Compare(ParsedArtifacts leftArtifacts, ParsedArtifacts rightArtifacts)
+        private static DumpDiffResult Compare(ParsedArtifacts leftArtifacts, ParsedArtifacts rightArtifacts, List<ReconciledType> reconciled)
         {
             var result = new DumpDiffResult
             {
@@ -84,8 +87,6 @@ namespace Il2CppDumper.Diff
             };
 
             // 1. Compare Types
-            var reconciled = TypeReconciler.Reconcile(leftArtifacts.Model, rightArtifacts.Model);
-
             result.types.added = reconciled.Where(r => r.IsAdded).Select(r => r.Key).OrderBy(x => x, StringComparer.Ordinal).ToList();
             result.types.removed = reconciled.Where(r => r.IsRemoved).Select(r => r.Key).OrderBy(x => x, StringComparer.Ordinal).ToList();
 
@@ -1709,7 +1710,7 @@ namespace Il2CppDumper.Diff
             public Dictionary<uint, string>? Literals { get; set; }
         }
 
-        private static ParsedArtifacts ResolveArtifacts(string inputPath, string label)
+        private static (string Directory, ParsedArtifacts Artifacts) ReadDeclarations(string inputPath, string label)
         {
             string dir;
             string dumpJsonPath;
@@ -1795,7 +1796,12 @@ namespace Il2CppDumper.Diff
                 }
             }
 
-            // 3. Parse script.json (optional, but if present must be valid)
+            return (dir, artifacts);
+        }
+
+        private static void ReadOptionalArtifacts(string dir, string label, ParsedArtifacts artifacts)
+        {
+            // Parse script.json (optional, but if present must be valid)
             var scriptPath = Path.Combine(dir, "script.json");
             if (File.Exists(scriptPath))
             {
@@ -1900,7 +1906,7 @@ namespace Il2CppDumper.Diff
                 }
             }
 
-            // 4. Parse literals (optional, only stringliteral-indexed.json; if present must be valid)
+            // Parse literals (optional, only stringliteral-indexed.json; if present must be valid)
             var indexedLiteralsPath = Path.Combine(dir, "stringliteral-indexed.json");
             if (File.Exists(indexedLiteralsPath))
             {
@@ -1937,7 +1943,6 @@ namespace Il2CppDumper.Diff
                 }
             }
 
-            return artifacts;
         }
     }
 }
