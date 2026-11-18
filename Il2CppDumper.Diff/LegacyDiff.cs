@@ -19,7 +19,7 @@ internal static class LegacyDiff
             File.WriteAllText(target, JsonSerializer.Serialize(report, DumpDiffer.JsonOptions));
 
             var observation = report.HasDifferences ? "Differences found" : "No differences found in compared tokens";
-            log.WriteLine($"{observation}. Coverage is partial ({report.comparedTokens} shared original type tokens).");
+            log.WriteLine($"{observation}. Coverage is partial ({report.comparedTokens} type names compared across {report.sharedOriginalTokens} shared original tokens).");
             log.WriteLine($"Legacy report written to: {target}");
             return report.HasDifferences ? 1 : 0;
         }
@@ -68,8 +68,10 @@ internal static class LegacyDiff
             comparison.rightOnlyTokens.AddRange(after.Tokens.OrderBy(entry => entry.Key)
                 .Where(entry => !before.Tokens.ContainsKey(entry.Key)).Select(entry => entry.Value));
         }
-        if (report.comparedTokens == 0)
+        if (report.sharedOriginalTokens == 0)
             throw new InvalidDataException("No shared original TypeDef tokens in common images. Use DummyDll with original TokenAttribute annotations and, for a JSON input, an export with image and typeToken.");
+        if (report.comparedTokens == 0)
+            throw new InvalidDataException("Shared original TypeDef tokens found, but no type names are available for comparison. Use a dump with valid type names and nesting.");
         return report;
     }
 }

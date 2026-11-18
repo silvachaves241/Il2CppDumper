@@ -32,6 +32,7 @@ public sealed class LegacyDiffTests : IDisposable
         Assert.Equal("DummyDll", report.GetProperty("left").GetProperty("format").GetString());
         Assert.Equal("dump.json", report.GetProperty("right").GetProperty("format").GetString());
         Assert.Equal(2, report.GetProperty("comparedTokens").GetInt32());
+        Assert.Equal(2, report.GetProperty("sharedOriginalTokens").GetInt32());
         var images = report.GetProperty("images").EnumerateArray().ToArray();
         var shared = images[0];
         Assert.Equal("A.dll", shared.GetProperty("image").GetString());
@@ -63,6 +64,18 @@ public sealed class LegacyDiffTests : IDisposable
         Assert.Contains("field-offset-drift", report.unavailable);
         Assert.Equal(1, report.images[0].leftTypesWithoutOriginalToken);
         Assert.Equal("right-only-image", report.images[1].status);
+    }
+
+    [Fact]
+    public void SharedTokenWithUnavailableNameIsCountedWithoutInventingADifference()
+    {
+        WriteDummy(Left, "A.dll", ("Named", "0x02000007"), ("Other", "0x02000008"));
+        WriteJson(Right, Type("A.dll", "Namespace.Named", 0x02000007), Type("A.dll", "", 0x02000008));
+        var report = LegacyDiff.Compare(Left, Right);
+        Assert.Equal(2, report.sharedOriginalTokens);
+        Assert.Equal(1, report.comparedTokens);
+        Assert.Equal(1, Assert.Single(report.images).namesUnavailable);
+        Assert.False(report.HasDifferences);
     }
 
     [Theory]

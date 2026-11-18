@@ -369,7 +369,7 @@ O arquivo `legacy-diff.json` tem `coverage: "partial"` e registra o formato, a o
 
 Em imagens com nomes iguais, o relatório compara nomes de tipos sob o mesmo token TypeDef original. A coluna `originalToken` vem da anotação `TokenAttribute` do assembly auxiliar `Il2CppDummyDll` ou de `typeToken` no JSON. `reconstructedToken` mostra o token atribuído ao recriar a DLL quando o relatório exibe um tipo. Mudanças de nome e tokens presentes em apenas um lado são observações de inventário. O mesmo token pode ser reaproveitado entre builds.
 
-Imagens disponíveis de um só lado, tipos sem token original e nomes ilegíveis por hierarquia inválida aparecem como lacunas de cobertura. O modo cobre nomes de tipos e a presença de tokens. Comparações de membros, offsets, endereços e literais exigem as entradas dos modos convencionais. `dump.cs` e `script.json` isolados não são aceitos.
+Imagens disponíveis de um só lado, tipos sem token original e nomes indisponíveis por hierarquia inválida aparecem como lacunas de cobertura. `sharedOriginalTokens` conta todos os tokens em comum. `comparedTokens` conta somente os pares com nome de tipo disponível nos dois lados. Comparações de membros, offsets, endereços e literais exigem as entradas dos modos convencionais. `dump.cs` e `script.json` isolados não são aceitos.
 
 `0` indica que o recorte comparado não apresentou diferenças. `1` indica nome divergente ou token presente em apenas um lado de uma imagem comparada. `2` indica erro de entrada, inclusive quando nenhum nome pode ser comparado por imagem e token original. Use `--legacy` ou `--drift` em invocações separadas.
 

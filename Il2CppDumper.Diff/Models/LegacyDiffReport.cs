@@ -14,6 +14,7 @@ internal sealed class LegacyDiffReport
     public LegacyDiffEndpoint right { get; init; } = new();
     public List<LegacyImageComparison> images { get; } = new();
     public int comparedTokens => images.Sum(image => image.sameNames + image.nameDifferences.Count);
+    public int sharedOriginalTokens => comparedTokens + images.Sum(image => image.namesUnavailable);
     [JsonIgnore]
     public bool HasDifferences => images.Any(image =>
         image.nameDifferences.Count > 0 || image.leftOnlyTokens.Count > 0 || image.rightOnlyTokens.Count > 0);
