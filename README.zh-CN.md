@@ -75,8 +75,8 @@ Unity il2cpp逆向工程
 ### 命令行
 
 ```
-Il2CppDumper.exe <executable-file> <global-metadata> <output-directory>
-Il2CppDumper.exe --batch <batch-file.json> [--stop-on-first-error]
+Il2CppDumper.exe <executable-file> <global-metadata> <output-directory> [--static-only]
+Il2CppDumper.exe --batch <batch-file.json> [--static-only] [--stop-on-first-error]
 ```
 
 #### 批处理模式（Batch Mode, `--batch <file>`）
@@ -478,6 +478,10 @@ Junto aos mapeamentos, o canal de ambiguidade (`oneof-ambiguities.json`) registr
 
 * `ForceDump`
   * 强制将文件视为dump文件
+
+* `StaticOnly`
+
+  禁用 PE 注册搜索失败后的 Windows 本机加载器，默认值为 `false`。可以通过 `--static-only` 或配置启用。批处理全局启用时，所有条目均使用静态模式。
 
 * `NoRedirectedPointer`
   * 将dump文件中的指针视为未重定向的, 从某些设备dump出的文件需要设置该项为`true`

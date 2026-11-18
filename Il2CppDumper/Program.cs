@@ -88,6 +88,10 @@ namespace Il2CppDumper
             {
                 config.StopOnFirstError = true;
             }
+            if (argList.RemoveAll(a => a.Equals("--static-only", StringComparison.OrdinalIgnoreCase)) > 0)
+            {
+                config.StaticOnly = true;
+            }
 
             bool batchMode = false;
             string batchFilePath = null;
@@ -387,8 +391,8 @@ namespace Il2CppDumper
 
         static void ShowHelp()
         {
-            Console.WriteLine($"usage: {AppDomain.CurrentDomain.FriendlyName} <executable-file> <global-metadata> <output-directory> [--output-json] [--image <name|id:N>]...");
-            Console.WriteLine($"       {AppDomain.CurrentDomain.FriendlyName} --batch <batch-file> [--stop-on-first-error] [--output-json] [--image <name|id:N>]...");
+            Console.WriteLine($"usage: {AppDomain.CurrentDomain.FriendlyName} <executable-file> <global-metadata> <output-directory> [--static-only] [--output-json] [--image <name|id:N>]...");
+            Console.WriteLine($"       {AppDomain.CurrentDomain.FriendlyName} --batch <batch-file> [--static-only] [--stop-on-first-error] [--output-json] [--image <name|id:N>]...");
             Console.WriteLine($"       {AppDomain.CurrentDomain.FriendlyName} --help | -h");
             Console.WriteLine($"       {AppDomain.CurrentDomain.FriendlyName} --version | -v");
         }

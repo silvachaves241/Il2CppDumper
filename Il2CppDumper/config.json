@@ -21,6 +21,7 @@
   "ForceVersion": 16,
   "ForceDump": false,
   "NoRedirectedPointer": false,
+  "StaticOnly": false,
   "StringDecryptor": "none",
   "EmitFridaScript": false,
   "EmitBookmarks": false,

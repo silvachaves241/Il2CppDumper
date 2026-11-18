@@ -31,6 +31,8 @@ namespace Il2CppDumper
         public double ForceVersion { get; set; } = 24.3;
         public bool ForceDump { get; set; } = false;
         public bool NoRedirectedPointer { get; set; } = false;
+        /// <summary>Analyze PE input without invoking the Windows native loader fallback.</summary>
+        public bool StaticOnly { get; set; } = false;
         public string? StringDecryptor { get; set; } = "none";
         public string? StringDecryptorKey { get; set; } = null;
         public bool EmitFridaScript { get; set; } = false;

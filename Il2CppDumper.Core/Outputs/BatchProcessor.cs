@@ -440,6 +440,8 @@ namespace Il2CppDumper.Core
             {
                 throw new JsonException($"Entry {entryIndex} configuration deserialized to null.");
             }
+            // A batch-wide loader restriction applies to every entry.
+            merged.StaticOnly |= baseConfig.StaticOnly;
             return merged;
         }
     }

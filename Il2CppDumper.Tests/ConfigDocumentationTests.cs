@@ -220,7 +220,8 @@ namespace Il2CppDumper.Tests
                 "ForceIl2CppVersion",
                 "ForceVersion",
                 "ForceDump",
-                "NoRedirectedPointer"
+                "NoRedirectedPointer",
+                "StaticOnly"
             };
 
             var repoRoot = FindRepoRoot();

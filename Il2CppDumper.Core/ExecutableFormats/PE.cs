@@ -2,12 +2,15 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using static Il2CppDumper.SectionCharacteristics;
 
 namespace Il2CppDumper
 {
     public sealed class PE : Il2Cpp
     {
         private readonly SectionHeader[] sections;
+        private readonly ulong headersEnd;
+        private Predicate<SectionHeader> hasCapturedBytes;
 
         public PE(Stream stream) : base(stream)
         {
@@ -25,16 +28,19 @@ namespace Il2CppDumper
             var pos = Position;
             var magic = ReadUInt16();
             Position -= 2;
+            uint sizeOfHeaders;
             if (magic == 0x10b)
             {
                 Is32Bit = true;
                 var optionalHeader = ReadClass<OptionalHeader>();
                 ImageBase = optionalHeader.ImageBase;
+                sizeOfHeaders = optionalHeader.SizeOfHeaders;
             }
             else if (magic == 0x20b)
             {
                 var optionalHeader = ReadClass<OptionalHeader64>();
                 ImageBase = optionalHeader.ImageBase;
+                sizeOfHeaders = optionalHeader.SizeOfHeaders;
             }
             else
             {
@@ -42,11 +48,18 @@ namespace Il2CppDumper
             }
             Position = pos + fileHeader.SizeOfOptionalHeader;
             sections = ReadClassArray<SectionHeader>(fileHeader.NumberOfSections);
+            headersEnd = Math.Max(Position, sizeOfHeaders);
         }
 
         public void LoadFromMemory(ulong addr)
         {
+            LoadFromMemory(addr, null);
+        }
+
+        internal void LoadFromMemory(ulong addr, Predicate<SectionHeader> hasCapturedBytes)
+        {
             ImageBase = addr;
+            this.hasCapturedBytes = hasCapturedBytes;
             foreach (var section in sections)
             {
                 section.PointerToRawData = section.VirtualAddress;
@@ -240,27 +253,56 @@ namespace Il2CppDumper
 
         public override SectionHelper GetSectionHelper(int methodCount, int typeDefinitionsCount, int imageCount)
         {
-            var execList = new List<SectionHeader>();
-            var dataList = new List<SectionHeader>();
+            var exec = new List<SearchSection>();
+            var data = new List<SearchSection>();
+            var bss = new List<SearchSection>();
             foreach (var section in sections)
             {
-                switch (section.Characteristics)
+                var flags = (SectionCharacteristics)section.Characteristics;
+                var backedSize = Math.Min(section.VirtualSize, section.SizeOfRawData);
+                var rawOffset = (ulong)section.PointerToRawData;
+                var virtualEnd = (ulong)section.VirtualAddress + section.VirtualSize;
+                if ((hasCapturedBytes != null && !hasCapturedBytes(section)) ||
+                    (flags & IMAGE_SCN_MEM_DISCARDABLE) != 0 ||
+                    backedSize == 0 || rawOffset < headersEnd || rawOffset + backedSize > Length ||
+                    virtualEnd > uint.MaxValue || virtualEnd > ulong.MaxValue - ImageBase)
                 {
-                    case 0x60000020:
-                        execList.Add(section);
-                        break;
-                    case 0x40000040:
-                    case 0xC0000040:
-                        dataList.Add(section);
-                        break;
+                    continue;
+                }
+
+                var address = ImageBase + section.VirtualAddress;
+                var candidate = new SearchSection
+                {
+                    offset = rawOffset,
+                    offsetEnd = rawOffset + backedSize,
+                    address = address,
+                    addressEnd = address + backedSize
+                };
+
+                var executable = (flags & IMAGE_SCN_MEM_EXECUTE) != 0;
+                var writable = (flags & IMAGE_SCN_MEM_WRITE) != 0;
+                if (executable)
+                {
+                    exec.Add(candidate);
+                }
+                // Writable executable sections can also contain registration data.
+                if (writable || (!executable && (flags & IMAGE_SCN_MEM_READ) != 0))
+                {
+                    data.Add(candidate);
+                    // Legacy metadata-usage pointers can refer to a section's zero-filled virtual tail.
+                    bss.Add(new SearchSection
+                    {
+                        offset = candidate.offset,
+                        offsetEnd = candidate.offsetEnd,
+                        address = candidate.address,
+                        addressEnd = ImageBase + virtualEnd
+                    });
                 }
             }
             var sectionHelper = new SectionHelper(this, methodCount, typeDefinitionsCount, metadataUsagesCount, imageCount);
-            var data = dataList.ToArray();
-            var exec = execList.ToArray();
-            sectionHelper.SetSection(SearchSectionType.Exec, ImageBase, exec);
-            sectionHelper.SetSection(SearchSectionType.Data, ImageBase, data);
-            sectionHelper.SetSection(SearchSectionType.Bss, ImageBase, data);
+            sectionHelper.SetSection(SearchSectionType.Exec, exec.ToArray());
+            sectionHelper.SetSection(SearchSectionType.Data, data.ToArray());
+            sectionHelper.SetSection(SearchSectionType.Bss, bss.ToArray());
             return sectionHelper;
         }
 

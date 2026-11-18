@@ -103,8 +103,8 @@ On Windows, launching without input paths opens the file picker. With no explici
 ### Command-line
 
 ```
-Il2CppDumper.exe <executable-file> <global-metadata> [<output-directory>] [--output-json] [--output-oneof] [--image <name|id:N>]...
-Il2CppDumper.exe --batch <batch-file.json> [<result-file.json>] [--stop-on-first-error] [--output-json] [--output-oneof] [--image <name|id:N>]...
+Il2CppDumper.exe <executable-file> <global-metadata> [<output-directory>] [--static-only] [--output-json] [--output-oneof] [--image <name|id:N>]...
+Il2CppDumper.exe --batch <batch-file.json> [<result-file.json>] [--static-only] [--stop-on-first-error] [--output-json] [--output-oneof] [--image <name|id:N>]...
 Il2CppDumper.exe --help
 Il2CppDumper.exe --version
 ```
@@ -112,6 +112,10 @@ Il2CppDumper.exe --version
 On Linux use `./Il2CppDumper`. Quote paths or image names containing spaces. Help accepts `-h`, `/?`, and `/h`. Version accepts `-v`. The oneof flag also accepts `--generate-oneof-map`. `--image=VALUE` and `--batch=FILE` are supported. The single-run CLI returns `0` on success, `1` on export failure, and `2` for a missing selector value.
 
 The CLI reads `config.json` from the application directory. Flags override the corresponding settings, and batch entries can override that effective base configuration. Set `RequireAnyKey` to `false` to skip the final key press. For fully unattended runs use batch mode or the library so a platform or address selection can be handled without an interactive prompt.
+
+Use `--static-only`, `"StaticOnly": true` in `config.json`, or `new Config { StaticOnly = true }` in a library request to skip the Windows native PE loader. Static registration search, an adjacent Il2CppInspectorRedux registration file, and caller-supplied registration addresses remain available. In batch mode you can also enable `StaticOnly` per entry. A batch-wide setting of `true` applies to every entry.
+
+**Português:** Use `--static-only` ou configure `StaticOnly` como `true` para analisar o PE sem chamar o carregador nativo do Windows. Em lote, a opção pode ser ativada por entrada. Se estiver ativada no lote inteiro, vale para todas as entradas.
 
 #### Batch Mode (`--batch <file>`)
 
@@ -598,6 +602,7 @@ The table lists the public `Config` properties. The CLI loads `config.json` besi
 | `ForceVersion` | CLI config `16`, library `24.3` | Native parser version when the override is enabled. |
 | `ForceDump` | `false` | Enter the memory-image path. ELF inputs may require an image base. |
 | `NoRedirectedPointer` | `false` | Skip pointer reload when an ELF memory image has unredirected pointers. |
+| `StaticOnly` | `false` | Disable the Windows native loader fallback for PE registration. |
 | `RequireAnyKey` | `true` | Wait for a final key press in the interactive CLI. |
 | `BatchMode` | `false` | Enable batch-file discovery without the explicit `--batch` flag. |
 | `StopOnFirstError` | `false` | In batch mode, stop after an entry's generation fails. |

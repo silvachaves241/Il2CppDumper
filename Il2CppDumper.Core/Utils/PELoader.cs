@@ -47,13 +47,9 @@ namespace Il2CppDumper
             }
             foreach (var section in sections)
             {
-                switch (section.Characteristics)
+                if (HasCapturedBytes(section))
                 {
-                    case 0x60000020:
-                    case 0x40000040:
-                    case 0xC0000040:
-                        Marshal.Copy(new IntPtr(handle.ToInt64() + section.VirtualAddress), peBuff, (int)section.VirtualAddress, (int)section.VirtualSize);
-                        break;
+                    Marshal.Copy(new IntPtr(handle.ToInt64() + section.VirtualAddress), peBuff, (int)section.VirtualAddress, (int)section.VirtualSize);
                 }
             }
             var peMemory = new MemoryStream(peBuff);
@@ -66,8 +62,11 @@ namespace Il2CppDumper
             writer.Close();
             peMemory.Position = 0;
             var pe = new PE(peMemory);
-            pe.LoadFromMemory((ulong)handle.ToInt64());
+            pe.LoadFromMemory((ulong)handle.ToInt64(), HasCapturedBytes);
             return pe;
         }
+
+        private static bool HasCapturedBytes(SectionHeader section) =>
+            section.Characteristics is 0x60000020 or 0x40000040 or 0xC0000040;
     }
 }
