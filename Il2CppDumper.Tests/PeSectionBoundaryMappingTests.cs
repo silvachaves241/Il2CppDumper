@@ -52,8 +52,10 @@ namespace Il2CppDumper.Tests
             Assert.Equal(0ul, beforeFirst);
         }
 
-        [Fact]
-        public void StructGenerator_AdjacentSectionBoundary_EmitsExpectedRvaInJsonArtifacts()
+        [Theory]
+        [InlineData(0, 512u)]
+        [InlineData(248, 256u)]
+        public void StructGenerator_FileBackedSectionBoundaries_EmitExpectedRvaInJsonArtifacts(int sectionOffset, uint virtualSize)
         {
             var tempDir = Path.Combine(Path.GetTempPath(), "pe_boundary_test_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempDir);
@@ -63,13 +65,14 @@ namespace Il2CppDumper.Tests
                 var sections = new (string, byte[], uint, uint)[]
                 {
                     (".text", new byte[512], 512, 0x60000020),
-                    (".data", new byte[512], 512, 0xC0000040)
+                    (".data", new byte[512], virtualSize, 0xC0000040)
                 };
                 var peBytes = ProtectionReportTests.CreateSyntheticPe(sections);
 
-                // Place encoded metadata usage for v29 string literal at raw offset 0x600 (start of .data)
+                // Place an encoded metadata usage in .data, including its last mapped pointer slot.
                 // 0xA0000001UL: usage = 5 (kIl2CppMetadataUsageStringLiteral), index = 0
-                BitConverter.GetBytes(0xA0000001UL).CopyTo(peBytes, 0x600);
+                BitConverter.GetBytes(0xA0000001UL).CopyTo(peBytes, 0x600 + sectionOffset);
+                var expectedRva = 0x2000ul + (ulong)sectionOffset;
 
                 var metadataBytes = new byte[8192];
                 BitConverter.GetBytes(0xFAB11BAFu).CopyTo(metadataBytes, 0); // magic
@@ -90,7 +93,7 @@ namespace Il2CppDumper.Tests
                 var generator = new StructGenerator(executor);
                 generator.WriteScript(tempDir + Path.DirectorySeparatorChar);
 
-                // Verify stringliteral.json contains address 0x2000
+                // Verify the same RVA in both generated maps.
                 var stringLiteralJsonPath = Path.Combine(tempDir, "stringliteral.json");
                 Assert.True(File.Exists(stringLiteralJsonPath));
                 using (var doc = JsonDocument.Parse(File.ReadAllText(stringLiteralJsonPath)))
@@ -98,10 +101,9 @@ namespace Il2CppDumper.Tests
                     var items = doc.RootElement;
                     Assert.True(items.GetArrayLength() > 0);
                     var addressProp = items[0].GetProperty("address").GetString();
-                    Assert.Equal("0x2000", addressProp);
+                    Assert.Equal($"0x{expectedRva:X}", addressProp);
                 }
 
-                // Verify script.json contains ScriptString with address 0x2000 (8192)
                 var scriptJsonPath = Path.Combine(tempDir, "script.json");
                 Assert.True(File.Exists(scriptJsonPath));
                 using (var doc = JsonDocument.Parse(File.ReadAllText(scriptJsonPath)))
@@ -109,7 +111,7 @@ namespace Il2CppDumper.Tests
                     var scriptStringArray = doc.RootElement.GetProperty("ScriptString");
                     Assert.True(scriptStringArray.GetArrayLength() > 0);
                     var addressProp = scriptStringArray[0].GetProperty("Address").GetUInt64();
-                    Assert.Equal(0x2000ul, addressProp);
+                    Assert.Equal(expectedRva, addressProp);
                 }
             }
             finally

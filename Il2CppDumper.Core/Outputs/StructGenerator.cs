@@ -321,8 +321,8 @@ namespace Il2CppDumper
                     foreach (var sec in sectionHelper.Data)
                     {
                         il2Cpp.Position = sec.offset;
-                    var end = Math.Min(sec.offsetEnd, il2Cpp.Length) - il2Cpp.PointerSize;
-                    while (il2Cpp.Position < end)
+                    var end = Math.Min(sec.offsetEnd, il2Cpp.Length);
+                    while (il2Cpp.Position < end && end - il2Cpp.Position >= il2Cpp.PointerSize)
                     {
                         var addr = il2Cpp.Position;
                         var metadataValue = il2Cpp.ReadUIntPtr();

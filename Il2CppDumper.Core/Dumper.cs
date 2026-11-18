@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Text.Json;
 
 namespace Il2CppDumper.Core
@@ -324,7 +323,8 @@ namespace Il2CppDumper.Core
             out Il2Cpp il2Cpp,
             string? outputDir = null,
             DumpMetadata? dumpMetadata = null,
-            DumpRequest? request = null)
+            DumpRequest? request = null,
+            Func<string, PE>? peLoader = null)
         {
             CoreLogger.WriteLine("Initializing metadata...");
             var metadataBytes = File.ReadAllBytes(metadataPath);
@@ -457,12 +457,16 @@ namespace Il2CppDumper.Core
             try
             {
                 var flag = il2Cpp.PlusSearch(metadata.methodDefs.Count(x => x.methodIndex >= 0), metadata.typeDefs.Length, metadata.imageDefs.Length);
-                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                if (!flag && il2Cpp is PE)
                 {
-                    if (!flag && il2Cpp is PE)
+                    if (config.StaticOnly)
+                    {
+                        CoreLogger.WriteLine("StaticOnly: skipped the Windows PE loader after static registration search failed.");
+                    }
+                    else if (peLoader != null || OperatingSystem.IsWindows())
                     {
                         CoreLogger.WriteLine("Use custom PE loader");
-                        il2Cpp = PELoader.Load(il2cppPath);
+                        il2Cpp = (peLoader ?? PELoader.Load)(il2cppPath);
                         il2Cpp.SetProperties(version, metadata.metadataUsagesCount, metadata);
                         flag = il2Cpp.PlusSearch(metadata.methodDefs.Count(x => x.methodIndex >= 0), metadata.typeDefs.Length, metadata.imageDefs.Length);
                     }
@@ -851,6 +855,7 @@ namespace Il2CppDumper.Core
                 ForceVersion = source.ForceVersion,
                 ForceDump = source.ForceDump,
                 NoRedirectedPointer = source.NoRedirectedPointer,
+                StaticOnly = source.StaticOnly,
                 StringDecryptor = source.StringDecryptor,
                 StringDecryptorKey = source.StringDecryptorKey,
                 EmitFridaScript = source.EmitFridaScript,

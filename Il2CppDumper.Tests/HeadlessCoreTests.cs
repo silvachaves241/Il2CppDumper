@@ -133,6 +133,113 @@ namespace Il2CppDumper.Tests
             return RunCliWithInput(appDir, null, args);
         }
 
+        private static (string Executable, string Metadata) CreatePeWithoutRegistration(string directory)
+        {
+            var executable = Path.Combine(directory, "synthetic.dll");
+            var metadata = Path.Combine(directory, "metadata.dat");
+            File.WriteAllBytes(executable, ProtectionReportTests.CreateSyntheticPe(new[]
+            {
+                (".data", new byte[512], 512u, 0xC0000040u)
+            }));
+            File.WriteAllBytes(metadata, CreateMinimalMetadata());
+            return (executable, metadata);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void PeRegistration_StaticOnlySkipsInterceptedLoaderAndReachesManualRegistration(bool staticOnly)
+        {
+            var directory = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"il2cpp-pe-policy-{Guid.NewGuid():N}"));
+            try
+            {
+                var (executable, metadataPath) = CreatePeWithoutRegistration(directory.FullName);
+                var loaderCalls = 0;
+                var manualCalls = 0;
+                var request = new DumpRequest
+                {
+                    ExecutablePath = executable,
+                    MetadataPath = metadataPath,
+                    ManualRegistrationPrompt = () =>
+                    {
+                        manualCalls++;
+                        return (0x180001020ul, 0x180001100ul);
+                    }
+                };
+                using var output = new StringWriter();
+                using var scope = CoreLogger.Scope(output, new List<string>());
+
+                var success = Dumper.Init(executable, metadataPath, new Config { StaticOnly = staticOnly },
+                    out var metadata, out var pe, request: request, peLoader: path =>
+                    {
+                        Assert.Equal(executable, path);
+                        loaderCalls++;
+                        throw new InvalidOperationException("Intercepted PE loader");
+                    });
+                using var metadataResource = metadata;
+                using var peResource = pe;
+
+                Assert.Equal(staticOnly, success);
+                Assert.Equal(staticOnly ? 0 : 1, loaderCalls);
+                Assert.Equal(staticOnly ? 1 : 0, manualCalls);
+                Assert.Contains(staticOnly ? "StaticOnly: skipped" : "Intercepted PE loader", output.ToString());
+            }
+            finally
+            {
+                directory.Delete(recursive: true);
+            }
+        }
+
+        [Theory]
+        [InlineData("flag")]
+        [InlineData("config")]
+        [InlineData("batch-global")]
+        [InlineData("batch-entry")]
+        public void PeRegistration_StaticOnlyReachesCoreThroughCliAndBatch(string mode)
+        {
+            var directory = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"il2cpp-pe-cli-{Guid.NewGuid():N}"));
+            try
+            {
+                var appDir = SetupIsolatedApp(directory.FullName);
+                var (executable, metadata) = CreatePeWithoutRegistration(directory.FullName);
+                var output = Path.Combine(directory.FullName, "output");
+                string[] arguments;
+                if (mode.StartsWith("batch", StringComparison.Ordinal))
+                {
+                    var batchFile = Path.Combine(directory.FullName, "batch.json");
+                    File.WriteAllText(batchFile, JsonSerializer.Serialize(new[]
+                    {
+                        new { executable, metadata, output, config = new { StaticOnly = mode == "batch-entry" } }
+                    }));
+                    arguments = mode == "batch-global"
+                        ? new[] { "--batch", batchFile, "--static-only" }
+                        : new[] { "--batch", batchFile };
+                }
+                else if (mode == "config")
+                {
+                    File.WriteAllText(Path.Combine(appDir, "config.json"),
+                        "{\"StaticOnly\":true,\"RequireAnyKey\":false}");
+                    arguments = new[] { executable, metadata, output };
+                }
+                else
+                {
+                    arguments = new[] { executable, metadata, output, "--static-only" };
+                }
+
+                var (exitCode, stdout, _) = RunCli(appDir, arguments);
+
+                Assert.Equal(1, exitCode);
+                Assert.Contains("StaticOnly: skipped", stdout);
+                Assert.DoesNotContain("Use custom PE loader", stdout);
+                using var manifest = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(output, RunManifestWriter.FileName)));
+                Assert.True(manifest.RootElement.GetProperty("effectiveConfig").GetProperty("StaticOnly").GetBoolean());
+            }
+            finally
+            {
+                directory.Delete(recursive: true);
+            }
+        }
+
         private static byte[] CreateSyntheticFatMacho()
         {
             using var ms = new MemoryStream();
