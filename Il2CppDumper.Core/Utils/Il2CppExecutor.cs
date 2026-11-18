@@ -879,6 +879,21 @@ namespace Il2CppDumper
             return il2Cpp.GetSectionHelper(metadata.methodDefs.Count(x => x.methodIndex >= 0), metadata.typeDefs.Length, metadata.imageDefs.Length);
         }
 
+        internal static bool IsInt32FieldRva(Il2CppType fieldType) =>
+            (fieldType.attrs & (uint)System.Reflection.FieldAttributes.HasFieldRVA) != 0 &&
+            fieldType.type is Il2CppTypeEnum.IL2CPP_TYPE_I4 or Il2CppTypeEnum.IL2CPP_TYPE_U4;
+
+        internal byte[] ReadInt32FieldRvaData(Il2CppType fieldType, Il2CppFieldDefaultValue fieldDefault)
+        {
+            // FieldRVA records contain raw initializer bytes rather than compressed constants.
+            if ((uint)fieldDefault.typeIndex >= (uint)il2Cpp.types.Length ||
+                il2Cpp.types[fieldDefault.typeIndex].type != fieldType.type)
+            {
+                return Array.Empty<byte>();
+            }
+            return metadata.ReadDefaultValueData(fieldDefault.dataIndex, sizeof(int));
+        }
+
         public bool TryGetDefaultValue(int typeIndex, int dataIndex, out object value) =>
             TryGetDefaultValue(typeIndex, dataIndex, out value, null, null, null);
 

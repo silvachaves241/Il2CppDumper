@@ -125,6 +125,31 @@ namespace Il2CppDumper
             return true;
         }
 
+        internal bool IsZeroFilledRange(ulong absAddr, ulong byteSize)
+        {
+            if (absAddr < ImageBase || byteSize == 0)
+            {
+                return false;
+            }
+            var rva = absAddr - ImageBase;
+            foreach (var section in sections)
+            {
+                if (rva < section.VirtualAddress)
+                {
+                    continue;
+                }
+                var delta = rva - section.VirtualAddress;
+                if (delta < section.VirtualSize)
+                {
+                    // PE virtual tails contain loader-supplied zeros and have no file offset.
+                    return delta >= section.SizeOfRawData && byteSize <= section.VirtualSize - delta &&
+                        (section.SizeOfRawData == 0 ||
+                         (ulong)section.PointerToRawData + section.SizeOfRawData <= Length);
+                }
+            }
+            return false;
+        }
+
         public override ulong MapRTVA(ulong addr)
         {
             var section = sections.FirstOrDefault(x => addr >= x.PointerToRawData && addr < x.PointerToRawData + x.SizeOfRawData);

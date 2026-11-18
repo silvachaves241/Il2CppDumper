@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -206,7 +207,26 @@ namespace Il2CppDumper
                                 writer.Write($"{executor.GetTypeName(fieldType, false, false)} {metadata.GetStringFromIndex(fieldDef.nameIndex)}");
                                 if (metadata.GetFieldDefaultValueFromIndex(i, out var fieldDefaultValue) && fieldDefaultValue.dataIndex != -1)
                                 {
-                                    if (executor.TryGetDefaultValue(fieldDefaultValue.typeIndex, fieldDefaultValue.dataIndex, out var value, typeDefIndex, metadata.GetStringFromIndex(typeDef.nameIndex), metadata.GetStringFromIndex(fieldDef.nameIndex)))
+                                    if (Il2CppExecutor.IsInt32FieldRva(fieldType))
+                                    {
+                                        var bytes = executor.ReadInt32FieldRvaData(fieldType, fieldDefaultValue);
+                                        if (bytes.Length == sizeof(int))
+                                        {
+                                            if (fieldType.type == Il2CppTypeEnum.IL2CPP_TYPE_I4)
+                                            {
+                                                writer.Write($" = {BinaryPrimitives.ReadInt32LittleEndian(bytes)}");
+                                            }
+                                            else
+                                            {
+                                                writer.Write($" = {BinaryPrimitives.ReadUInt32LittleEndian(bytes)}");
+                                            }
+                                        }
+                                        else
+                                        {
+                                            writer.Write($" /*Metadata offset 0x{metadata.GetDefaultValueFromIndex(fieldDefaultValue.dataIndex):X}*/");
+                                        }
+                                    }
+                                    else if (executor.TryGetDefaultValue(fieldDefaultValue.typeIndex, fieldDefaultValue.dataIndex, out var value, typeDefIndex, metadata.GetStringFromIndex(typeDef.nameIndex), metadata.GetStringFromIndex(fieldDef.nameIndex)))
                                     {
                                         writer.Write($" = ");
                                         if (value is string str)

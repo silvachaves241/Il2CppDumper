@@ -269,14 +269,14 @@ namespace Il2CppDumper
                                 RecordMappingFailure("MethodPointersTable", codeGenModule.methodPointers, "table range could not be read from stream", member: moduleName);
                             }
                         }
-                        else if (codeGenModule.methodPointers != 0)
-                        {
-                            methodPointers = new ulong[pointerCount];
-                            RecordMappingFailure("MethodPointersTable", codeGenModule.methodPointers, "table range crosses section boundary or exceeds stream bounds", member: moduleName);
-                        }
                         else
                         {
                             methodPointers = new ulong[pointerCount];
+                            if (codeGenModule.methodPointers != 0 &&
+                                !(this is PE pe && pe.IsZeroFilledRange(codeGenModule.methodPointers, byteSize)))
+                            {
+                                RecordMappingFailure("MethodPointersTable", codeGenModule.methodPointers, "table range crosses section boundary or exceeds stream bounds", member: moduleName);
+                            }
                         }
                     }
                     else if (pointerCount > 0)
