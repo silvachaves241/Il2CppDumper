@@ -31,6 +31,7 @@ namespace Il2CppDumper
         private readonly Il2CppMetadataUsagePair[] metadataUsagePairs;
         public int[] attributeTypes;
         public int[] interfaceIndices;
+        internal (int TypeIndex, int Offset)[] InterfaceOffsets { get; }
         public Dictionary<Il2CppMetadataUsage, SortedDictionary<uint, uint>> metadataUsageDic;
         public long metadataUsagesCount;
         public int[] nestedTypeIndices;
@@ -173,6 +174,7 @@ namespace Il2CppDumper
             interfaceIndices = Version >= 38
                 ? ReadMetadataIndexArray(header.interfaces, typeIndexSize)
                 : ReadClassArray<int>(header.interfacesOffset, header.interfacesSize / 4);
+            InterfaceOffsets = ReadInterfaceOffsets();
             nestedTypeIndices = ReadNestedTypeIndices();
             eventDefs = Version >= 38
                 ? ReadMetadataClassArray<Il2CppEventDefinition>(header.events)
@@ -490,8 +492,9 @@ namespace Il2CppDumper
             ValidateFixedSection(header.genericParameterConstraints, nameof(header.genericParameterConstraints), typeIndexSize);
             nestedTypeEntrySize = ValidateIndexSection(header.nestedTypes, nameof(header.nestedTypes));
 
-            // These fixed sections are described by the header but are not materialized by this reader.
             ValidateFixedSection(header.interfaceOffsets, nameof(header.interfaceOffsets), typeIndexSize + sizeof(int));
+
+            // These fixed sections are described by the header but are not materialized by this reader.
             ValidateFixedSection(header.fieldMarshaledSizes, nameof(header.fieldMarshaledSizes), fieldIndexSize + typeIndexSize + sizeof(int));
             Validate<int>(header.referencedAssemblies, nameof(header.referencedAssemblies));
             ValidateFixedSection(header.unresolvedIndirectCallParameterTypes, nameof(header.unresolvedIndirectCallParameterTypes), typeIndexSize);
@@ -546,6 +549,23 @@ namespace Il2CppDumper
         private InvalidDataException InvalidFixedSection(Il2CppSectionMetadata section, string name, string expected) =>
             new($"Invalid metadata section '{name}' (v{Version}, offset {section.offset}, size {section.sectionSize}, " +
                 $"count {section.count}). Expected width/layout: {expected}.");
+
+        private (int TypeIndex, int Offset)[] ReadInterfaceOffsets()
+        {
+            var offset = Version >= 38 ? header.interfaceOffsets.offset : header.interfaceOffsetsOffset;
+            var size = Version >= 38 ? header.interfaceOffsets.sectionSize : header.interfaceOffsetsSize;
+            var indexWidth = Version >= 38 ? typeIndexSize : sizeof(int);
+            var recordWidth = indexWidth + sizeof(int);
+            // Modern headers have already been validated. Older headers have only a byte extent.
+            if (offset < 0 || size <= 0 || size % recordWidth != 0 || (ulong)offset + (ulong)size > Length)
+                return Array.Empty<(int, int)>();
+
+            Position = (ulong)offset;
+            var pairs = new (int, int)[size / recordWidth];
+            for (var i = 0; i < pairs.Length; i++)
+                pairs[i] = (ReadMetadataIndex(indexWidth), ReadInt32());
+            return pairs;
+        }
 
         private int[] ReadMetadataIndexArray(Il2CppSectionMetadata section, int indexSize)
         {

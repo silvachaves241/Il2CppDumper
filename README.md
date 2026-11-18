@@ -167,6 +167,25 @@ Dumps completos de versões anteriores podem omitir essas três propriedades. Co
 
 Correlacione tipos por `<image>!<fullName>` ou, na ausência da imagem, por `<assembly>!<fullName>`. Campos com `isStatic: true` usam o armazenamento estático. Trate um `offset` nulo como indisponível. Assinaturas gerenciadas vêm de `methods`. Para endereços nativos, consulte o mapa `script.json` da mesma execução e use a identidade do método disponível ali.
 
+#### Métodos, interfaces e vtable
+
+Cada entrada em `methods` traz `methodDefIndex`, o índice global do método no metadata, e `methodToken`, o token numérico disponível no leitor. Tipos de topo e aninhados usam o mesmo contrato. Duplicatas de token entre imagens são possíveis.
+
+Cada tipo traz `vtable` na ordem das posições físicas do metadata. A lista é vazia se o tipo não tem posições. Uma posição contém:
+
+| Campo | Significado |
+| --- | --- |
+| `position` | Posição física no tipo receptor, a partir de zero. Posições que apontam para o mesmo destino aparecem separadamente. |
+| `methodDefIndex`, `resolved` | Índice global da declaração de destino e estado da resolução. Uma posição desconhecida é preservada com `methodDefIndex: null` e `resolved: false`. |
+| `declaredSlot` | Slot declarado pelo método de destino, quando disponível. Pode diferir de `position`. |
+| `methodSpecIndex` | Índice de MethodSpec quando a entrada codificada referencia uma instância genérica. O destino resolvido identifica a declaração MethodDef correspondente. |
+| `interfaceStatus` | `interface` indica pelo menos uma origem confirmada. `class` indica ausência de origem de interface nos offsets disponíveis. `unknown` indica que a origem não pôde ser determinada. |
+| `interfaces` | Origens confirmadas. Cada vínculo traz `interfaceTypeIndex` (índice do tipo nativo, inclusive para instâncias genéricas), `interfaceTypeDefIndex` (definição da interface), `interfaceMethodDefIndex` e `interfaceSlot` (slot declarado na interface). |
+
+Quando um método é destino de despacho de interface em um tipo exportado, `methods[].interfaceDispatch` registra `receiverTypeDefIndex`, `position`, `declaredSlot` quando disponível e a lista de origens daquela posição. Isso permite consultar várias interfaces e receptores, inclusive quando o método de destino foi declarado por uma classe base. Os índices referem-se ao metadata completo e não são renumerados com `--image`. A seleção limita as declarações e os receptores da lista inversa. O destino ou a interface de uma posição pode estar em outra imagem e continuar referenciado pelo índice.
+
+O despacho vem dos offsets de interface e das entradas da vtable registrados no metadata. Para instâncias de interface genérica, o vínculo identifica a instância e a definição de origem. O exportador não infere despacho adicional em tempo de execução nem substitui MethodSpecs sem resolução por métodos de nome semelhante. `DumpMethod: false` deixa de emitir as declarações e os vínculos inversos, e a lista `vtable` permanece disponível. Dumps anteriores podem omitir os novos campos.
+
 ### script.json e il2cpp.h
 
 `script.json` contém `ScriptMethod`, `ScriptString`, `ScriptMetadata`, `ScriptMetadataMethod` e `Addresses`. Métodos podem incluir `MethodSignature`, `Image` e `Assembly`, úteis para correlacionar sobrecargas e homônimos. Em PE, os endereços de métodos são RVAs, relativos à base da imagem. Use o espaço de endereçamento do formato de entrada ao importar mapas. `il2cpp.h` descreve estruturas nativas recuperadas, incluindo campos herdados, estáticos e específicos de tipo.

@@ -21,6 +21,8 @@
       "properties": [],
       "methods": [
         {
+          "methodDefIndex": 0,
+          "methodToken": 100663297,
           "name": "SyntheticMethod",
           "returnType": "void",
           "parameters": [
@@ -35,7 +37,8 @@
         }
       ],
       "enums": [],
-      "nested": []
+      "nested": [],
+      "vtable": []
     },
     {
       "image": "SyntheticImage.dll",
@@ -73,7 +76,8 @@
           }
         }
       ],
-      "nested": []
+      "nested": [],
+      "vtable": []
     }
   ]
 }
