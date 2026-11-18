@@ -19,12 +19,21 @@ namespace Il2CppDumper
         private readonly MethodInfo readClassArray;
         private readonly Dictionary<Type, MethodInfo> genericMethodCache;
         private readonly Dictionary<FieldInfo, VersionAttribute[]> attributeCache;
+        private bool disposed;
 
-        public BinaryStream(Stream input)
+        /// <summary>Wraps and owns a readable, writable binary stream.</summary>
+        public BinaryStream(Stream input) : this(input, requireWritable: true)
+        {
+        }
+
+        private protected BinaryStream(Stream input, bool requireWritable)
         {
             stream = input;
             reader = new BinaryReader(stream, Encoding.UTF8, true);
-            writer = new BinaryWriter(stream, Encoding.UTF8, true);
+            if (requireWritable || stream.CanWrite)
+            {
+                writer = new BinaryWriter(stream, Encoding.UTF8, true);
+            }
             readClass = GetType().GetMethod("ReadClass", Type.EmptyTypes);
             readClassArray = GetType().GetMethod("ReadClassArray", new[] { typeof(long) });
             genericMethodCache = new();
@@ -61,27 +70,27 @@ namespace Il2CppDumper
 
         public uint ReadULeb128() => reader.ReadULeb128();
 
-        public void Write(bool value) => writer.Write(value);
+        public void Write(bool value) => Writer.Write(value);
 
-        public void Write(byte value) => writer.Write(value);
+        public void Write(byte value) => Writer.Write(value);
 
-        public void Write(sbyte value) => writer.Write(value);
+        public void Write(sbyte value) => Writer.Write(value);
 
-        public void Write(short value) => writer.Write(value);
+        public void Write(short value) => Writer.Write(value);
 
-        public void Write(ushort value) => writer.Write(value);
+        public void Write(ushort value) => Writer.Write(value);
 
-        public void Write(int value) => writer.Write(value);
+        public void Write(int value) => Writer.Write(value);
 
-        public void Write(uint value) => writer.Write(value);
+        public void Write(uint value) => Writer.Write(value);
 
-        public void Write(long value) => writer.Write(value);
+        public void Write(long value) => Writer.Write(value);
 
-        public void Write(ulong value) => writer.Write(value);
+        public void Write(ulong value) => Writer.Write(value);
 
-        public void Write(float value) => writer.Write(value);
+        public void Write(float value) => Writer.Write(value);
 
-        public void Write(double value) => writer.Write(value);
+        public void Write(double value) => Writer.Write(value);
 
         public ulong Position
         {
@@ -274,14 +283,24 @@ namespace Il2CppDumper
 
         public BinaryReader Reader => reader;
 
-        public BinaryWriter Writer => writer;
+        /// <exception cref="NotSupportedException">The wrapped stream is read-only.</exception>
+        public BinaryWriter Writer => writer ?? throw new NotSupportedException("Writing requires a writable stream.");
 
         protected virtual void Dispose(bool disposing)
         {
-            if (disposing)
+            if (!disposing || disposed)
+            {
+                return;
+            }
+
+            disposed = true;
+            try
             {
                 reader.Dispose();
-                writer.Dispose();
+                writer?.Dispose();
+            }
+            finally
+            {
                 stream.Close();
             }
         }

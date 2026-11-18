@@ -183,6 +183,8 @@ else
 
 `Dumper.Execute(request)` is an alias for `Dumper.Dump(request)`. Use `result.Warnings`, `result.ImageSelection`, `result.OutputValidation`, and `result.ProducedFiles` alongside `result.Success`. `BatchProcessor.RunBatch(batchFilePath, baseConfig, log, errorLog, resultOutputPath)` runs the same batch workflow in process.
 
+For metadata-only inspection, pass a readable, seekable stream such as `File.OpenRead(metadataPath)` to `new Il2CppDumper.Metadata(stream)`. Disposing the reader closes the input. Metadata writes and executable relocation require writable streams.
+
 | Optional `DumpRequest` property | Behavior |
 | --- | --- |
 | `MachoFatIndex`, `MachoFatSelector` | Supply a zero-based FAT Mach-O slice or a callback. Automatic headless selection prefers a 64-bit slice, then the first slice. |

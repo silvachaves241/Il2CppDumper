@@ -74,8 +74,15 @@ namespace Il2CppDumper
         private int adjustorThunkIndexSize = 4;
         private int genericContainerSizeV106;
 
-        public Metadata(Stream stream) : base(stream)
+        /// <summary>Reads IL2CPP metadata from a readable, seekable stream, including a read-only stream.</summary>
+        /// <param name="stream">The input stream, closed when the metadata reader is disposed.</param>
+        public Metadata(Stream stream) : base(stream, requireWritable: false)
         {
+            if (!stream.CanSeek)
+            {
+                throw new ArgumentException("Metadata input must be seekable.", nameof(stream));
+            }
+
             var sanity = ReadUInt32();
             if (sanity != 0xFAB11BAF)
             {
