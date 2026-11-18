@@ -211,7 +211,7 @@ Contains all stringLiteral reference usages emitted by `StructGenerator` (`value
 
 #### stringliteral-indexed.json
 
-When a v39 string offset table declares one extra row ending exactly at the data section boundary, the indexed output preserves that terminal row with `"status": "boundary"`. It marks the end of the preceding literal and is excluded from runtime string exports and decode failure counts. The manifest's literal count still counts indexed rows. Genuine zero-length literals have no boundary status.
+When a v39 string offset table declares one extra row ending exactly at the data section boundary, the indexed output preserves that terminal row with `"status": "boundary"`. It marks the end of the preceding literal and is excluded from runtime string exports and decode failure counts. The manifest's literal count still counts indexed rows. The diff tool also skips boundary rows. Genuine zero-length literals have no boundary status.
 
 Complete forensic string literal table emitted by `StructGenerator` as structured JSON (`index`, `value`, `dataIndex`, `length`). Provides a strictly sequential, 1-to-1 table of every literal in `global-metadata.dat` (including unreferenced literals and the final entry).
 

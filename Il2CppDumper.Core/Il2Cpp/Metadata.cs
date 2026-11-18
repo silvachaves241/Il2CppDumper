@@ -1223,7 +1223,7 @@ namespace Il2CppDumper
 
                 if (IsStringLiteralBoundary(i))
                 {
-                    record.status = "boundary";
+                    record.status = StringLiteralRecord.BoundaryStatus;
                     result.Add(record);
                     continue;
                 }

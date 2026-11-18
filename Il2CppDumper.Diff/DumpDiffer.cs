@@ -1920,8 +1920,14 @@ namespace Il2CppDumper.Diff
                         {
                             throw new InvalidDataException($"Failed to parse {label} stringliteral-indexed.json: entry missing valid numeric 'index'.");
                         }
+                        var index = idxEl.GetUInt32();
+                        if (item.TryGetProperty("status", out var status) && status.ValueKind == JsonValueKind.String &&
+                            status.ValueEquals(StringLiteralRecord.BoundaryStatus))
+                        {
+                            continue;
+                        }
                         var val = item.TryGetProperty("value", out var valEl) ? (valEl.GetString() ?? "") : "";
-                        map[idxEl.GetUInt32()] = val;
+                        map[index] = val;
                     }
                     artifacts.Literals = map;
                 }

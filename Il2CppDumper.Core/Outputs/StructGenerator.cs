@@ -586,7 +586,7 @@ namespace Il2CppDumper
                 {
                     Category = "stringLiteral",
                     Member = $"stringLiteral[{index}]",
-                    Detail = $"Metadata usage at RVA 0x{il2Cpp.GetRVA(address):X} refers to the terminal string literal offset."
+                    Detail = $"Metadata usage candidate at RVA 0x{il2Cpp.GetRVA(address):X} refers to the terminal string literal offset."
                 });
                 return;
             }
