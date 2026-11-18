@@ -39,6 +39,8 @@ namespace Il2CppDumper
         public List<JsonDumpEnum> enums { get; set; } = new();
         public List<JsonDumpType> nested { get; set; } = new();
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public JsonDumpVTableEntry[]? vtable { get; set; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public string? size { get; set; }
 
         public string GetIdentityKey() => FormatKey(image, assembly, fullName);
@@ -70,6 +72,12 @@ namespace Il2CppDumper
 
     public class JsonDumpMethod
     {
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public int? methodDefIndex { get; set; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public uint? methodToken { get; set; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public List<JsonDumpInterfaceDispatch>? interfaceDispatch { get; set; }
         public string name { get; set; } = string.Empty;
         public string returnType { get; set; } = string.Empty;
         public List<JsonDumpParameter> parameters { get; set; } = new();
@@ -162,6 +170,7 @@ namespace Il2CppDumper
             var il2Cpp = executor.il2Cpp;
             var model = new JsonDumpModel { ImageSelection = selection };
 
+            var dispatch = new JsonVTableExporter(executor, config.DumpMethod);
             var typeModelMap = new Dictionary<Il2CppTypeDefinition, JsonDumpType>();
             var nestedChildren = new HashSet<Il2CppTypeDefinition>();
 
@@ -177,6 +186,7 @@ namespace Il2CppDumper
                     typeModel.imageId = imageId;
                     typeModel.typeDefIndex = typeDefIndex;
                     typeModel.typeToken = typeDef.token;
+                    typeModel.vtable = dispatch.CreateVTable(typeDef, typeDefIndex);
                     typeModelMap[typeDef] = typeModel;
                 }
             }
@@ -204,6 +214,9 @@ namespace Il2CppDumper
                     }
                 }
             }
+
+            // Dispatch can reference a method declared by another exported type.
+            dispatch.LinkMethods(typeModelMap.Values);
 
             // 3. Populate root types (all non-nested types)
             foreach (var (typeDef, typeModel) in typeModelMap)
@@ -537,6 +550,8 @@ namespace Il2CppDumper
 
                     typeModel.methods.Add(new JsonDumpMethod
                     {
+                        methodDefIndex = i,
+                        methodToken = methodDef.token,
                         name = methodName,
                         returnType = returnTypeName,
                         parameters = parameters,
