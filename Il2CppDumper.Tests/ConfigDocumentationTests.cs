@@ -579,6 +579,16 @@ namespace Il2CppDumper.Tests
             Assert.Equal("removed", parsed.structs[0].fields[1].drift);
         }
         [Fact]
+        public void Config_PerImageDumpStartsEnabledAndCanBeDisabled()
+        {
+            var shipped = File.ReadAllText(Path.Combine(FindRepoRoot(), "Il2CppDumper", "config.json"));
+            Assert.True(new Config().GeneratePerImageDump);
+            Assert.True(JsonSerializer.Deserialize<Config>("{}")!.GeneratePerImageDump);
+            Assert.True(JsonSerializer.Deserialize<Config>(shipped)!.GeneratePerImageDump);
+            Assert.False(JsonSerializer.Deserialize<Config>("{\"GeneratePerImageDump\":false}")!.GeneratePerImageDump);
+        }
+
+        [Fact]
         public void Config_DefaultConstructor_HasGenerateRunManifestTrueByDefault()
         {
             var config = new Config();

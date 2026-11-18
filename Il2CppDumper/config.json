@@ -1,6 +1,6 @@
 {
   "GenerateAggregateDump": true,
-  "GeneratePerImageDump": false,
+  "GeneratePerImageDump": true,
   "DumpMethod": true,
   "DumpField": true,
   "DumpProperty": true,

@@ -313,6 +313,47 @@ namespace Il2CppDumper.Tests
             Assert.Throws<KeyNotFoundException>(() => StringLiteralDecryptorRegistry.Resolve("unknown_algorithm"));
         }
 
+        [Fact]
+        public void V39BoundaryUsage_IsReportedAndExcluded_WhileActualEmptyLiteralIsDecoded()
+        {
+            var bytes = SyntheticMetadataGenerator.Generate(MetadataVersionFamily.V39);
+            using var metadata = new Metadata(new MemoryStream(bytes));
+            int boundary = metadata.header.stringLiteralData.sectionSize;
+            metadata.header.stringLiterals.count = 3;
+            metadata.header.stringLiterals.sectionSize = 12;
+            metadata.header.stringLiteralData.count = 2;
+            metadata.stringLiterals = new[]
+            {
+                new Il2CppStringLiteral { dataIndex = 0 },
+                new Il2CppStringLiteral { dataIndex = 0 },
+                new Il2CppStringLiteral { dataIndex = boundary }
+            };
+            var decryptor = new FaultyDecryptor(throwOnIndex: 2);
+            metadata.StringDecryptor = decryptor;
+
+            var ilBytes = new byte[4096];
+            uint usage = (uint)Il2CppMetadataUsage.kIl2CppMetadataUsageStringLiteral << 29;
+            BitConverter.GetBytes(usage | 1).CopyTo(ilBytes, 1024);
+            BitConverter.GetBytes(usage | 5).CopyTo(ilBytes, 1028);
+            using var wasm = new WebAssemblyMemory(new MemoryStream(new byte[16]), 0);
+            var sections = new SectionHelper(wasm, 0, 0, 0, 0);
+            sections.SetSection(SearchSectionType.Data, new SearchSection { offset = 1024, offsetEnd = 2048 });
+            using var il2Cpp = new TestIl2CppWithUsage(new MemoryStream(ilBytes), sections) { Version = 39 };
+            var generator = new StructGenerator(new Il2CppExecutor(metadata, il2Cpp));
+
+            generator.WriteScript(CreateTempDir() + Path.DirectorySeparatorChar);
+
+            var scriptString = Assert.Single(generator.ScriptJson.ScriptString);
+            Assert.Equal("", scriptString.Value);
+            Assert.Equal(decryptor.Id, scriptString.Decryptor);
+            Assert.Equal(0, metadata.StringDecryptorFailedCount);
+            Assert.Equal(3, generator.StringLiteralsCount);
+            Assert.Equal(1, generator.StringLiteralsFailedCount);
+            var warning = Assert.Single(generator.StringLiteralFailures);
+            Assert.Equal("stringLiteral[2]", warning.Member);
+            Assert.Contains("RVA 0x404", warning.Detail);
+        }
+
         private sealed class TestIl2CppWithUsage : Il2Cpp
         {
             private readonly SectionHelper _sectionHelper;

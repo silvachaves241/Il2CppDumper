@@ -145,6 +145,52 @@ namespace Il2CppDumper.Tests
             Assert.Equal("last_v38", m.GetStringLiteralFromIndex(1));
         }
 
+        [Theory]
+        [InlineData(38, false)]
+        [InlineData(39, false)]
+        [InlineData(39, true)]
+        public void StringLiterals_OnlyExplicitV39TerminalRowIsMarkedAsBoundary(int version, bool hasBoundary)
+        {
+            using var m = CreateV38PlusMetadata(version, Encoding.UTF8.GetBytes("tail"), 0, 0, 4);
+            m.header.stringLiterals = new Il2CppSectionMetadata { offset = 1000, sectionSize = 12, count = 3 };
+            m.header.stringLiteralData.count = hasBoundary ? 2 : 3;
+
+            Assert.True(m.TryGetStringLiteral(0, out var empty, out _, out var length));
+            Assert.Equal("", empty);
+            Assert.Equal(0, length);
+            Assert.True(m.TryGetStringLiteral(1, out var last, out _, out _));
+            Assert.Equal("tail", last);
+            Assert.Equal(!hasBoundary, m.TryGetStringLiteral(2, out _, out _, out _));
+            Assert.False(m.TryGetStringLiteral(3, out _, out _, out _));
+
+            var records = m.DumpStringLiterals(out var failedCount, out var failures);
+            Assert.Equal(0, failedCount);
+            Assert.Empty(failures);
+            Assert.Equal(3, records.Count);
+            Assert.Null(records[0].status);
+            Assert.Equal(hasBoundary ? "boundary" : null, records[2].status);
+            Assert.Equal(2u, records[2].index);
+            Assert.Equal(4, records[2].dataIndex);
+            Assert.Equal(0, records[2].length);
+        }
+
+        [Theory]
+        [InlineData(5, 1024, 2)]
+        [InlineData(-1, 1024, 2)]
+        [InlineData(4, 8190, 2)]
+        public void StringLiterals_MalformedExtentsRemainDecodeFailures(int nextOffset, int start, int expectedFailures)
+        {
+            using var m = CreateV38PlusMetadata(39, Encoding.UTF8.GetBytes("tail"), 0, nextOffset);
+            m.header.stringLiterals = new Il2CppSectionMetadata { offset = 1000, sectionSize = 8, count = 2 };
+            m.header.stringLiteralData.count = 1;
+            m.header.stringLiteralData.offset = start;
+
+            var records = m.DumpStringLiterals(out var count, out var failures);
+            Assert.Equal(expectedFailures, count);
+            Assert.Equal(expectedFailures, failures.Count);
+            Assert.All(records, record => Assert.Null(record.status));
+        }
+
         [Fact]
         public void GetStringLiteralFromIndex_Version39_ResolvesFirstAndLastIndex()
         {

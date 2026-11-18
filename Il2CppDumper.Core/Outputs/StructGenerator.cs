@@ -50,6 +50,7 @@ namespace Il2CppDumper
 
         public void WriteScript(string outputDir)
         {
+            StringLiteralFailures.Clear();
             var json = new ScriptJson();
             ScriptJson = json;
             // 生成唯一名称
@@ -443,7 +444,7 @@ namespace Il2CppDumper
             WrittenFiles.Add(Path.Combine(outputDir, "stringliteral.json"));
             //输出按索引排序的完整StringLiteral取证表
             var indexedStringLiterals = metadata.DumpStringLiterals(out var failedLiterals, out var failures);
-            StringLiteralsFailedCount = failedLiterals;
+            StringLiteralsFailedCount = failedLiterals + StringLiteralFailures.Count;
             StringLiteralFailures.AddRange(failures);
             File.WriteAllText(outputDir + "stringliteral-indexed.json", JsonSerializer.Serialize(indexedStringLiterals, jsonOptions), new UTF8Encoding(false));
             StringLiteralsCount = indexedStringLiterals.Count;
@@ -579,6 +580,17 @@ namespace Il2CppDumper
 
         private void AddMetadataUsageStringLiteral(ScriptJson json, uint index, ulong address)
         {
+            if (metadata.IsStringLiteralBoundary(index))
+            {
+                StringLiteralFailures.Add(new RunManifestWarningItem
+                {
+                    Category = "stringLiteral",
+                    Member = $"stringLiteral[{index}]",
+                    Detail = $"Metadata usage at RVA 0x{il2Cpp.GetRVA(address):X} refers to the terminal string literal offset."
+                });
+                return;
+            }
+
             var scriptString = new ScriptString();
             json.ScriptString.Add(scriptString);
             scriptString.Address = il2Cpp.GetRVA(address);

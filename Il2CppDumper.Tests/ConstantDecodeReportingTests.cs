@@ -35,7 +35,8 @@ namespace Il2CppDumper.Tests
         private const MetadataCorruptionType MalformedConstant = MetadataCorruptionType.ConstantBlobInvalidPrefix;
 
         private static (bool Success, List<string> Warnings, string DummyDllPath,
-            RunManifestWarnings ManifestWarnings, string Diagnostics) Execute(bool dumpField, string dir, bool fieldRva = false, int dataSize = 4)
+            RunManifestWarnings ManifestWarnings, string Diagnostics) Execute(bool dumpField, string dir, bool fieldRva = false,
+                int dataSize = 4, uint initialValue = 0x13FF2FE1u, bool unsigned = false)
         {
             var (metadata, il2Cpp, executor) = SyntheticEnvironment.Create(
                 MetadataVersionFamily.V39, corruption: MalformedConstant);
@@ -46,7 +47,12 @@ namespace Il2CppDumper.Tests
                     FieldAttributes.InitOnly | FieldAttributes.HasFieldRVA);
                 metadata.header.fieldAndParameterDefaultValueData.sectionSize = dataSize;
                 metadata.Position = metadata.GetDefaultValueFromIndex(0);
-                metadata.Write(0x13FF2FE1);
+                metadata.Write(initialValue);
+                if (unsigned)
+                {
+                    il2Cpp.types[2].type = Il2CppTypeEnum.IL2CPP_TYPE_U4;
+                    il2Cpp.types[3].type = Il2CppTypeEnum.IL2CPP_TYPE_U4;
+                }
             }
 
             var config = new Config
@@ -95,13 +101,15 @@ namespace Il2CppDumper.Tests
         }
 
         [Theory]
-        [InlineData(4, true)]
-        [InlineData(3, false)]
-        public void Int32FieldRva_UsesRawBytesOnlyWithinDefaultDataSection(int dataSize, bool hasValue)
+        [InlineData(4, 0x13FF2FE1u, false)]
+        [InlineData(4, 0xF3FF2FE1u, false)]
+        [InlineData(4, 0xF3FF2FE1u, true)]
+        [InlineData(3, 0x13FF2FE1u, false)]
+        public void Int32FieldRva_UsesRawBytesOnlyWithinDefaultDataSection(int dataSize, uint initialValue, bool unsigned)
         {
             var dir = Path.Combine(outputDir, "field-rva");
             var (success, _, dummyDllPath, manifestWarnings, diagnostics) =
-                Execute(dumpField: true, dir, fieldRva: true, dataSize);
+                Execute(dumpField: true, dir, fieldRva: true, dataSize, initialValue, unsigned);
             Assert.True(success, diagnostics);
             Assert.Equal(0, manifestWarnings.ByCategory.ConstantDecode);
 
@@ -110,11 +118,12 @@ namespace Il2CppDumper.Tests
                 .Fields.Single(f => f.Name == "OptionA");
             var dump = File.ReadAllText(Path.Combine(dir, "dump.cs"));
             Assert.False(field.HasConstant);
-            if (hasValue)
+            if (dataSize == sizeof(int))
             {
                 Assert.True(field.HasFieldRVA);
-                Assert.Equal(new byte[] { 0xE1, 0x2F, 0xFF, 0x13 }, field.InitialValue);
-                Assert.Contains($"OptionA = {0x13FF2FE1}", dump);
+                Assert.Equal(BitConverter.GetBytes(initialValue), field.InitialValue);
+                var expected = unsigned ? initialValue.ToString() : unchecked((int)initialValue).ToString();
+                Assert.Contains($"OptionA = {expected};", dump);
             }
             else
             {

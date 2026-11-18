@@ -158,7 +158,7 @@ The checks reopen assembly metadata, verify PropertyMap, EventMap and NestedClas
 
 #### Declaration dumps by image
 
-Set `"GeneratePerImageDump": true` in `config.json`, the batch entry's `config`, or `Config.GeneratePerImageDump` in the library. `GenerateAggregateDump` (default `true`) controls the existing `dump.cs` independently. Set it to `false` for split-only exports. With both options off, no declaration files are produced. Other output switches remain independent.
+Per-image dumps are enabled by default. Set `"GeneratePerImageDump": false` in `config.json`, the batch entry's `config`, or `Config.GeneratePerImageDump` in the library for aggregate-only exports. `GenerateAggregateDump` (default `true`) controls the existing `dump.cs` independently. Set it to `false` for split-only exports. With both options off, no declaration files are produced. Other output switches remain independent.
 
 Each split file starts with its original image header and uses the same declaration formatting as `dump.cs`. `DumpTypeDefIndex` (default `true`) controls the inline TypeDefIndex and image labels in both formats. The index always retains the original image ID, name, first type index, and source type count. Filenames use the original image ID and a bounded, sanitized name. An empty image gets a header-only file.
 
@@ -210,6 +210,8 @@ Contains all stringLiteral reference usages emitted by `StructGenerator` (`value
 **Português:** Contém todas as referências de uso de stringLiteral emitidas pelo `StructGenerator` (`value`, `address`). Preserva todas as referências de memória e endereços de chamada no binário.
 
 #### stringliteral-indexed.json
+
+When a v39 string offset table declares one extra row ending exactly at the data section boundary, the indexed output preserves that terminal row with `"status": "boundary"`. It marks the end of the preceding literal and is excluded from runtime string exports and decode failure counts. The manifest's literal count still counts indexed rows. Genuine zero-length literals have no boundary status.
 
 Complete forensic string literal table emitted by `StructGenerator` as structured JSON (`index`, `value`, `dataIndex`, `length`). Provides a strictly sequential, 1-to-1 table of every literal in `global-metadata.dat` (including unreferenced literals and the final entry).
 
