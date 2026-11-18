@@ -92,9 +92,10 @@ namespace Il2CppDumper.Diff
             Console.WriteLine("  <right>   Directory or dump.json file of the updated build.");
             Console.WriteLine("  <output>  Destination path or directory for output JSON.");
             Console.WriteLine("  Scoped dumps must cover the same image names in both inputs.");
+            Console.WriteLine("  The default diff verifies address and literal maps recorded in run-manifest.json.");
             Console.WriteLine();
             Console.WriteLine("Exit codes:");
-            Console.WriteLine("  0 = identical / no drift");
+            Console.WriteLine("  0 = no differences in compared sections / no drift");
             Console.WriteLine("  1 = differences / drift found");
             Console.WriteLine("  2 = usage/input error");
         }

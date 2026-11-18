@@ -41,6 +41,11 @@ namespace Il2CppDumper.Diff
                 var json = JsonSerializer.Serialize(result, JsonOptions);
                 File.WriteAllText(targetFile, json, new UTF8Encoding(false));
 
+                if (result.methods.note != null)
+                    log?.WriteLine(result.methods.note);
+                if (result.literals.note != null)
+                    log?.WriteLine(result.literals.note);
+
                 if (result.HasDifferences)
                 {
                     log?.WriteLine($"Differences found: {result.summary.addedTypes} added types, {result.summary.removedTypes} removed types, {result.types.changed.Count} changed types, {result.summary.addressChanges} address changes, {result.summary.valueChanges} literal value changes.");
@@ -63,11 +68,11 @@ namespace Il2CppDumper.Diff
 
         public static DumpDiffResult Compare(string leftPath, string rightPath)
         {
-            var (leftDir, leftArtifacts) = ReadDeclarations(leftPath, "left");
-            var (rightDir, rightArtifacts) = ReadDeclarations(rightPath, "right");
+            var (leftInventory, leftArtifacts) = ReadDeclarations(leftPath, "left");
+            var (rightInventory, rightArtifacts) = ReadDeclarations(rightPath, "right");
             var reconciled = TypeReconciler.Reconcile(leftArtifacts.Model, rightArtifacts.Model);
-            ReadOptionalArtifacts(leftDir, "left", leftArtifacts);
-            ReadOptionalArtifacts(rightDir, "right", rightArtifacts);
+            ReadOptionalArtifacts(leftInventory, "left", leftArtifacts);
+            ReadOptionalArtifacts(rightInventory, "right", rightArtifacts);
             return Compare(leftArtifacts, rightArtifacts, reconciled);
         }
 
@@ -937,18 +942,9 @@ namespace Il2CppDumper.Diff
             else
             {
                 result.methods.addressChanged = null;
-                if (leftArtifacts.ScriptMethods == null && rightArtifacts.ScriptMethods == null)
-                {
-                    result.methods.note = "Address comparison omitted: script.json missing on both left and right";
-                }
-                else if (leftArtifacts.ScriptMethods == null)
-                {
-                    result.methods.note = "Address comparison omitted: script.json missing on left";
-                }
-                else
-                {
-                    result.methods.note = "Address comparison omitted: script.json missing on right";
-                }
+                result.methods.note = DescribeOmission("Address", DiffArtifactInventory.ScriptFileName,
+                    leftArtifacts.ScriptMethods == null, rightArtifacts.ScriptMethods == null,
+                    leftArtifacts.ScriptOmission, rightArtifacts.ScriptOmission);
             }
 
             // 3. Compare Literals
@@ -975,18 +971,9 @@ namespace Il2CppDumper.Diff
             {
                 result.literals.addedByIndex = new List<DumpDiffLiteralAdded>();
                 result.literals.valueChangedByIndex = new List<DumpDiffLiteralChanged>();
-                if (leftArtifacts.Literals == null && rightArtifacts.Literals == null)
-                {
-                    result.literals.note = "Literal comparison omitted: stringliteral-indexed.json missing on both left and right";
-                }
-                else if (leftArtifacts.Literals == null)
-                {
-                    result.literals.note = "Literal comparison omitted: stringliteral-indexed.json missing on left";
-                }
-                else
-                {
-                    result.literals.note = "Literal comparison omitted: stringliteral-indexed.json missing on right";
-                }
+                result.literals.note = DescribeOmission("Literal", DiffArtifactInventory.LiteralsFileName,
+                    leftArtifacts.Literals == null, rightArtifacts.Literals == null,
+                    leftArtifacts.LiteralsOmission, rightArtifacts.LiteralsOmission);
             }
 
             // 4. Summary
@@ -996,6 +983,24 @@ namespace Il2CppDumper.Diff
             result.summary.valueChanges = result.literals.valueChangedByIndex.Count;
 
             return result;
+        }
+
+        private static string DescribeOmission(string comparison, string fileName, bool missingLeft, bool missingRight,
+            string? leftReason, string? rightReason)
+        {
+            if (leftReason == null && rightReason == null)
+            {
+                var missingSides = missingLeft && missingRight ? "both left and right" : missingLeft ? "left" : "right";
+                return $"{comparison} comparison omitted: {fileName} missing on {missingSides}";
+            }
+
+            var reasons = new List<string>(2);
+            if (missingLeft)
+                reasons.Add(leftReason ?? $"{fileName} missing on left");
+            if (missingRight)
+                reasons.Add(rightReason ?? $"{fileName} missing on right");
+
+            return $"{comparison} comparison omitted: {string.Join("; ", reasons)}";
         }
 
         private static string FormatParams(JsonDumpMethod m)
@@ -1708,9 +1713,11 @@ namespace Il2CppDumper.Diff
             public JsonDumpModel Model { get; set; } = new();
             public List<ScriptMethodEntry>? ScriptMethods { get; set; }
             public Dictionary<uint, string>? Literals { get; set; }
+            public string? ScriptOmission { get; set; }
+            public string? LiteralsOmission { get; set; }
         }
 
-        private static (string Directory, ParsedArtifacts Artifacts) ReadDeclarations(string inputPath, string label)
+        private static (DiffArtifactInventory Inventory, ParsedArtifacts Artifacts) ReadDeclarations(string inputPath, string label)
         {
             string dir;
             string dumpJsonPath;
@@ -1735,12 +1742,13 @@ namespace Il2CppDumper.Diff
                 throw new FileNotFoundException($"dump.json not found in {label} path: {dumpJsonPath}");
             }
 
+            var inventory = new DiffArtifactInventory(dir, label, Path.GetFileName(dumpJsonPath));
             var artifacts = new ParsedArtifacts();
 
             // 1. Endpoint Source and SHA-256
             var sidecarPath = Path.Combine(dir, "dump-metadata.json");
             var sidecarFound = false;
-            if (File.Exists(sidecarPath))
+            if (!inventory.HasUnlistedDeclarations && File.Exists(sidecarPath))
             {
                 try
                 {
@@ -1772,9 +1780,8 @@ namespace Il2CppDumper.Diff
             }
 
             // 2. Parse dump.json (required input, must have 'types' array)
-            using (var stream = File.OpenRead(dumpJsonPath))
+            using (var doc = inventory.ReadDeclarations())
             {
-                using var doc = JsonDocument.Parse(stream);
                 if (!doc.RootElement.TryGetProperty("types", out var typesEl) ||
                     typesEl.ValueKind != JsonValueKind.Array)
                 {
@@ -1796,19 +1803,18 @@ namespace Il2CppDumper.Diff
                 }
             }
 
-            return (dir, artifacts);
+            return (inventory, artifacts);
         }
 
-        private static void ReadOptionalArtifacts(string dir, string label, ParsedArtifacts artifacts)
+        private static void ReadOptionalArtifacts(DiffArtifactInventory inventory, string label, ParsedArtifacts artifacts)
         {
-            // Parse script.json (optional, but if present must be valid)
-            var scriptPath = Path.Combine(dir, "script.json");
-            if (File.Exists(scriptPath))
+            var script = inventory.ReadOptional(DiffArtifactInventory.ScriptFileName, out var scriptOmission);
+            artifacts.ScriptOmission = scriptOmission;
+            if (script != null)
             {
                 try
                 {
-                    using var stream = File.OpenRead(scriptPath);
-                    using var doc = JsonDocument.Parse(stream);
+                    using var doc = script;
                     if (!doc.RootElement.TryGetProperty("ScriptMethod", out var scriptMethods) ||
                         scriptMethods.ValueKind != JsonValueKind.Array)
                     {
@@ -1906,14 +1912,13 @@ namespace Il2CppDumper.Diff
                 }
             }
 
-            // Parse literals (optional, only stringliteral-indexed.json; if present must be valid)
-            var indexedLiteralsPath = Path.Combine(dir, "stringliteral-indexed.json");
-            if (File.Exists(indexedLiteralsPath))
+            var literals = inventory.ReadOptional(DiffArtifactInventory.LiteralsFileName, out var literalsOmission);
+            artifacts.LiteralsOmission = literalsOmission;
+            if (literals != null)
             {
                 try
                 {
-                    using var stream = File.OpenRead(indexedLiteralsPath);
-                    using var doc = JsonDocument.Parse(stream);
+                    using var doc = literals;
                     if (doc.RootElement.ValueKind != JsonValueKind.Array)
                     {
                         throw new InvalidDataException($"Failed to parse {label} stringliteral-indexed.json: root must be an array.");
