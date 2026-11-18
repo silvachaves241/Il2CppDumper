@@ -169,6 +169,60 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
+        public void DeclarationModes_CloneConfigAndExcludePriorOutputsFromCurrentInventory()
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "outputs_regr_declarations_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var (wasmPath, metaPath) = CreateSyntheticFixtures(tempDir);
+                var outputDir = Path.Combine(tempDir, "out");
+                var config = new Config
+                {
+                    GenerateDummyDll = false,
+                    GenerateStruct = false,
+                    GenerateProtectionReport = false,
+                    GeneratePerImageDump = true
+                };
+                var request = new DumpRequest
+                {
+                    ExecutablePath = wasmPath,
+                    MetadataPath = metaPath,
+                    OutputDirectory = outputDir,
+                    Config = config
+                };
+
+                var both = Dumper.Dump(request);
+                Assert.True(both.Success, both.Error);
+                var index = both.Outputs[ImageDeclarationExport.IndexArtifact];
+                var aggregate = both.Outputs["dump.cs"];
+
+                config.GenerateAggregateDump = false;
+                var splitOnly = Dumper.Dump(request);
+                Assert.True(splitOnly.Success, splitOnly.Error);
+                Assert.Equal(index, splitOnly.Outputs[ImageDeclarationExport.IndexArtifact]);
+                Assert.Contains(index, splitOnly.ProducedFiles);
+                Assert.DoesNotContain("dump.cs", splitOnly.Outputs.Keys);
+                Assert.DoesNotContain(aggregate, splitOnly.ProducedFiles);
+
+                config.GeneratePerImageDump = false;
+                var neither = Dumper.Dump(request);
+                Assert.True(neither.Success, neither.Error);
+                Assert.DoesNotContain(ImageDeclarationExport.IndexArtifact, neither.Outputs.Keys);
+                Assert.DoesNotContain(index, neither.ProducedFiles);
+                Assert.DoesNotContain(aggregate, neither.ProducedFiles);
+                var manifest = JsonSerializer.Deserialize<RunManifest>(File.ReadAllText(neither.Outputs["run-manifest.json"]));
+                Assert.DoesNotContain(manifest.Outputs, output => output.Path.StartsWith("dump-by-image/", StringComparison.Ordinal));
+                Assert.True(File.Exists(index));
+                Assert.True(File.Exists(aggregate));
+            }
+            finally
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+
+        [Fact]
         public void TwoSuccessfulRuns_ReusedDirectory_SecondRunDisablesDummyDll_ExcludesStaleDummyDllFromOutputs()
         {
             var tempDir = Path.Combine(Path.GetTempPath(), "outputs_regr_dummydll_" + Guid.NewGuid().ToString("N"));
