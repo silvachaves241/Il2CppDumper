@@ -248,7 +248,21 @@ namespace Il2CppDumper
                         //fieldDefault
                         if (metadata.GetFieldDefaultValueFromIndex(i, out var fieldDefault) && fieldDefault.dataIndex != -1)
                         {
-                            if (executor.TryGetDefaultValue(fieldDefault.typeIndex, fieldDefault.dataIndex, out var value, index, typeDefinition.Name, fieldDefinition.Name))
+                            var fieldType = il2Cpp.types[fieldDef.typeIndex];
+                            if (Il2CppExecutor.IsInt32FieldRva(fieldType))
+                            {
+                                var bytes = executor.ReadInt32FieldRvaData(fieldType, fieldDefault);
+                                fieldDefinition.Attributes &= ~FieldAttributes.HasDefault;
+                                if (bytes.Length == sizeof(int))
+                                {
+                                    fieldDefinition.InitialValue = bytes;
+                                }
+                                else
+                                {
+                                    AddMetadataOffsetAttribute(typeDefinition.Module, metadataOffsetAttribute, fieldDefinition.CustomAttributes, metadata.GetDefaultValueFromIndex(fieldDefault.dataIndex));
+                                }
+                            }
+                            else if (executor.TryGetDefaultValue(fieldDefault.typeIndex, fieldDefault.dataIndex, out var value, index, typeDefinition.Name, fieldDefinition.Name))
                             {
                                 if (!TrySetConstant(fieldDefinition, fieldDefinition.FieldType, value))
                                 {

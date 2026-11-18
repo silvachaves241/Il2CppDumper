@@ -837,13 +837,19 @@ namespace Il2CppDumper.Tests
             }
         }
 
-        [Fact]
-        public void PE_Init_UnbackedCodeGenModuleMethodPointersTable_FallsBackToZeroTable_WithoutReadingHeaderBytes()
+        [Theory]
+        [InlineData(0x180002200ul, false)] // Entirely zero filled.
+        [InlineData(0x1800023E8ul, false)] // Three slots ending exactly at the virtual boundary.
+        [InlineData(0x1800021F8ul, true)]  // Table spans file and virtual data.
+        [InlineData(0x1800023F0ul, true)]  // Table extends past the virtual boundary.
+        [InlineData(0x18712FA60ul, true)]  // Unmapped address.
+        public void PE_Init_ValidatesZeroFilledMethodPointerTables(ulong tableAddress, bool expectFailure)
         {
-            // P1: When codeGenModule.methodPointers points to unbacked virtual tail (like Dofus 0x18712FA60),
-            // MapVATR returns 0. TryMapVATR must treat 0 in PE as mapping failure and fall back to zeroed table,
-            // never reading the PE DOS header bytes (0x300905A4D, etc.) as candidate pointers.
-            var (peBytes, _, _) = CreateTestPe(textVirtualSize: 0x1000, textRawSize: 0x1000);
+            var peBytes = ProtectionReportTests.CreateSyntheticPe(new[]
+            {
+                (".text", new byte[0x1000], 0x1000u, 0x60000020u),
+                (".data", new byte[0x200], 0x400u, 0xC0000040u)
+            });
 
             using (var ms = new MemoryStream(peBytes))
             using (var w = new BinaryWriter(ms))
@@ -865,7 +871,7 @@ namespace Il2CppDumper.Tests
                 ms.Position = 0x620;
                 w.Write(0x180001280ul);     // 0: moduleName -> RVA 0x1280 (raw offset 0x680)
                 w.Write((long)3);           // 1: methodPointerCount = 3
-                w.Write(0x18712FA60ul);     // 2: methodPointers -> unbacked VA in virtual tail!
+                w.Write(tableAddress);      // 2: methodPointers
                 for (int i = 0; i < 10; i++)
                 {
                     w.Write((ulong)0);     // 3..12: adjustor, invokers, rgctx, etc.
@@ -891,11 +897,17 @@ namespace Il2CppDumper.Tests
             Assert.True(pe.codeGenModuleMethodPointers.TryGetValue("UnbackedModule.dll", out var pointers));
             Assert.Equal(3, pointers.Length);
             Assert.All(pointers, p => Assert.Equal(0ul, p));
-            Assert.Equal(1, pe.MethodMappingFailuresCount);
+            Assert.Equal(expectFailure ? 1 : 0, pe.MethodMappingFailuresCount);
+            if (!expectFailure)
+            {
+                Assert.Empty(pe.MethodMappingFailures);
+                Assert.Equal(0ul, pe.MapVATR(tableAddress));
+                return;
+            }
             var failure = Assert.Single(pe.MethodMappingFailures);
             Assert.Equal("methodMapping", failure.Category);
             Assert.Equal("UnbackedModule.dll", failure.Member);
-            Assert.Equal("0x18712FA60", failure.RawBytes);
+            Assert.Equal($"0x{tableAddress:X}", failure.RawBytes);
             Assert.Contains("MethodPointersTable", failure.Detail);
         }
 

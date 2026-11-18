@@ -35,10 +35,19 @@ namespace Il2CppDumper.Tests
         private const MetadataCorruptionType MalformedConstant = MetadataCorruptionType.ConstantBlobInvalidPrefix;
 
         private static (bool Success, List<string> Warnings, string DummyDllPath,
-            RunManifestWarnings ManifestWarnings, string Diagnostics) Execute(bool dumpField, string dir)
+            RunManifestWarnings ManifestWarnings, string Diagnostics) Execute(bool dumpField, string dir, bool fieldRva = false, int dataSize = 4)
         {
             var (metadata, il2Cpp, executor) = SyntheticEnvironment.Create(
                 MetadataVersionFamily.V39, corruption: MalformedConstant);
+
+            if (fieldRva)
+            {
+                il2Cpp.types[3].attrs = (uint)(FieldAttributes.Public | FieldAttributes.Static |
+                    FieldAttributes.InitOnly | FieldAttributes.HasFieldRVA);
+                metadata.header.fieldAndParameterDefaultValueData.sectionSize = dataSize;
+                metadata.Position = metadata.GetDefaultValueFromIndex(0);
+                metadata.Write(0x13FF2FE1);
+            }
 
             var config = new Config
             {
@@ -83,6 +92,36 @@ namespace Il2CppDumper.Tests
             var asm = AssemblyDefinition.ReadAssembly(stream);
             var type = asm.MainModule.Types.Single(t => t.Name == "SyntheticEnum");
             return type.Fields.Single(f => f.Name == "OptionA");
+        }
+
+        [Theory]
+        [InlineData(4, true)]
+        [InlineData(3, false)]
+        public void Int32FieldRva_UsesRawBytesOnlyWithinDefaultDataSection(int dataSize, bool hasValue)
+        {
+            var dir = Path.Combine(outputDir, "field-rva");
+            var (success, _, dummyDllPath, manifestWarnings, diagnostics) =
+                Execute(dumpField: true, dir, fieldRva: true, dataSize);
+            Assert.True(success, diagnostics);
+            Assert.Equal(0, manifestWarnings.ByCategory.ConstantDecode);
+
+            using var assembly = AssemblyDefinition.ReadAssembly(dummyDllPath);
+            var field = assembly.MainModule.Types.Single(t => t.Name == "SyntheticEnum")
+                .Fields.Single(f => f.Name == "OptionA");
+            var dump = File.ReadAllText(Path.Combine(dir, "dump.cs"));
+            Assert.False(field.HasConstant);
+            if (hasValue)
+            {
+                Assert.True(field.HasFieldRVA);
+                Assert.Equal(new byte[] { 0xE1, 0x2F, 0xFF, 0x13 }, field.InitialValue);
+                Assert.Contains($"OptionA = {0x13FF2FE1}", dump);
+            }
+            else
+            {
+                Assert.Empty(field.InitialValue);
+                Assert.Contains(field.CustomAttributes, a => a.AttributeType.Name == "MetadataOffsetAttribute");
+                Assert.Contains("OptionA /*Metadata offset", dump);
+            }
         }
 
         [Fact]

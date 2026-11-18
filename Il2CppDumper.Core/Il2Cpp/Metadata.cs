@@ -770,6 +770,19 @@ namespace Il2CppDumper
             return (uint)(offset + index);
         }
 
+        internal byte[] ReadDefaultValueData(int index, int size)
+        {
+            long offset = Version >= 38 ? header.fieldAndParameterDefaultValueData.offset : header.fieldAndParameterDefaultValueDataOffset;
+            int sectionSize = Version >= 38 ? header.fieldAndParameterDefaultValueData.sectionSize : header.fieldAndParameterDefaultValueDataSize;
+            if (index < 0 || size <= 0 || offset < 0 ||
+                (long)index + size > sectionSize || (ulong)(offset + index + size) > Length)
+            {
+                return Array.Empty<byte>();
+            }
+            Position = (ulong)(offset + index);
+            return ReadBytes(size);
+        }
+
         private void ComputeV110MetadataTokens()
         {
             foreach (var imageDef in imageDefs)
