@@ -118,6 +118,7 @@ namespace Il2CppDumper.Tests
             }
             else
             {
+                Assert.False(field.HasFieldRVA);
                 Assert.Empty(field.InitialValue);
                 Assert.Contains(field.CustomAttributes, a => a.AttributeType.Name == "MetadataOffsetAttribute");
                 Assert.Contains("OptionA /*Metadata offset", dump);

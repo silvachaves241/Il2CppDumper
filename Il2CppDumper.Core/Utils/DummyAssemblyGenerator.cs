@@ -259,6 +259,7 @@ namespace Il2CppDumper
                                 }
                                 else
                                 {
+                                    fieldDefinition.HasFieldRVA = false;
                                     AddMetadataOffsetAttribute(typeDefinition.Module, metadataOffsetAttribute, fieldDefinition.CustomAttributes, metadata.GetDefaultValueFromIndex(fieldDefault.dataIndex));
                                 }
                             }
