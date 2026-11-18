@@ -393,7 +393,7 @@ Il2CppDumper.Diff <left> <right> <output>
 
 #### Optional address and literal maps
 
-The default diff checks the `run-manifest.json` in each input directory, including the parent directory of an explicit `dump.json` path. The selected JSON dump, `script.json`, and `stringliteral-indexed.json` are verified against their recorded byte lengths and SHA-256 hashes when listed. An optional map contributes to its comparison only when both inputs supply it. Unlisted maps are ignored and the relevant `methods.note` or `literals.note` explains the missing coverage. When the selected dump itself is unlisted, that input contributes declarations only. An unreadable or invalid inventory, a missing recorded map, or an integrity mismatch produces exit code `2` and leaves the report destination untouched.
+The default diff checks the `run-manifest.json` in each input directory, including the parent directory of an explicit `dump.json` path. The selected JSON dump, `script.json`, and `stringliteral-indexed.json` are verified against their recorded byte lengths and SHA-256 hashes when listed. An optional map contributes to its comparison only when both inputs supply it. Unlisted maps are ignored and the relevant `methods.note` or `literals.note` explains the missing coverage. When the selected dump itself is unlisted, that input contributes declarations only and the report identifies it by its own SHA-256 hash. An unreadable or invalid inventory, a missing recorded map, or an integrity mismatch produces exit code `2` and leaves the report destination untouched.
 
 For directories without a manifest, the diff still looks for the optional maps by filename. Use a fresh directory or known matching files for legacy comparisons.
 

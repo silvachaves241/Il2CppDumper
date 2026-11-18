@@ -70,18 +70,23 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
-        public void DirectUnlistedDeclarationsDoNotInheritManifestSidecars()
+        public void DirectUnlistedDeclarationsDoNotInheritSiblingArtifacts()
         {
             WriteManifest(Left, Dump, Script, Literals);
             WriteManifest(Right, Dump, Script, Literals);
             var standalone = Path.Combine(Right, "imported.json");
             File.Copy(Path.Combine(Right, Dump), standalone);
+            File.WriteAllText(Path.Combine(Right, "dump-metadata.json"),
+                "{\"inputs\":{\"il2cpp\":{\"sha256\":\"other-run\",\"path\":\"OtherAssembly.dll\"}}}");
 
             var diff = DumpDiffer.Compare(Left, standalone);
 
             Assert.False(diff.HasDifferences);
             Assert.Contains("imported.json is not listed in run-manifest.json", diff.methods.note);
             Assert.Contains("imported.json is not listed in run-manifest.json", diff.literals.note);
+            Assert.Equal(standalone, diff.right.source);
+            using var stream = File.OpenRead(standalone);
+            Assert.Equal(DumpMetadataWriter.ComputeStreamSha256(stream), diff.right.sha256);
         }
 
         [Theory]

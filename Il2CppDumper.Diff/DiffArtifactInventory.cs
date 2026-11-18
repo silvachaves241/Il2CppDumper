@@ -31,6 +31,8 @@ namespace Il2CppDumper.Diff
             ? ReadJsonFile(declarationName)
             : ReadVerifiedJson(declarationName, declaration);
 
+        public bool HasUnlistedDeclarations => outputs != null && declaration == null;
+
         public JsonDocument? ReadOptional(string fileName, out string? omission)
         {
             omission = null;

@@ -1748,7 +1748,7 @@ namespace Il2CppDumper.Diff
             // 1. Endpoint Source and SHA-256
             var sidecarPath = Path.Combine(dir, "dump-metadata.json");
             var sidecarFound = false;
-            if (File.Exists(sidecarPath))
+            if (!inventory.HasUnlistedDeclarations && File.Exists(sidecarPath))
             {
                 try
                 {
