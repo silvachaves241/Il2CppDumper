@@ -190,6 +190,8 @@ O despacho vem dos offsets de interface e das entradas da vtable registrados no 
 
 `script.json` contém `ScriptMethod`, `ScriptString`, `ScriptMetadata`, `ScriptMetadataMethod` e `Addresses`. Métodos podem incluir `MethodSignature`, `Image` e `Assembly`, úteis para correlacionar sobrecargas e homônimos. Em PE, os endereços de métodos são RVAs, relativos à base da imagem. Use o espaço de endereçamento do formato de entrada ao importar mapas. `il2cpp.h` descreve estruturas nativas recuperadas, incluindo campos herdados, estáticos e específicos de tipo.
 
+Nas estruturas `*_VTable`, o prefixo `_N_` de cada campo indica a posição física na tabela do metadata. A mesma definição de método pode aparecer em várias posições, inclusive nas entradas de despacho de interface. Se o alvo de uma posição estiver indisponível, o campo é emitido como `_N_unknown`.
+
 ### stringliteral.json
 
 `stringliteral.json` relaciona valores a referências detectadas no binário em registros com `value` e `address`.

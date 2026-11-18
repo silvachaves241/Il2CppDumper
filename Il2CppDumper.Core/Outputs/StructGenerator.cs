@@ -895,37 +895,21 @@ namespace Il2CppDumper
 
         private void AddVTableMethod(StructInfo structInfo, Il2CppTypeDefinition typeDef)
         {
-            var dic = new SortedDictionary<int, Il2CppMethodDefinition>();
-            for (int i = 0; i < typeDef.vtable_count; i++)
+            if (typeDef.vtable_count == 0)
+                return;
+
+            // Interface dispatch can use a different position from the target's declared slot.
+            structInfo.VTableMethod = new StructVTableMethodInfo[typeDef.vtable_count];
+            for (var position = 0; position < structInfo.VTableMethod.Length; position++)
             {
-                var vTableIndex = typeDef.vtableStart + i;
-                var encodedMethodIndex = metadata.vtableMethods[vTableIndex];
-                var usage = Metadata.GetEncodedIndexType(encodedMethodIndex);
-                var index = metadata.GetDecodedMethodIndex(encodedMethodIndex);
-                Il2CppMethodDefinition methodDef;
-                if (usage == 6) //kIl2CppMetadataUsageMethodRef
+                var target = VTableMethodResolver.Resolve(metadata, il2Cpp, typeDef, position);
+                if (target.MethodDefIndex is int methodIndex)
                 {
-                    var methodSpec = il2Cpp.methodSpecs[index];
-                    methodDef = metadata.methodDefs[methodSpec.methodDefinitionIndex];
-                }
-                else
-                {
-                    methodDef = metadata.methodDefs[index];
-                }
-                if (methodDef.slot != ushort.MaxValue)
-                {
-                    dic[methodDef.slot] = methodDef;
-                }
-            }
-            if (dic.Count > 0)
-            {
-                structInfo.VTableMethod = new StructVTableMethodInfo[dic.Last().Key + 1];
-                foreach (var i in dic)
-                {
-                    var methodInfo = new StructVTableMethodInfo();
-                    structInfo.VTableMethod[i.Key] = methodInfo;
-                    var methodDef = i.Value;
-                    methodInfo.MethodName = $"{FixName(metadata.GetStringFromIndex(methodDef.nameIndex))}";
+                    var methodDef = metadata.methodDefs[methodIndex];
+                    structInfo.VTableMethod[position] = new StructVTableMethodInfo
+                    {
+                        MethodName = FixName(metadata.GetStringFromIndex(methodDef.nameIndex))
+                    };
                 }
             }
         }

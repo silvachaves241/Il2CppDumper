@@ -1,12 +1,13 @@
 using System.Buffers.Binary;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Il2CppDumper.Tests.Synthetic;
 using Xunit;
 using static Il2CppDumper.Il2CppConstants;
 
 namespace Il2CppDumper.Tests;
 
-public sealed class JsonVTableTests
+public sealed class VTableOutputTests
 {
     [Theory]
     [InlineData(1)]
@@ -100,6 +101,69 @@ public sealed class JsonVTableTests
         Assert.Empty(withMethodsDisabled.methods);
         Assert.Equal(2, withMethodsDisabled.vtable![0].methodDefIndex);
         Assert.Equal(2, withMethodsDisabled.vtable[0].interfaces!.Count);
+    }
+
+    [Fact]
+    public void HeaderPreservesRepeatedInterfaceSlotsAndInheritedTargets()
+    {
+        using var metadata = CreateMetadata();
+        using var binary = CreateBinary();
+        metadata.vtableMethods[7] = 0xC0000001; // Valid MethodSpec for the inherited implementation.
+        metadata.methodDefs[3].nameIndex = metadata.imageDefs[0].nameIndex;
+        var executor = new Il2CppExecutor(metadata, binary);
+        var model = JsonDumpGenerator.Create(executor, new Config { DumpAttribute = false });
+        var receiver = model.types.Single(type => type.typeDefIndex == 2);
+        Assert.Equal("interface", receiver.vtable![0].interfaceStatus);
+        Assert.Equal(2, receiver.vtable[0].methodDefIndex);
+
+        var tables = WriteHeaderVTables(executor);
+        Assert.Collection(tables,
+            entries => Assert.Equal(new[] { "_0_SyntheticMethod", "_1_unknown", "_2_SyntheticMethod", "_3_SyntheticMethod" }, entries),
+            entries => Assert.Equal(new[] { "_0_SyntheticImage_dll", "_1_SyntheticMethod", "_2_SyntheticImage_dll", "_3_SyntheticMethod" }, entries),
+            entries => Assert.Equal(new[] { "_0_unknown" }, entries));
+    }
+
+    [Fact]
+    public void HeaderKeepsUnresolvedPositionsIncludingTruncatedMetadata()
+    {
+        using var metadata = CreateMetadata();
+        using var binary = CreateBinary();
+        metadata.typeDefs[2].vtableStart = -1;
+        metadata.typeDefs[3].vtable_count = 6;
+        metadata.vtableMethods[8] = 0x7FFFFFFF; // MethodDef index out of range.
+        metadata.methodDefs[3].slot = ushort.MaxValue;
+
+        var tables = WriteHeaderVTables(new Il2CppExecutor(metadata, binary));
+        Assert.Collection(tables,
+            entries => Assert.Equal(new[] { "_0_unknown", "_1_unknown", "_2_unknown", "_3_unknown" }, entries),
+            entries => Assert.Equal(new[] { "_0_SyntheticMethod", "_1_SyntheticMethod", "_2_SyntheticMethod", "_3_unknown", "_4_unknown", "_5_unknown" }, entries),
+            entries => Assert.Equal(new[] { "_0_unknown" }, entries));
+    }
+
+    private static string[][] WriteHeaderVTables(Il2CppExecutor executor)
+    {
+        var output = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"il2cpp-vtable-{Guid.NewGuid():N}"));
+        try
+        {
+            new StructGenerator(executor).WriteScript(output.FullName + Path.DirectorySeparatorChar);
+            var header = File.ReadAllText(Path.Combine(output.FullName, "il2cpp.h"));
+            return Regex.Matches(header, @"(?m)^struct SyntheticClass\w*_VTable \{\n([^}]+)\};")
+                .Select(table => table.Groups[1].Value.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(line =>
+                    {
+                        const string prefix = "VirtualInvokeData ";
+                        var declaration = line.Trim();
+                        Assert.StartsWith(prefix, declaration);
+                        Assert.EndsWith(";", declaration);
+                        return declaration[prefix.Length..^1];
+                    })
+                    .ToArray())
+                .ToArray();
+        }
+        finally
+        {
+            output.Delete(recursive: true);
+        }
     }
 
     private static void AssertLink(JsonDumpInterfaceDispatch link, int receiver, int position, int slot,
