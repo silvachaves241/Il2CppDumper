@@ -13,6 +13,7 @@ namespace Il2CppDumper
 {
     internal static class OutputValidator
     {
+        private const string DummyHelperAssemblyName = "Il2CppDummyDll";
         private static readonly StringComparison PathComparison = OperatingSystem.IsWindows()
             ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         private static readonly StringComparer PathComparer = StringComparer.FromComparison(PathComparison);
@@ -73,7 +74,7 @@ namespace Il2CppDumper
         {
             using var pe = new PEReader(stream, PEStreamOptions.PrefetchMetadata | PEStreamOptions.LeaveOpen);
             var reader = pe.GetMetadataReader(MetadataReaderOptions.None);
-            _ = reader.GetString(reader.GetAssemblyDefinition().Name);
+            var assemblyName = reader.GetString(reader.GetAssemblyDefinition().Name);
             var moduleName = NormalizePath(reader.GetString(reader.GetModuleDefinition().Name));
             if (!PathComparer.Equals(modulePath, moduleName))
             {
@@ -92,6 +93,10 @@ namespace Il2CppDumper
             {
                 _ = reader.GetString(type.Name);
                 _ = reader.GetString(type.Namespace);
+            }
+            if (ownership.IsEmbeddedHelper(modulePath, assemblyName))
+            {
+                return;
             }
             if (countBeforeOwnership == 0)
             {
@@ -295,6 +300,11 @@ namespace Il2CppDumper
                     }
                 }
             }
+
+            internal bool IsEmbeddedHelper(string modulePath, string assemblyName) =>
+                PathComparer.Equals(modulePath, DummyHelperAssemblyName + ".dll")
+                && string.Equals(assemblyName, DummyHelperAssemblyName, StringComparison.Ordinal)
+                && !images.Contains(modulePath);
 
             internal void Validate(string modulePath, MetadataReader reader, (int Row, TypeDefinition Type)[] exportedTypes,
                 OutputArtifactValidation artifact)
