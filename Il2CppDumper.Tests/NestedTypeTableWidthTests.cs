@@ -303,7 +303,42 @@ namespace Il2CppDumper.Tests
             }
         }
 
-        private static byte[] CreateV39MultiImageBufferWithNestedTypes(int[] nestedTypes)
+        [Theory]
+        [InlineData(false, 72)]
+        [InlineData(true, 68)]
+        public void V39_AssemblyRecordsPreserveImageOwnershipAndJsonNames(bool compactAssemblyRecords, int width)
+        {
+            var buffer = CreateV39MultiImageBufferWithNestedTypes(new[] { 1, 3 }, compactAssemblyRecords);
+            using var metadata = new Metadata(new MemoryStream(buffer, writable: false));
+            using var binary = new SyntheticIl2Cpp(version: 39);
+            var executor = new Il2CppExecutor(metadata, binary);
+
+            Assert.Equal(width, metadata.SizeOf(typeof(Il2CppAssemblyDefinition)));
+            Assert.Equal(new[] { 0, 1 }, metadata.assemblyDefs.Select(assembly => assembly.imageIndex));
+            Assert.Equal(new[] { "AssemblyA", "AssemblyB" },
+                metadata.assemblyDefs.Select(assembly => metadata.GetStringFromIndex(assembly.aname.nameIndex)));
+            Assert.Equal(compactAssemblyRecords ? 0u : 2u, metadata.assemblyDefs[1].moduleToken);
+            if (compactAssemblyRecords)
+            {
+                // Advancing four extra bytes moves the second nameIndex to cultureIndex.
+                Assert.Equal("WrongAssembly", metadata.GetStringFromIndex(metadata.assemblyDefs[1].aname.cultureIndex));
+            }
+
+            var full = JsonDumpGenerator.Create(executor, new Config());
+            Assert.Equal(2, full.types.Count);
+            var scoped = JsonDumpGenerator.Create(executor, new Config { ImageSelectors = new[] { "id:1" } });
+            Assert.All(new[] { full.types.Single(type => type.image == "ImageB.dll"), Assert.Single(scoped.types) }, parent =>
+            {
+                Assert.Equal("ImageB.dll", parent.image);
+                Assert.Equal("AssemblyB", parent.assembly);
+                var child = Assert.Single(parent.nested);
+                Assert.EndsWith("ParentB.ChildB", child.fullName);
+                Assert.Equal("ImageB.dll", child.image);
+                Assert.Equal("AssemblyB", child.assembly);
+            });
+        }
+
+        private static byte[] CreateV39MultiImageBufferWithNestedTypes(int[] nestedTypes, bool compactAssemblyRecords = false)
         {
             using var ms = new MemoryStream();
             using var writer = new BinaryWriter(ms, Encoding.UTF8);
@@ -329,6 +364,7 @@ namespace Il2CppDumper.Tests
             GetOrAddString(string.Empty);
             var asmA = GetOrAddString("AssemblyA");
             var asmB = GetOrAddString("AssemblyB");
+            var wrongAssemblySuffix = compactAssemblyRecords ? GetOrAddString("OtherWrongAssembly") + 5 : 0u;
             var imgA = GetOrAddString("ImageA.dll");
             var imgB = GetOrAddString("ImageB.dll");
             var ns = GetOrAddString("TestNamespace");
@@ -472,7 +508,7 @@ namespace Il2CppDumper.Tests
                     aname = new Il2CppAssemblyNameDefinition
                     {
                         nameIndex = asmB,
-                        cultureIndex = 0,
+                        cultureIndex = wrongAssemblySuffix,
                         publicKeyIndex = 0,
                         hash_alg = 0,
                         hash_len = 0,
@@ -485,8 +521,10 @@ namespace Il2CppDumper.Tests
                     },
                     moduleToken = 0x00000002
                 };
-                SyntheticMetadataGenerator.WriteClass(aWriter, asmA_def, 39);
-                SyntheticMetadataGenerator.WriteClass(aWriter, asmB_def, 39);
+                // The v35 writer has the same assembly prefix but omits the module token.
+                var assemblyLayout = compactAssemblyRecords ? 35 : 39;
+                SyntheticMetadataGenerator.WriteClass(aWriter, asmA_def, assemblyLayout);
+                SyntheticMetadataGenerator.WriteClass(aWriter, asmB_def, assemblyLayout);
                 assembliesBytes = aMs.ToArray();
             }
 
@@ -570,6 +608,11 @@ namespace Il2CppDumper.Tests
             writer.Write(typeDefsBytes);
             writer.Write(imagesBytes);
             writer.Write(assembliesBytes);
+            if (compactAssemblyRecords)
+            {
+                // Retain trailing bytes so an over-reading parser silently reads the wrong row.
+                writer.Write(0UL);
+            }
 
             writer.Flush();
             return ms.ToArray();
