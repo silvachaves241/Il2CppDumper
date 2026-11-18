@@ -3,6 +3,9 @@
     {
       "image": "SyntheticImage.dll",
       "assembly": "SyntheticAssembly",
+      "imageId": 0,
+      "typeDefIndex": 0,
+      "typeToken": 33554433,
       "fullName": "SyntheticNamespace.SyntheticClass",
       "bases": [],
       "attributes": [],
@@ -37,6 +40,9 @@
     {
       "image": "SyntheticImage.dll",
       "assembly": "SyntheticAssembly",
+      "imageId": 0,
+      "typeDefIndex": 1,
+      "typeToken": 33554434,
       "fullName": "SyntheticNamespace.SyntheticEnum",
       "bases": [],
       "attributes": [],

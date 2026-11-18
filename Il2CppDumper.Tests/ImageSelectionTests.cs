@@ -86,6 +86,74 @@ public sealed class ImageSelectionTests : IDisposable
     }
 
     [Fact]
+    public void CompleteJson_PreservesCoordinatesOfHomonymsAndNestedTypes()
+    {
+        using var metadata = CreateMetadata();
+        using var binary = CreateBinary();
+
+        var dependency = metadata.typeDefs[0];
+        var selected = metadata.typeDefs[1];
+        var childName = selected.nameIndex;
+        selected.nameIndex = dependency.nameIndex;
+        selected.token = dependency.token; // CLR tokens can repeat across images.
+        selected.parentIndex = 2;
+
+        metadata.imageDefs[1].typeCount = 3;
+        metadata.typeDefs = new[]
+        {
+            dependency, selected,
+            new Il2CppTypeDefinition
+            {
+                nameIndex = childName, byvalTypeIndex = 3, declaringTypeIndex = 1,
+                parentIndex = 2, genericContainerIndex = -1, flags = 2, token = 0x02000017
+            },
+            new Il2CppTypeDefinition
+            {
+                nameIndex = dependency.nameIndex, byvalTypeIndex = 4, declaringTypeIndex = 3,
+                parentIndex = 2, genericContainerIndex = -1, flags = 2, token = 0x02000021
+            }
+        };
+        binary.types = binary.types.Concat(new[]
+        {
+            new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 2 } },
+            new Il2CppType { type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS, data = new Il2CppType.Union { dummy = 3 } }
+        }).ToArray();
+
+        var executor = new Il2CppExecutor(metadata, binary);
+        var config = new Config { DumpAttribute = false };
+        var path = Path.Combine(root, "dump.json");
+        JsonDumpGenerator.Write(root, executor, config);
+        var full = JsonSerializer.Deserialize<JsonDumpModel>(File.ReadAllText(path))!;
+        Assert.Null(full.ImageSelection);
+        Assert.Equal(2, full.types.Count);
+        var dependencyType = Assert.Single(full.types.Where(type => type.image == "Dependency.dll"));
+        var selectedType = Assert.Single(full.types.Where(type => type.image == "Selected.dll"));
+
+        Assert.Equal(dependencyType.fullName, selectedType.fullName);
+        Assert.Equal((0, 0, 0x02000001u), Coordinates(dependencyType));
+        Assert.Equal((1, 1, 0x02000001u), Coordinates(selectedType));
+        var child = Assert.Single(selectedType.nested);
+        Assert.Equal("BaseType.ChildType", child.fullName);
+        Assert.Equal((1, 2, 0x02000017u), Coordinates(child));
+        var grandchild = Assert.Single(child.nested);
+        Assert.Equal("BaseType.ChildType.BaseType", grandchild.fullName);
+        Assert.Equal((1, 3, 0x02000021u), Coordinates(grandchild));
+
+        config.ImageSelectors = new[] { "id:1" };
+        JsonDumpGenerator.Write(root, executor, config);
+        var scoped = JsonSerializer.Deserialize<JsonDumpModel>(File.ReadAllText(path))!;
+        Assert.NotNull(scoped.ImageSelection);
+        var scopedType = Assert.Single(scoped.types);
+        var scopedChild = Assert.Single(scopedType.nested);
+        Assert.Equal(Coordinates(selectedType), Coordinates(scopedType));
+        Assert.Equal(Coordinates(child), Coordinates(scopedChild));
+        Assert.Equal(Coordinates(grandchild), Coordinates(Assert.Single(scopedChild.nested)));
+
+        static (int? ImageId, int? TypeDefIndex, uint? Token) Coordinates(JsonDumpType type) =>
+            (type.imageId, type.typeDefIndex, type.typeToken);
+    }
+
+    [Fact]
     public void FailedSelectedSplit_ReportsFailureAndStillPublishesHealthySelectedOutputs()
     {
         using var metadata = CreateMetadata();
