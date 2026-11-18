@@ -19,7 +19,7 @@ Baixe e extraia o pacote da plataforma desejada. Os pacotes autossuficientes par
 
 Separe o binário IL2CPP e os metadados do mesmo artefato de distribuição. No Windows a entrada costuma ser `GameAssembly.dll` e, no Android, `libil2cpp.so`. Os formatos de entrada incluem PE, ELF de 32 e 64 bits, Mach-O de 32 e 64 bits, Mach-O universal, NSO e WebAssembly. Há suporte para imagens ELF capturadas em memória. A compatibilidade depende do leiaute do binário e dos metadados. O projeto tem cobertura de testes para estruturas recentes como v35, v38 e v39 e implementações experimentais para leiautes da série v104 em diante.
 
-Exemplo no Windows com PowerShell:
+No Windows, execute com PowerShell.
 
 ```powershell
 .\Il2CppDumper.exe "C:\Jogo\GameAssembly.dll" "C:\Jogo\global-metadata.dat" ".\saida" --static-only --output-json
@@ -209,7 +209,7 @@ Registro de proveniência com `tool` (nome, versão e commit quando disponível)
 
 Manifesto da execução com `success`, `startedAt`, `durationMs`, `tool`, `inputs`, `effectiveConfig`, `counts`, `warnings` e o inventário `outputs` com `path`, `bytes` e `sha256`. Em falhas, pode conter dados parciais. Os contadores de declarações se referem à geração C#. Os avisos podem indicar tabela, tipo, membro ou bytes de origem.
 
-Ao consumir uma pasta reutilizada, use o inventário da execução e confira os hashes dos arquivos necessários. Combine o par de hashes dos insumos e o escopo de imagens ao cruzar dados. O nome de um arquivo isoladamente não identifica a versão.
+Ao consumir uma pasta reutilizada, use o inventário da execução e confira os hashes dos arquivos necessários. Combine o par de hashes dos insumos e o escopo de imagens ao cruzar dados.
 
 ### protection-report.json
 
@@ -226,7 +226,7 @@ Diagnóstico anterior à exportação. Para PE, registra `coffTimestamp`, `image
 
 Ative `ValidateOutputs` para reabrir os assemblies e o mapa publicados pela execução. O validador confere relações `PropertyMap`, `EventMap` e `NestedClass`, a identidade dos tipos quando a imagem está disponível e os RVAs executáveis em `ScriptMethod`, `ScriptMetadataMethod.MethodAddress` e `Addresses` para PE. O zero usado como marcador em `ScriptMetadataMethod.MethodAddress` é ignorado. A verificação de endereços em outros formatos tem cobertura parcial.
 
-Leia `DumpResult.OutputValidation` ou `outputValidation` no manifesto e no relatório do lote. Os estados são `passed`, `partial`, `failed` e `notRun`. Cada artefato informa `checks`, `limitations`, `errorCount` e até 50 `findings`. Avalie a validação separadamente de `Success` e do código de saída. A validação estrutural não executa o binário nem confirma o significado de cada endereço.
+Leia `DumpResult.OutputValidation` ou `outputValidation` no manifesto e no relatório do lote. Os estados são `passed`, `partial`, `failed` e `notRun`. Cada artefato informa `checks`, `limitations`, `errorCount` e até 50 `findings`. Avalie a validação separadamente de `Success` e do código de saída. As verificações são estáticas e estruturais.
 
 ### Integração com ferramentas
 
