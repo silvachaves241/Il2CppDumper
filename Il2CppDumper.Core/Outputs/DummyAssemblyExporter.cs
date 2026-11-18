@@ -20,7 +20,7 @@ namespace Il2CppDumper
                 SanitizeMemberReferences(assembly);
                 SanitizeCustomAttributes(assembly);
                 var targetFile = Path.Combine(dummyDllDirectory, assembly.MainModule.Name);
-                File.WriteAllBytes(targetFile, WriteAssembly(assembly, WriteAssemblyToBytes, customAttributesSanitized: true));
+                WriteAssemblyFile(assembly, targetFile);
                 written.Add(targetFile);
                 writtenFiles?.Add(targetFile);
             }
@@ -28,6 +28,27 @@ namespace Il2CppDumper
         }
 
         internal const int MaxCustomAttributeWriteProbeAttempts = 64;
+
+        internal static void WriteAssemblyFile(AssemblyDefinition assembly, string path)
+        {
+            StagedOutput.Write(path, stream =>
+            {
+                try
+                {
+                    assembly.Write(stream);
+                }
+                catch (System.Exception ex) when (IsCustomAttributeWriteException(ex))
+                {
+                    // The normal path writes directly to disk. Recovery still retains the last
+                    // successful probe, since a later probe can fail after writing some bytes.
+                    var bytes = WriteAssemblyIsolatingFailingCustomAttributes(
+                        assembly, ex.Message, WriteAssemblyToBytes, customAttributesSanitized: true);
+                    stream.SetLength(0);
+                    stream.Position = 0;
+                    stream.Write(bytes);
+                }
+            });
+        }
 
         internal static byte[] WriteAssembly(AssemblyDefinition assembly)
         {

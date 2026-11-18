@@ -3,7 +3,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using static Il2CppDumper.Il2CppConstants;
@@ -130,10 +129,12 @@ namespace Il2CppDumper
 
         public static void Write(string outputDir, Il2CppDecompiler decompiler, Il2CppExecutor executor, Config config)
         {
-            var model = Create(decompiler, executor, config);
-            var json = JsonSerializer.Serialize(model, JsonOptions);
-            var targetPath = Path.Combine(outputDir, FileName);
-            File.WriteAllText(targetPath, json, new UTF8Encoding(false));
+            WriteModel(Path.Combine(outputDir, FileName), Create(decompiler, executor, config));
+        }
+
+        internal static void WriteModel(string path, JsonDumpModel model)
+        {
+            StagedOutput.WriteJson(path, model, JsonOptions);
         }
 
         public static JsonDumpModel Create(Il2CppExecutor executor, Config config)

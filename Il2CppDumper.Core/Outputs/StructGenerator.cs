@@ -440,17 +440,17 @@ namespace Il2CppDumper
                 }).ToArray();
             }
             var jsonOptions = new JsonSerializerOptions() { WriteIndented = true, IncludeFields = true };
-            File.WriteAllText(outputDir + "stringliteral.json", JsonSerializer.Serialize(stringLiterals, jsonOptions), new UTF8Encoding(false));
+            StagedOutput.WriteJson(Path.Combine(outputDir, "stringliteral.json"), stringLiterals, jsonOptions);
             WrittenFiles.Add(Path.Combine(outputDir, "stringliteral.json"));
             //输出按索引排序的完整StringLiteral取证表
             var indexedStringLiterals = metadata.DumpStringLiterals(out var failedLiterals, out var failures);
             StringLiteralsFailedCount = failedLiterals + StringLiteralFailures.Count;
             StringLiteralFailures.AddRange(failures);
-            File.WriteAllText(outputDir + "stringliteral-indexed.json", JsonSerializer.Serialize(indexedStringLiterals, jsonOptions), new UTF8Encoding(false));
+            StagedOutput.WriteJson(Path.Combine(outputDir, "stringliteral-indexed.json"), indexedStringLiterals, jsonOptions);
             StringLiteralsCount = indexedStringLiterals.Count;
             WrittenFiles.Add(Path.Combine(outputDir, "stringliteral-indexed.json"));
             //写入文件
-            File.WriteAllText(outputDir + "script.json", JsonSerializer.Serialize(json, jsonOptions));
+            StagedOutput.WriteJson(Path.Combine(outputDir, "script.json"), json, jsonOptions);
             WrittenFiles.Add(Path.Combine(outputDir, "script.json"));
             //il2cpp.h
             for (int i = 0; i < genericClassList.Count; i++)
@@ -458,58 +458,41 @@ namespace Il2CppDumper
                 var pointer = genericClassList[i];
                 AddGenericClassStruct(pointer);
             }
-            var headerStruct = new StringBuilder();
             foreach (var info in structInfoList)
             {
                 structInfoWithStructName.Add(info.TypeName + "_o", info);
             }
-            foreach (var info in structInfoList)
+            var versionHeader = il2Cpp.Version switch
             {
-                headerStruct.Append(RecursionStructInfo(info));
-            }
-            var sb = new StringBuilder();
-            sb.Append(HeaderConstants.GenericHeader);
-            if (il2Cpp.Version >= 35)
+                >= 35 => HeaderConstants.HeaderV35Plus,
+                22 => HeaderConstants.HeaderV22,
+                23 or 24 => HeaderConstants.HeaderV240,
+                24.1 => HeaderConstants.HeaderV241,
+                24.2 or 24.3 or 24.4 or 24.5 => HeaderConstants.HeaderV242,
+                27 or 27.1 or 27.2 => HeaderConstants.HeaderV27,
+                29 or 29.1 or 31 => HeaderConstants.HeaderV29,
+                _ => null
+            };
+            if (versionHeader == null)
             {
-                sb.Append(HeaderConstants.HeaderV35Plus);
+                CoreLogger.WriteLine($"WARNING: This il2cpp version [{il2Cpp.Version}] does not support generating .h files");
+                return;
             }
-            else switch (il2Cpp.Version)
+
+            var headerPath = Path.Combine(outputDir, "il2cpp.h");
+            StagedOutput.Write(headerPath, stream =>
             {
-                case 22:
-                    sb.Append(HeaderConstants.HeaderV22);
-                    break;
-                case 23:
-                case 24:
-                    sb.Append(HeaderConstants.HeaderV240);
-                    break;
-                case 24.1:
-                    sb.Append(HeaderConstants.HeaderV241);
-                    break;
-                case 24.2:
-                case 24.3:
-                case 24.4:
-                case 24.5:
-                    sb.Append(HeaderConstants.HeaderV242);
-                    break;
-                case 27:
-                case 27.1:
-                case 27.2:
-                    sb.Append(HeaderConstants.HeaderV27);
-                    break;
-                case 29:
-                case 29.1:
-                case 31:
-                    sb.Append(HeaderConstants.HeaderV29);
-                    break;
-                default:
-                    CoreLogger.WriteLine($"WARNING: This il2cpp version [{il2Cpp.Version}] does not support generating .h files");
-                    return;
-            }
-            sb.Append(headerStruct);
-            sb.Append(arrayClassHeader);
-            sb.Append(methodInfoHeader);
-            File.WriteAllText(outputDir + "il2cpp.h", sb.ToString());
-            WrittenFiles.Add(Path.Combine(outputDir, "il2cpp.h"));
+                using var header = new StreamWriter(stream, leaveOpen: true);
+                header.Write(HeaderConstants.GenericHeader);
+                header.Write(versionHeader);
+                foreach (var info in structInfoList)
+                {
+                    WriteStructInfo(info, header);
+                }
+                header.Write(arrayClassHeader);
+                header.Write(methodInfoHeader);
+            });
+            WrittenFiles.Add(headerPath);
         }
 
         private void AddMetadataUsageTypeInfo(ScriptJson json, uint index, ulong address)
@@ -1103,20 +1086,20 @@ namespace Il2CppDumper
             return fixName;
         }
 
-        private string RecursionStructInfo(StructInfo info)
+        private void WriteStructInfo(StructInfo info, TextWriter writer)
         {
             if (!structCache.Add(info))
             {
-                return string.Empty;
+                return;
             }
 
+            // Each declaration follows its dependencies, including static value-type fields.
             var sb = new StringBuilder();
-            var pre = new StringBuilder();
 
             if (info.Parent != null)
             {
                 var parentStructName = info.Parent + "_o";
-                pre.Append(RecursionStructInfo(structInfoWithStructName[parentStructName]));
+                WriteStructInfo(structInfoWithStructName[parentStructName], writer);
                 sb.Append($"struct {info.TypeName}_Fields : {info.Parent}_Fields {{\n");
                 // C style
                 //sb.Append($"struct {info.TypeName}_Fields {{\n");
@@ -1145,7 +1128,7 @@ namespace Il2CppDumper
                 if (field.IsValueType)
                 {
                     var fieldInfo = structInfoWithStructName[field.FieldTypeName];
-                    pre.Append(RecursionStructInfo(fieldInfo));
+                    WriteStructInfo(fieldInfo, writer);
                 }
                 if (field.IsCustomType)
                 {
@@ -1246,7 +1229,7 @@ namespace Il2CppDumper
                     if (field.IsValueType)
                     {
                         var fieldInfo = structInfoWithStructName[field.FieldTypeName];
-                        pre.Append(RecursionStructInfo(fieldInfo));
+                        WriteStructInfo(fieldInfo, writer);
                     }
                     if (field.IsCustomType)
                     {
@@ -1260,7 +1243,7 @@ namespace Il2CppDumper
                 sb.Append("};\n");
             }
 
-            return pre.Append(sb).ToString();
+            writer.Write(sb);
         }
 
         private bool TryResolveGenericParameterType(Il2CppType il2CppType, Il2CppGenericContext context, bool methodGeneric, out Il2CppType type)

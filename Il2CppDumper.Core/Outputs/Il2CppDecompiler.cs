@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
-using System.Text.Json;
 using static Il2CppDumper.Il2CppConstants;
 
 namespace Il2CppDumper
@@ -630,9 +629,9 @@ namespace Il2CppDumper
                 try
                 {
                     DumpModel = JsonDumpGenerator.Create(this, executor, config);
-                    var json = JsonSerializer.Serialize(DumpModel, JsonDumpGenerator.JsonOptions);
-                    File.WriteAllText(Path.Combine(outputDir, JsonDumpGenerator.FileName), json, new UTF8Encoding(false));
-                    WrittenFiles.Add(Path.Combine(outputDir, JsonDumpGenerator.FileName));
+                    var path = Path.Combine(outputDir, JsonDumpGenerator.FileName);
+                    JsonDumpGenerator.WriteModel(path, DumpModel);
+                    WrittenFiles.Add(path);
                 }
                 catch (Exception e)
                 {
