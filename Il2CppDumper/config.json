@@ -9,6 +9,7 @@
   "GenerateDummyDll": true,
   "GenerateStruct": true,
   "GenerateJsonDump": false,
+  "ValidateOutputs": false,
   "GenerateRunManifest": true,
   "GenerateProtectionReport": true,
   "GenerateOneofMap": false,

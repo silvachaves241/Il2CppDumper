@@ -144,6 +144,16 @@ else
 >
 > **Note on `Outputs` and `ProducedFiles`:** `DumpResult.Outputs` (mapping artifact identifier to its file or directory path) and `DumpResult.ProducedFiles` (concrete list of written file paths) contain only artifacts produced or updated during the current execution. When reusing an output directory across multiple runs, stale files from prior executions are excluded from the current run's results without deleting unrelated user files.
 
+#### Optional output validation
+
+Set `"ValidateOutputs": true` in `config.json`, a batch entry's `config`, or the library's `Config.ValidateOutputs`. The default is `false`, so the exporter does not reopen its outputs unless requested. The validator reads only files recorded by the current run, including assemblies in nested directories and assemblies without a file extension.
+
+`DumpResult.OutputValidation` exposes the report when enabled. It is also recorded as `outputValidation` in `run-manifest.json` when the manifest is enabled, and in `batch-result.json` for batch runs. The CLI prints a summary when validation runs. The report status is `passed`, `partial` when some checks lack coverage, `failed` when at least one check fails, or `notRun` when no supported output was recorded or generation stopped before validation. Each artifact lists check counts, limitations, and the total number of errors with up to 50 findings containing table rows, source type indices or JSON array coordinates.
+
+Generation and validation are independent. Generation sets `DumpResult.Success`, manifest and batch `success`, CLI exit codes, and batch `StopOnFirstError` behavior. An export can succeed with failed validation. Automation requiring validation should check the report's status in addition to generation success.
+
+The checks reopen assembly metadata, verify PropertyMap, EventMap and NestedClass relationships, and compare exported type names and immediate declaring types with the matching source image where available. The script check covers native code RVAs in `ScriptMethod`, `ScriptMetadataMethod.MethodAddress` and `Addresses` for PE inputs. It checks for file-backed executable data and skips the documented zero placeholder in `ScriptMetadataMethod.MethodAddress`. Other binary formats report partial coverage. Passing means these structural checks completed. It does not prove recovery of the original program, identify the semantic target of every address, or execute the input. DummyDll CIL bodies are generated stubs and must not be used to reconstruct a runtime call graph.
+
 ### Outputs
 
 #### DummyDll

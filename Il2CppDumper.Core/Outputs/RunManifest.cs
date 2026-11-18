@@ -8,6 +8,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Il2CppDumper.Core;
 
 namespace Il2CppDumper
 {
@@ -37,6 +38,10 @@ namespace Il2CppDumper
 
         [JsonPropertyName("warnings")]
         public RunManifestWarnings Warnings { get; set; } = new();
+
+        [JsonPropertyName("outputValidation")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public OutputValidationReport? OutputValidation { get; set; }
 
         [JsonPropertyName("outputs")]
         public List<RunManifestOutput> Outputs { get; set; } = new();
@@ -347,6 +352,13 @@ namespace Il2CppDumper
             IEnumerable<string>? producedFiles = null,
             DumpMetadataInputs? inputs = null)
         {
+            return Write(outputDir, config, startedAtUtc, durationMs, success, counts, warnings, producedFiles, inputs, null);
+        }
+
+        internal static RunManifest Write(string outputDir, Config config, DateTime startedAtUtc, long durationMs, bool success,
+            RunManifestCounts counts, RunManifestWarnings warnings, IEnumerable<string>? producedFiles,
+            DumpMetadataInputs? inputs, OutputValidationReport? outputValidation)
+        {
             if (config != null && !config.GenerateRunManifest)
             {
                 return null!;
@@ -354,6 +366,7 @@ namespace Il2CppDumper
 
             Directory.CreateDirectory(outputDir);
             var manifest = Create(config ?? new Config(), startedAtUtc, durationMs, success, counts, warnings, outputDir, producedFiles, inputs);
+            manifest.OutputValidation = outputValidation;
             var manifestPath = Path.Combine(outputDir, FileName);
             var json = JsonSerializer.Serialize(manifest, JsonOptions);
             File.WriteAllText(manifestPath, json, new UTF8Encoding(false));
