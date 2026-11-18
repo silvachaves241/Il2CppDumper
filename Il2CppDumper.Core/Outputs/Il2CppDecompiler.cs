@@ -137,8 +137,23 @@ namespace Il2CppDumper
                 {
                     continue;
                 }
-                TextWriter writer = staged == null ? aggregate
-                    : aggregateHealthy ? new ImageDeclarationExport.TeeWriter(aggregate, staged.Writer) : staged.Writer;
+                TextWriter writer;
+                if (staged != null && aggregateHealthy)
+                {
+                    writer = new ImageDeclarationExport.TeeWriter(aggregate, staged.Writer, e =>
+                    {
+                        aggregateHealthy = false;
+                        RecordOutputError("ERROR: Could not write dump.cs", e);
+                    }, e =>
+                    {
+                        entry.Error = e.Message;
+                        RecordOutputError($"ERROR: Could not write declaration output for image {imageIndex}", e);
+                    });
+                }
+                else
+                {
+                    writer = staged == null ? aggregate : staged.Writer;
+                }
                 int declarationCount = 0;
                 try
                 {
@@ -545,7 +560,7 @@ namespace Il2CppDumper
                     CoreLogger.WriteLine("ERROR: Some errors in dumping");
                     if (entry != null && staged != null)
                     {
-                        entry.Error = e.Message;
+                        entry.Error ??= e.Message;
                     }
                     if (aggregateHealthy)
                     {
@@ -564,7 +579,7 @@ namespace Il2CppDumper
                     continue;
                 }
 
-                if (staged != null)
+                if (staged != null && entry.Error == null)
                 {
                     try
                     {

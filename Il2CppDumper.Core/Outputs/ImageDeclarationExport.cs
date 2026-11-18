@@ -119,6 +119,7 @@ namespace Il2CppDumper
             {
                 try { Close(); }
                 catch (IOException) { /* Failed images are discarded. Publish reports flush failures. */ }
+                catch (UnauthorizedAccessException) { }
                 try { File.Delete(temporary); }
                 catch (IOException) { }
                 catch (UnauthorizedAccessException) { }
@@ -128,21 +129,38 @@ namespace Il2CppDumper
         // Both outputs receive the same formatter calls without buffering a declaration or an image.
         internal sealed class TeeWriter : TextWriter
         {
-            private readonly TextWriter first;
-            private readonly TextWriter second;
+            private TextWriter? first;
+            private TextWriter? second;
+            private readonly Action<Exception> firstFailure;
+            private readonly Action<Exception> secondFailure;
 
-            internal TeeWriter(TextWriter first, TextWriter second)
+            internal TeeWriter(TextWriter first, TextWriter second, Action<Exception> firstFailure, Action<Exception> secondFailure)
             {
                 this.first = first;
                 this.second = second;
+                this.firstFailure = firstFailure;
+                this.secondFailure = secondFailure;
             }
 
-            public override Encoding Encoding => first.Encoding;
+            public override Encoding Encoding => (first ?? second)?.Encoding ?? Encoding.UTF8;
 
             public override void Write(string? value)
             {
-                first.Write(value);
-                second.Write(value);
+                WriteTo(ref first, firstFailure, value);
+                WriteTo(ref second, secondFailure, value);
+            }
+
+            private static void WriteTo(ref TextWriter? output, Action<Exception> onFailure, string? value)
+            {
+                try
+                {
+                    output?.Write(value);
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    output = null;
+                    onFailure(e);
+                }
             }
         }
     }

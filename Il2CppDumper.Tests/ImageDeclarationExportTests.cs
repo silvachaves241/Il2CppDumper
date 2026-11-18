@@ -122,9 +122,44 @@ namespace Il2CppDumper.Tests
                 Assert.Equal(directory, Path.GetDirectoryName(path));
                 Assert.Matches(@"^[0-9]{6}-[A-Za-z0-9_.-]{1,64}\.cs$", Path.GetFileName(path));
             }
-            var names = Directory.GetFiles(directory).Select(Path.GetFileName).OrderBy(name => name, StringComparer.Ordinal).ToArray();
+            var names = Directory.GetFiles(directory).Select(path => Path.GetFileName(path)!).OrderBy(name => name, StringComparer.Ordinal).ToArray();
             Assert.Equal(4, names.Length);
             Assert.Equal(names[0][6..], names[1][6..]);
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void TeeWriter_ContinuesWritingTheHealthyDestination(bool firstFails)
+        {
+            using var healthy = new StringWriter();
+            using var failing = new FailingWriter();
+            int firstFailures = 0;
+            int secondFailures = 0;
+            using var tee = new ImageDeclarationExport.TeeWriter(
+                firstFails ? failing : healthy,
+                firstFails ? healthy : failing,
+                _ => firstFailures++,
+                _ => secondFailures++);
+
+            tee.Write("first");
+            tee.Write("second");
+
+            Assert.Equal("firstsecond", healthy.ToString());
+            Assert.Equal(1, failing.Writes);
+            Assert.Equal(firstFails ? 1 : 0, firstFailures);
+            Assert.Equal(firstFails ? 0 : 1, secondFailures);
+        }
+
+        private sealed class FailingWriter : StringWriter
+        {
+            public int Writes { get; private set; }
+
+            public override void Write(string? value)
+            {
+                Writes++;
+                throw new IOException("Injected write failure");
+            }
         }
 
         private static void SplitFixtureImages(Metadata metadata)
@@ -141,7 +176,7 @@ namespace Il2CppDumper.Tests
         private JsonDocument ReadIndex() => JsonDocument.Parse(File.ReadAllText(Path.Combine(root, ImageDeclarationExport.IndexArtifact)));
 
         private string ImageFile(JsonElement entry) =>
-            Path.Combine(root, ImageDeclarationExport.DirectoryName, entry.GetProperty("path").GetString());
+            Path.Combine(root, ImageDeclarationExport.DirectoryName, entry.GetProperty("path").GetString()!);
 
         private static string WithoutHeader(string text) => text[(text.IndexOf('\n') + 1)..];
     }
