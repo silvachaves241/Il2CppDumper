@@ -5,11 +5,20 @@
 
 中文说明请戳[这里](README.zh-CN.md)
 
-Unity il2cpp reverse engineer
+Offline analysis of Unity IL2CPP binaries and their matching `global-metadata.dat`. Generate declarations, stub assemblies, address maps, analysis reports, and build-to-build comparisons.
+
+- [Choose a workflow](#choose-a-workflow)
+- [Command-line and batch usage](#command-line)
+- [Library usage](#library-usage)
+- [Image selection](#select-declaration-images)
+- [Output formats and tool integrations](#outputs)
+- [Compare exports and check field offset drift](#diffing-il2cppdumperdiff)
+- [Configuration reference](#configuration)
+- [Build, test, and benchmark](#build-test-and-benchmark)
 
 ## About This Fork
 
-This fork includes experimental adaptations for newer Unity/IL2CPP metadata versions, including v35/v38/v39 used by Unity 6000.x. The changes improve metadata parsing, method address recovery, DummyDll generation, and `il2cpp.h` generation for newer versions.
+This fork includes experimental adaptations for newer Unity/IL2CPP metadata, including v35/v38/v39 and parser paths for newer v104-series layouts. The changes cover metadata parsing, method address recovery, DummyDll generation, and `il2cpp.h` generation. Compatibility depends on the concrete binary and metadata layout.
 
 The newer-version support has only been self-tested on a small number of games. IL2CPP layouts, metadata formats, and protections vary by Unity version, platform, and project. If a specific game cannot be dumped, you need to debug and modify the source code yourself. I do not provide one-by-one adaptation for every game or protected build.
 
@@ -71,20 +80,44 @@ MIT licensed, inherited from upstream. Your responsibility, your jurisdiction, y
 
 ## Usage
 
-Run `Il2CppDumper.exe` and choose the il2cpp executable file and `global-metadata.dat` file, then enter the information as prompted
+### Choose a workflow
 
-The program will then generate all the output files in current working directory
+Use the native IL2CPP binary and metadata from the **same build**. On Windows, `GameAssembly.dll` is a common PE input. Other supported containers include ELF/ELF64, Mach-O (including FAT), NSO, and WASM. The library and batch mode are suitable for unattended processing.
+
+| Goal | Entry point or settings | Result |
+| --- | --- | --- |
+| Browse types, fields, methods, and attributes | Default declaration switches | `dump.cs` and `dump-by-image/index.json` with the per-image files |
+| Analyze a few assemblies | Repeat `--image` or set `ImageSelectors` | Scoped C# and, when enabled, scoped `dump.json` |
+| Feed code or an AI agent typed data | `--output-json` | `dump.json` with image-qualified type identities and nested declarations |
+| Inspect managed assembly metadata | `GenerateDummyDll` | Stub assemblies for inspection in managed tools |
+| Correlate native methods, types, and strings | `GenerateStruct` | `script.json`, `il2cpp.h`, `stringliteral.json`, `stringliteral-indexed.json` |
+| Inspect protobuf oneof candidates | `--output-oneof` | `oneof-members.json` plus the separate ambiguity report |
+| Report input provenance and export coverage | Automatic provenance, `GenerateRunManifest`, `GenerateProtectionReport` | `dump-metadata.json`, `run-manifest.json`, `protection-report.json` |
+| Check recovered addresses and reopened assemblies | `ValidateOutputs` | Structured validation in result and manifest |
+| Produce native-tool sidecars | `EmitBookmarks` or `EmitFridaScript`, with `GenerateStruct` | `bookmarks.json` or `frida_stubs.js` |
+| Automate exports for many builds | `--batch` or `BatchProcessor.RunBatch` | Per-entry outputs and `batch-result.json` |
+| Compare builds or check field offset drift | `Il2CppDumper.Diff` or `Il2CppDumper.Diff --drift` | `dump-diff.json` or `field-offset-drift.json` |
+
+On Windows, launching without input paths opens the file picker. With no explicit output directory, the CLI uses its application directory. Provide a dedicated output directory for each input pair.
 
 ### Command-line
 
 ```
-Il2CppDumper.exe <executable-file> <global-metadata> <output-directory>
-Il2CppDumper.exe --batch <batch-file.json> [--stop-on-first-error]
+Il2CppDumper.exe <executable-file> <global-metadata> [<output-directory>] [--output-json] [--output-oneof] [--image <name|id:N>]...
+Il2CppDumper.exe --batch <batch-file.json> [<result-file.json>] [--stop-on-first-error] [--output-json] [--output-oneof] [--image <name|id:N>]...
+Il2CppDumper.exe --help
+Il2CppDumper.exe --version
 ```
+
+On Linux use `./Il2CppDumper`. Quote paths or image names containing spaces. Help accepts `-h`, `/?`, and `/h`. Version accepts `-v`. The oneof flag also accepts `--generate-oneof-map`. `--image=VALUE` and `--batch=FILE` are supported. The single-run CLI returns `0` on success, `1` on export failure, and `2` for a missing selector value.
+
+The CLI reads `config.json` from the application directory. Flags override the corresponding settings, and batch entries can override that effective base configuration. Set `RequireAnyKey` to `false` to skip the final key press. For fully unattended runs use batch mode or the library so a platform or address selection can be handled without an interactive prompt.
 
 #### Batch Mode (`--batch <file>`)
 
 File-driven batch processing: one process dumps N `(executable, metadata, output)` pairs with per-entry configuration overrides, strict per-entry output isolation, and a deterministic aggregate summary file (`batch-result.json`).
+
+Relative input paths resolve first against the batch file directory, then the working directory. Relative output paths resolve against the batch file directory. The optional positional result path is resolved against the working directory. Without it, the summary is written as `batch-result.json` in the working and batch file directories. With `BatchMode` enabled in the application config, pass a batch JSON path as the sole positional argument or place `batch.json` in the working directory and launch without arguments.
 
 * **Exit codes:**
   * `0`: All entries succeeded.
@@ -142,7 +175,20 @@ else
 
 > **Note on `RequireAnyKey`:** When invoking `Il2CppDumper.Core` in-process, `Config.RequireAnyKey` has **no effect**. The library never blocks or prompts for key presses during unattended or automated runs.
 >
-> **Note on `Outputs` and `ProducedFiles`:** `DumpResult.Outputs` (mapping artifact identifier to its file or directory path) and `DumpResult.ProducedFiles` (concrete list of written file paths) contain only artifacts produced or updated during the current execution. When reusing an output directory across multiple runs, stale files from prior executions are excluded from the current run's results without deleting unrelated user files.
+> **Note on `Outputs` and `ProducedFiles`:** `DumpResult.Outputs` maps logical artifact identifiers to paths, and `DumpResult.ProducedFiles` lists individual files written in the current run. Both exclude stale files. An unscoped run with `GenerateDummyDll` enabled recreates the `DummyDll/` directory.
+
+`Dumper.Execute(request)` is an alias for `Dumper.Dump(request)`. Use `result.Warnings`, `result.ImageSelection`, `result.OutputValidation`, and `result.ProducedFiles` alongside `result.Success`. `BatchProcessor.RunBatch(batchFilePath, baseConfig, log, errorLog, resultOutputPath)` runs the same batch workflow in process.
+
+| Optional `DumpRequest` property | Behavior |
+| --- | --- |
+| `MachoFatIndex`, `MachoFatSelector` | Supply a zero-based FAT Mach-O slice or a callback. Automatic headless selection prefers a 64-bit slice, then the first slice. |
+| `DumpAddress`, `DumpAddressPrompt` | Supply the mapped image base or a callback for an ELF memory image. |
+| `CodeRegistration`, `MetadataRegistration`, `ManualRegistrationPrompt` | Supply both registration addresses or a callback as a fallback when discovery does not resolve them. The discovery chain can also read a matching Il2CppInspectorRedux sidecar. |
+| `StringLiteralDecryptor` | Pass an `IStringLiteralDecryptor` instance to override named configuration for this request. A trusted caller can register a named factory through `StringLiteralDecryptorRegistry.Register`. |
+
+On Windows, the PE registration search can fall back to the system DLL loader. Use a trusted input or an isolated analysis environment when that native loading behavior matters.
+
+For automation, retain `dump-metadata.json` and the current `run-manifest.json` with the outputs. Use the manifest inventory and its hashes to bind sidecars to the input pair. Check `imageSelection` before interpreting missing declarations, and retain the whole image-qualified identity when joining types. Treat recovered code addresses as values in the source binary's coordinate space. Never infer that two exports came from the same build from a filename alone.
 
 #### Optional output validation
 
@@ -160,7 +206,13 @@ The checks reopen assembly metadata, verify PropertyMap, EventMap and NestedClas
 
 Per-image dumps are enabled by default. Set `"GeneratePerImageDump": false` in `config.json`, the batch entry's `config`, or `Config.GeneratePerImageDump` in the library for aggregate-only exports. `GenerateAggregateDump` (default `true`) controls the existing `dump.cs` independently. Set it to `false` for split-only exports. With both options off, no declaration files are produced. Other output switches remain independent.
 
-### Select declaration images
+Each split file starts with its original image header and uses the same declaration formatting as `dump.cs`. `DumpTypeDefIndex` (default `true`) controls the inline TypeDefIndex and image labels in both formats. The index always retains the original image ID, name, first type index, and source type count. Filenames use the original image ID and a bounded, sanitized name. An empty image gets a header-only file.
+
+`dump-by-image/index.json` includes the metadata version and each image's status, declaration count, and path relative to the index. The status is `written`, `empty`, or `failed`. Failed images carry an error and no path. Successfully published files and the index appear in `DumpResult.ProducedFiles` and in the run manifest, which also records input and output hashes. `DumpResult.Outputs["dump-by-image/index.json"]` points to the current index when it was written. Reusing a directory leaves old files in place. Use the current index or manifest to determine membership. During a partial failure, completed images remain inventoried while failed images have no current file.
+
+The C#-like declaration dumps describe recovered metadata and addresses. Compilability and recovery of original source are outside their scope. DummyDll files are generated managed assemblies with stub bodies. The native implementations reside in the input binary.
+
+#### Select declaration images
 
 Use repeatable `--image <name|id:N>` (or `--image=<name|id:N>`) to restrict declaration exports. For example, on a build whose image index lists these images:
 
@@ -185,13 +237,6 @@ For a declaration-only run, disable unneeded global exporters in the same config
 
 **Português** Use `--image <nome|id:N>` várias vezes ou configure `ImageSelectors` para selecionar imagens nos dumps C# e JSON. Os IDs, índices e tokens continuam no espaço de coordenadas original. Quando habilitado, `DummyDll` inclui todas as dependências. Consulte o manifesto e o índice para distinguir os arquivos da execução atual em pastas reutilizadas.
 
-Each split file starts with its original image header and uses the same declaration formatting as `dump.cs`. `DumpTypeDefIndex` (default `true`) controls the inline TypeDefIndex and image labels in both formats. The index always retains the original image ID, name, first type index, and source type count. Filenames use the original image ID and a bounded, sanitized name. An empty image gets a header-only file.
-
-`dump-by-image/index.json` includes the metadata version and each image's status, declaration count, and path relative to the index. The status is `written`, `empty`, or `failed`. Failed images carry an error and no path. Successfully published files and the index appear in `DumpResult.ProducedFiles` and in the run manifest, which also records input and output hashes. `DumpResult.Outputs["dump-by-image/index.json"]` points to the current index when it was written. Reusing a directory leaves old files in place. Use the current index or manifest to determine membership. During a partial failure, completed images remain inventoried while failed images have no current file.
-
-The C#-like declaration dumps describe recovered metadata and addresses. Compilability and recovery of original source are outside their scope. DummyDll files are generated managed assemblies with stub bodies. The native implementations reside in the input binary.
-
-
 #### DummyDll
 
 Folder, containing all restored dll files
@@ -202,23 +247,23 @@ Can be used to extract Unity `MonoBehaviour` and `MonoScript`, for [UtinyRipper]
 
 #### ida.py
 
-For IDA
+Load the matching binary in IDA and select `script.json` when the script prompts. Use `ida_py3.py` with Python 3.
 
 #### ida_with_struct.py
 
-For IDA, read il2cpp.h file and apply structure information in IDA
+Use `ida_with_struct.py` or `ida_with_struct_py3.py` to apply names and structure information from the matching `script.json` and `il2cpp.h`.
 
 #### il2cpp.h
 
-structure information header file
+Generated native structure declarations. Keep the header with the corresponding binary and address map. It describes the selected IL2CPP layout, including inherited, static, and type-specific fields recovered by the generator.
 
 #### ghidra.py
 
-For Ghidra
+Use `ghidra.py` for labels and string annotations. For types, run `il2cpp_header_to_ghidra.py` from the directory containing `il2cpp.h` to create `il2cpp_ghidra.h`, import that header, and use `ghidra_with_struct.py` with `script.json`.
 
 #### Il2CppBinaryNinja
 
-For BinaryNinja
+The repository's `Il2CppDumper.Core/Il2CppBinaryNinja` plugin accepts `script.json` and an optional header. Run the repository helper `il2cpp_header_to_binja.py` from the directory containing `il2cpp.h` to create `il2cpp_binja.h`.
 
 #### ghidra_wasm.py
 
@@ -226,13 +271,13 @@ For Ghidra, work with [ghidra-wasm-plugin](https://github.com/nneonneo/ghidra-wa
 
 #### script.json
 
-For ida.py, ghidra.py and Il2CppBinaryNinja
+The native address map supplies `ScriptMethod`, `ScriptString`, `ScriptMetadata`, `ScriptMetadataMethod`, and `Addresses` to the importers. Method entries can carry `MethodSignature`, `Image`, and `Assembly`. Keep the map with its matching native binary. For a PE input the method addresses are RVAs. The repository also includes a legacy Hopper method-label script, `hopper-py3.py`, that reads this JSON.
 
 #### stringliteral.json
 
-Contains all stringLiteral reference usages emitted by `StructGenerator` (`value`, `address`). Preserves all memory references and call-site addresses in the binary.
+Contains string literal reference entries discovered by `StructGenerator` (`value`, `address`). The indexed export covers metadata entries independently of recovered native references.
 
-**Português:** Contém todas as referências de uso de stringLiteral emitidas pelo `StructGenerator` (`value`, `address`). Preserva todas as referências de memória e endereços de chamada no binário.
+**Português** Registra referências a literais encontradas pelo `StructGenerator` (`value`, `address`). A tabela indexada inclui entradas dos metadados independentemente das referências recuperadas.
 
 #### stringliteral-indexed.json
 
@@ -328,6 +373,8 @@ Tool-neutral bookmark export (`EmitBookmarks`, default `false`). Emits structure
 **Português:** Exportação neutra de favoritos/marcadores (`bookmarks.json`, chave `EmitBookmarks`, padrão `false`). Emite entradas de métodos estruturadas e ordenadas deterministicamente por nome e endereço para importação em ferramentas de depuração e análise.
 
 ### Diffing (Il2CppDumper.Diff)
+
+Compare directories with equivalent declaration coverage and current sidecars. For filtered exports, check both `imageSelection` values before interpreting removals. The comparison tool discovers optional sidecars by filename, so use fresh output directories or confirm the files against both run manifests before comparing. [Image-scope tracking](https://github.com/silvachaves241/Il2CppDumper/issues/112) · [Sidecar provenance tracking](https://github.com/silvachaves241/Il2CppDumper/issues/113)
 
 Standalone comparison tool consuming two structured dumps (`dump.json` and `script.json` address maps) and emitting a machine-readable delta `dump-diff.json`.
 
@@ -516,47 +563,81 @@ Junto aos mapeamentos, o canal de ambiguidade (`oneof-ambiguities.json`) registr
 
 ### Configuration
 
-All the configuration options are located in `config.json`
+The table lists the public `Config` properties. The CLI loads `config.json` beside the application, and the library uses `new Config()` when the caller supplies none. Defaults below match both entry points except where marked.
 
-Available options:
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `ImageSelectors` | `null` | Full declaration coverage. An array selects exact metadata names or original IDs. |
+| `GenerateAggregateDump` | `true` | Write the C#-like `dump.cs`. |
+| `GeneratePerImageDump` | `true` | Write split C# declarations and their index. |
+| `DumpMethod` | `true` | Include method declarations. |
+| `DumpField` | `true` | Include field declarations. |
+| `DumpProperty` | `true` | Include property declarations. |
+| `DumpAttribute` | `true` | Decode and include custom attributes in declaration output. |
+| `DumpFieldOffset` | `true` | Include recovered field offsets. |
+| `DumpMethodOffset` | `true` | Include native address comments in C# method declarations. |
+| `DumpTypeDefIndex` | `true` | Include TypeDefIndex and image labels on C# type declarations. |
+| `GenerateDummyDll` | `true` | Generate the managed stub assembly set. |
+| `DummyDllAddToken` | `true` | Add source token annotations to the generated assemblies. |
+| `GenerateStruct` | `true` | Write the native header, address map, and both literal JSON files. |
+| `GenerateJsonDump` | `false` | Write structured declarations to `dump.json`. |
+| `ValidateOutputs` | `false` | Validate current-run assemblies and PE address maps after writing. |
+| `GenerateRunManifest` | `true` | Write run status, coverage, warnings, and input and output hashes. |
+| `GenerateProtectionReport` | `true` | Analyze the inputs and write protection diagnostics. |
+| `GenerateOneofMap` | `false` | Write oneof candidates and ambiguities. |
+| `EmitFridaScript` | `false` | Emit the Frida sidecar when the native map is available. |
+| `EmitBookmarks` | `false` | Emit the bookmarks sidecar when the native map is available. |
+| `StringDecryptor` | `"none"` | Select an optional literal transform. |
+| `StringDecryptorKey` | `null` | Supply the argument for a named literal transform. |
+| `ForceIl2CppVersion` | `false` | Use `ForceVersion` for native binary parsing. Metadata is still parsed from its own header. |
+| `ForceVersion` | CLI config `16`, library `24.3` | Native parser version when the override is enabled. |
+| `ForceDump` | `false` | Enter the memory-image path. ELF inputs may require an image base. |
+| `NoRedirectedPointer` | `false` | Skip pointer reload when an ELF memory image has unredirected pointers. |
+| `RequireAnyKey` | `true` | Wait for a final key press in the interactive CLI. |
+| `BatchMode` | `false` | Enable batch-file discovery without the explicit `--batch` flag. |
+| `StopOnFirstError` | `false` | In batch mode, stop after an entry's generation fails. |
 
-* `DumpMethod`, `DumpField`, `DumpProperty`, `DumpAttribute`, `DumpFieldOffset`, `DumpMethodOffset`, `DumpTypeDefIndex`
-  * Whether to output these information to dump.cs (`DumpProperty` and `DumpAttribute` default to `true`). In `dump.cs`, instance field offsets are emitted as `// 0x...` while static fields are explicitly annotated as `// static 0x...` to disambiguate statics-area storage slots from instance object layout.
+`DumpProperty` and `DumpAttribute` default to `true`. The C# formatter marks instance offsets as `// 0x...` and static storage offsets as `// static 0x...`. The JSON export has its own formatter and follows its schema for coordinates and offsets.
 
-* `GenerateDummyDll`, `GenerateStruct`, `GenerateJsonDump`, `GenerateRunManifest`, `GenerateProtectionReport`, `GenerateOneofMap`
-  * Whether to generate these things (`GenerateStruct` controls `StructGenerator` output: `script.json`, `stringliteral.json`, `stringliteral-indexed.json`, and `il2cpp.h`; `GenerateJsonDump` controls `dump.json` output, defaults to `false`; `GenerateRunManifest` controls `run-manifest.json` operational summary, defaults to `true`; `GenerateProtectionReport` controls `protection-report.json` pre-analysis diagnostics, defaults to `true`; `GenerateOneofMap` controls `oneof-members.json` and `oneof-ambiguities.json` output, defaults to `false`)
+#### Literal transforms
 
-* `DummyDllAddToken`
-  * Whether to add token in DummyDll
+The built-in transform accepts `"StringDecryptor": "xor"` with a hexadecimal `StringDecryptorKey`, or compact notation such as `"StringDecryptor": "xor:2b"`. The default `"none"` leaves the decoded value unchanged. The indexed export records `raw` (Base64) and the transform identifier when a transform is active. Transform exceptions are recorded as warnings and the exporter falls back to the raw value. A key that yields plausible text still requires validation against known literals. Custom `IStringLiteralDecryptor` implementations run in the dumper process.
 
-* `RequireAnyKey`
-  * Whether to press any key to exit at the end
+| Mode | Example indexed literal |
+| --- | --- |
+| No transform | `{"index":128,"value":"plain","dataIndex":100,"length":5}` |
+| With transform | `{"index":128,"value":"hello","dataIndex":100,"length":5,"raw":"Q05HR0Q=","decryptor":"xor:2b"}` |
 
-* `ForceIl2CppVersion`, `ForceVersion`
-  * If `ForceIl2CppVersion` is `true`, the program will use the version number specified in `ForceVersion` to choose parser for il2cpp binaries (does not affect the choice of metadata parser). This may be useful on some older il2cpp version (e.g. the program may need to use v16 parser on il2cpp v20 (Android) binaries in order to work properly)
+**Português** O modo `xor` aceita chave hexadecimal. Use a tabela indexada para verificar os bytes brutos, o identificador da transformação e os avisos.
 
-* `ForceDump`
-  * Force files to be treated as dumped
+#### Focused configuration examples
 
-* `NoRedirectedPointer`
-  * Treat pointers in dumped files as unredirected, This option needs to be `true` for files dumped from some devices
+Use this overlay for a scoped C# and JSON export with the global generators off.
 
-* `StringDecryptor`, `StringDecryptorKey`
-  * Optional pluggable transform applied after a string literal resolves from metadata (default `"none"` / `null` — byte-identical to base behavior). Supported built-in modes include `"none"` and `"xor"` (with `StringDecryptorKey` or compact `"xor:<key>"` notation where key is a hex byte/string e.g. `"2b"` or `"0x2b"`). Custom transforms can be registered via `IStringLiteralDecryptor` or `StringLiteralDecryptorRegistry`.
-  * **Additive JSON shapes**:
-    * Inactive decryptor: `{"index": 128, "value": "raw text", "dataIndex": 100, "length": 8}`
-    * Active decryptor: `{"index": 128, "value": "decrypted text", "dataIndex": 100, "length": 8, "raw": "AAjCEk=", "decryptor": "xor:2b"}`
-  * Transform failure (exception or key mismatch) logs a warning with the literal index and emits the raw value without dropping entries.
-  * **Trust note for custom hooks:** Custom `IStringLiteralDecryptor` implementations execute arbitrary in-process code in the context of the dumper runner; only register trusted decryptors when processing untrusted metadata.
-  * **Português:** Transformação opcional aplicada após a resolução de literais de string dos metadados (padrão `"none"` / `null`, com comportamento idêntico em bytes). Suporta modo embutido `"xor"` (via `StringDecryptorKey` ou `"xor:<chave>"` em hexadecimal) e ganchos customizados via `IStringLiteralDecryptor`. Registra os campos aditivos `raw` (Base64) e `decryptor` enquanto ativo. Falhas registram aviso com o índice e emitem o valor bruto sem abortar a execução. Nota de segurança: ganchos customizados executam código no processo do dumper; use apenas decifradores confiáveis.
+```json
+{
+  "ImageSelectors": ["Game.dll"],
+  "GenerateJsonDump": true,
+  "GenerateStruct": false,
+  "GenerateDummyDll": false,
+  "RequireAnyKey": false
+}
+```
 
-* `EmitFridaScript`, `EmitBookmarks`
-  * Whether to generate native attach glue stubs (`EmitFridaScript` generates `frida_stubs.js`, defaults to `false`; `EmitBookmarks` generates `bookmarks.json`, defaults to `false`). When disabled, no new files are emitted.
-  * **Português:** Controla a geração de scripts de attach nativo (`EmitFridaScript` gera `frida_stubs.js`, padrão `false`; `EmitBookmarks` gera `bookmarks.json`, padrão `false`). Quando desativadas, nenhum arquivo adicional é gravado no diretório de saída.
+For a pipeline that checks method RVAs and managed assembly structure, enable `GenerateStruct`, `GenerateDummyDll`, `GenerateRunManifest`, and `ValidateOutputs`. Read the validation report after generation and decide whether partial coverage is acceptable for that pipeline.
 
-* `BatchMode`, `StopOnFirstError`
-  * Whether to enable file-driven batch processing (`BatchMode`, default `false`) and whether to abort immediately upon encountering the first failed entry in a batch (`StopOnFirstError`, default `false`, which continues processing remaining entries). When `StopOnFirstError` is `true`, entries after the first failure are not attempted and no side effects are performed on their output directories.
-  * **Português:** Configurações de modo em lote (`BatchMode`, padrão `false`) e parada na primeira falha (`StopOnFirstError`, padrão `false`, continuando o processamento das demais entradas). Quando `StopOnFirstError` for `true`, entradas subsequentes à falha não são executadas e seus diretórios de saída permanecem intocados.
+## Build, test, and benchmark
+
+From a checkout with a .NET SDK, build the solution and run the CLI or diff project by framework.
+
+```sh
+dotnet build Il2CppDumper.sln -c Release
+dotnet run --project Il2CppDumper/Il2CppDumper.csproj -c Release -f net8.0 -- --help
+dotnet run --project Il2CppDumper.Diff/Il2CppDumper.Diff.csproj -c Release -f net8.0 -- --help
+dotnet test Il2CppDumper.Tests/Il2CppDumper.Tests.csproj -c Release
+```
+
+The programs target `net6.0` and `net8.0`. Install both runtimes to run the full test matrix locally, or pass `-f` to select one. CI uses synthetic fixtures on Windows and Ubuntu. The [.NET 8 export benchmark](benchmarks/ExportProfile/README.md) documents how to measure elapsed time, peak working set, managed allocations, and provenance with your own matching inputs.
 
 ## Common errors
 

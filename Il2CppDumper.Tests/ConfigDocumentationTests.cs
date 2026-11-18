@@ -188,37 +188,12 @@ namespace Il2CppDumper.Tests
         [Fact]
         public void Config_AllOptionsDocumentedInEnglishReadme_MatchConfigProperties()
         {
-            var expectedOptions = new[]
-            {
-                "DumpMethod",
-                "DumpField",
-                "DumpProperty",
-                "DumpAttribute",
-                "DumpFieldOffset",
-                "DumpMethodOffset",
-                "DumpTypeDefIndex",
-                "GenerateDummyDll",
-                "GenerateStruct",
-                "GenerateJsonDump",
-                "GenerateRunManifest",
-                "GenerateProtectionReport",
-                "GenerateOneofMap",
-                "DummyDllAddToken",
-                "RequireAnyKey",
-                "ForceIl2CppVersion",
-                "ForceVersion",
-                "ForceDump",
-                "NoRedirectedPointer"
-            };
-
             var repoRoot = FindRepoRoot();
             var content = File.ReadAllText(Path.Combine(repoRoot, "README.md"));
 
-            foreach (var option in expectedOptions)
+            foreach (var option in typeof(Config).GetProperties(BindingFlags.Public | BindingFlags.Instance))
             {
-                Assert.Contains($"`{option}`", content);
-                var prop = typeof(Config).GetProperty(option, BindingFlags.Public | BindingFlags.Instance);
-                Assert.True(prop != null, $"Property {option} documented in README.md must exist on Config class.");
+                Assert.Contains($"| `{option.Name}` |", content);
             }
         }
 
@@ -694,13 +669,14 @@ namespace Il2CppDumper.Tests
             var readmePath = Path.Combine(repoRoot, "README.md");
             var content = File.ReadAllText(readmePath);
 
-            Assert.Contains("`StringDecryptor`, `StringDecryptorKey`", content);
+            Assert.Contains("`StringDecryptor`", content);
+            Assert.Contains("`StringDecryptorKey`", content);
             Assert.Contains("\"none\"", content);
             Assert.Contains("\"xor\"", content);
             Assert.Contains("xor:2b", content);
-            Assert.Contains("AAjCEk=", content);
-            Assert.Contains("Trust note for custom hooks:", content);
-            Assert.Contains("Transform failure (exception or key mismatch)", content);
+            Assert.Contains("`raw` (Base64)", content);
+            Assert.Contains("implementations run in the dumper process", content);
+            Assert.Contains("falls back to the raw value", content);
             Assert.Contains("**Português:**", content);
         }
 
@@ -801,7 +777,8 @@ namespace Il2CppDumper.Tests
             Assert.Contains("--batch <batch-file.json>", content);
             Assert.Contains("#### Batch Mode (`--batch <file>`)", content);
             Assert.Contains("batch-result.json", content);
-            Assert.Contains("`BatchMode`, `StopOnFirstError`", content);
+            Assert.Contains("`BatchMode`", content);
+            Assert.Contains("`StopOnFirstError`", content);
             Assert.Contains("**Português:**", content);
             Assert.Contains("Processamento em lote orientado a arquivo", content);
         }
