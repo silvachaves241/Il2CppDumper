@@ -228,6 +228,8 @@ Ative `ValidateOutputs` para reabrir os assemblies e o mapa publicados pela exec
 
 Leia `DumpResult.OutputValidation` ou `outputValidation` no manifesto e no relatório do lote. Os estados são `passed`, `partial`, `failed` e `notRun`. Cada artefato informa `checks`, `limitations`, `errorCount` e até 50 `findings`. Avalie a validação separadamente de `Success` e do código de saída. As verificações são estáticas e estruturais.
 
+O auxiliar embutido `DummyDll/Il2CppDummyDll.dll` passa pelas verificações estruturais do assembly. A conferência de tipos de origem se aplica a esse caminho quando houver uma imagem de entrada com o mesmo nome.
+
 ### Integração com ferramentas
 
 | Ferramenta | Arquivos e uso |

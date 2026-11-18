@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
+using System.Text;
 using System.Text.Json;
 using Il2CppDumper.Core;
 using Il2CppDumper.Tests.Synthetic;
@@ -21,14 +22,16 @@ namespace Il2CppDumper.Tests
 
         public void Dispose() => Directory.Delete(root, true);
 
-        [Fact]
-        public void DuplicatePropertyMapParent_IsReportedForNestedExtensionlessAssembly()
+        [Theory]
+        [InlineData("__Generated", "__Generated/__Generated")]
+        [InlineData("Il2CppDummyDll", "Il2CppDummyDll.dll")]
+        public void DuplicatePropertyMapParent_IsReportedForImageAndHelperAssemblies(
+            string assemblyName, string moduleName)
         {
-            const string moduleName = "__Generated/__Generated";
             var path = Path.Combine(root, "DummyDll", moduleName);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             using (var assembly = AssemblyDefinition.CreateAssembly(
-                new AssemblyNameDefinition("__Generated", new Version(1, 0)), moduleName, ModuleKind.Dll))
+                new AssemblyNameDefinition(assemblyName, new Version(1, 0)), moduleName, ModuleKind.Dll))
             {
                 var module = assembly.MainModule;
                 foreach (var name in new[] { "First", "Second" })
@@ -67,11 +70,94 @@ namespace Il2CppDumper.Tests
                 var artifact = Assert.Single(manifest.OutputValidation.Artifacts);
                 Assert.Equal("failed", artifact.Status);
                 Assert.Equal(1, artifact.ErrorCount);
-                Assert.Equal("DummyDll/__Generated/__Generated", artifact.Path);
+                Assert.Equal("DummyDll/" + moduleName, artifact.Path);
                 Assert.Equal(2, artifact.Checks["PropertyMap"]);
                 var error = Assert.Single(artifact.Findings);
                 Assert.Equal("invalidMapParent", error.Category);
                 Assert.Equal("PropertyMap[2].Parent", error.Location);
+            }
+        }
+
+        [Fact]
+        public void EmbeddedHelper_RepresentsAValidAssemblyWithoutSourceTypes()
+        {
+            var (metadata, binary, executor) = SyntheticEnvironment.Create(MetadataVersionFamily.V39);
+            using (metadata)
+            using (binary)
+            {
+                var files = DummyAssemblyExporter.Export(executor, root, addToken: true);
+                var report = OutputValidator.Validate(root, files, metadata, binary);
+
+                Assert.Equal("passed", report.Status);
+                Assert.Equal(2, report.Artifacts.Count);
+                var helper = Assert.Single(report.Artifacts, a => a.Path == "DummyDll/Il2CppDummyDll.dll");
+                Assert.Equal("passed", helper.Status);
+                Assert.Empty(helper.Limitations);
+                Assert.True(helper.Checks["typeDefinitions"] > 0);
+                Assert.False(helper.Checks.ContainsKey("sourceTypesMatched"));
+                var image = Assert.Single(report.Artifacts, a => a.Path == "DummyDll/SyntheticImage.dll");
+                Assert.Equal(2, image.Checks["sourceTypesMatched"]);
+            }
+        }
+
+        [Theory]
+        [InlineData("Orphan.dll", "Orphan")]
+        [InlineData("Il2CppDummyDll.dll", "Orphan")]
+        [InlineData("Nested/Il2CppDummyDll.dll", "Il2CppDummyDll")]
+        public void UnassociatedImage_RemainsPartial(string moduleName, string assemblyName)
+        {
+            var path = Path.Combine(root, "DummyDll", moduleName);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            using (var assembly = AssemblyDefinition.CreateAssembly(
+                new AssemblyNameDefinition(assemblyName, new Version(1, 0)), moduleName, ModuleKind.Dll))
+            {
+                assembly.Write(path);
+            }
+
+            var (metadata, binary, _) = SyntheticEnvironment.Create(MetadataVersionFamily.V39);
+            using (metadata)
+            using (binary)
+            {
+                var report = OutputValidator.Validate(root, new[] { path }, metadata, binary);
+                Assert.Equal("partial", report.Status);
+                Assert.Equal("No unique source image matches the assembly path.",
+                    Assert.Single(Assert.Single(report.Artifacts).Limitations));
+            }
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void ImageAtHelperPath_UsesSourceOwnership(bool ambiguous)
+        {
+            var bytes = SyntheticMetadataGenerator.Generate(MetadataVersionFamily.V39);
+            var originalName = Encoding.UTF8.GetBytes("SyntheticImage.dll\0");
+            var helperName = Encoding.UTF8.GetBytes("Il2CppDummyDll.dll\0");
+            Assert.Equal(originalName.Length, helperName.Length);
+            var offset = bytes.AsSpan().IndexOf(originalName);
+            Assert.True(offset >= 0);
+            helperName.CopyTo(bytes.AsSpan(offset));
+
+            using var metadata = new Metadata(new MemoryStream(bytes));
+            using var binary = new SyntheticIl2Cpp(39);
+            var executor = new Il2CppExecutor(metadata, binary);
+            var files = DummyAssemblyExporter.Export(executor, root, addToken: false);
+            if (ambiguous)
+            {
+                metadata.imageDefs = new[] { metadata.imageDefs[0], metadata.imageDefs[0] };
+            }
+
+            var report = OutputValidator.Validate(root, files, metadata, binary);
+            var artifact = Assert.Single(report.Artifacts);
+            if (ambiguous)
+            {
+                Assert.Equal("partial", report.Status);
+                Assert.Equal("No unique source image matches the assembly path.", Assert.Single(artifact.Limitations));
+            }
+            else
+            {
+                Assert.Equal("passed", report.Status);
+                Assert.Equal(2, artifact.Checks["sourceTypesMatched"]);
             }
         }
 
