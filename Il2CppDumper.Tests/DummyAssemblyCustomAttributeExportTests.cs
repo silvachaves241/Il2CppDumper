@@ -135,8 +135,10 @@ namespace Il2CppDumper.Tests
             }
         }
 
-        [Fact]
-        public void WriteAssembly_WithFailingEnumAttributeOnSeparateMember_PreservesValidPropertyAttributesAndReportsOmission()
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void WriteAssembly_WithFailingEnumAttributeOnSeparateMember_PreservesValidPropertyAttributesAndReportsOmission(bool writeFile)
         {
             using var assembly = AssemblyDefinition.CreateAssembly(
                 new AssemblyNameDefinition("ProtocolSample", new Version(1, 0, 0, 0)),
@@ -187,7 +189,23 @@ namespace Il2CppDumper.Tests
             using (CoreLogger.Scope(null, warnings))
             {
                 DummyAssemblyExporter.SanitizeCustomAttributes(assembly);
-                emittedBytes = DummyAssemblyExporter.WriteAssembly(assembly);
+                if (writeFile)
+                {
+                    var path = Path.GetTempFileName();
+                    try
+                    {
+                        DummyAssemblyExporter.WriteAssemblyFile(assembly, path);
+                        emittedBytes = File.ReadAllBytes(path);
+                    }
+                    finally
+                    {
+                        File.Delete(path);
+                    }
+                }
+                else
+                {
+                    emittedBytes = DummyAssemblyExporter.WriteAssembly(assembly);
+                }
             }
 
             var warning = Assert.Single(warnings);
