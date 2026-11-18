@@ -36,6 +36,12 @@ namespace Il2CppDumper.Core
                 var counts = new RunManifestCounts();
                 var manifestWarnings = new RunManifestWarnings();
 
+                var config = request.Config != null ? CloneConfig(request.Config) : new Config();
+                OutputValidationReport? outputValidation = config.ValidateOutputs ? new OutputValidationReport
+                {
+                    Reason = "Generation did not reach post-export validation."
+                } : null;
+
                 string outputDir;
                 if (string.IsNullOrWhiteSpace(request.OutputDirectory))
                 {
@@ -54,7 +60,7 @@ namespace Il2CppDumper.Core
                 {
                     var msg = $"ERROR: Failed to create output directory: {e.Message}";
                     CoreLogger.WriteLine(msg);
-                    return new DumpResult(false, msg, warnings, outputs);
+                    return new DumpResult(false, msg, warnings, outputs) { OutputValidation = outputValidation };
                 }
 
                 if (!outputDir.EndsWith(Path.DirectorySeparatorChar.ToString()) && !outputDir.EndsWith(Path.AltDirectorySeparatorChar.ToString()))
@@ -62,7 +68,6 @@ namespace Il2CppDumper.Core
                     outputDir += Path.DirectorySeparatorChar;
                 }
 
-                var config = request.Config != null ? CloneConfig(request.Config) : new Config();
                 var writtenFiles = new List<string>();
                 DumpMetadata? dumpMetadata = null;
 
@@ -81,7 +86,7 @@ namespace Il2CppDumper.Core
                         warnings,
                         outputs,
                         produced
-                    );
+                    ) { OutputValidation = outputValidation };
                 }
 
                 if (Directory.Exists(outputDir))
@@ -152,7 +157,8 @@ namespace Il2CppDumper.Core
                             counts,
                             manifestWarnings,
                             writtenFiles,
-                            inputs
+                            inputs,
+                            outputValidation
                         );
                         if (manifest != null)
                         {
@@ -262,6 +268,20 @@ namespace Il2CppDumper.Core
 
                     var dumpSuccess = ExecuteDump(metadata, il2Cpp, config, outputDir, out var dumpError, out counts, out manifestWarnings, out var execWrittenFiles, Path.GetFileName(request.ExecutablePath));
                     writtenFiles.AddRange(execWrittenFiles);
+                    if (config.ValidateOutputs)
+                    {
+                        try
+                        {
+                            outputValidation = OutputValidator.Validate(outputDir, writtenFiles, metadata, il2Cpp);
+                        }
+                        catch (Exception e)
+                        {
+                            outputValidation = new OutputValidationReport { Status = "failed", Reason = e.Message };
+                        }
+                        var errors = outputValidation.Artifacts.Sum(a => (long)a.ErrorCount);
+                        var reason = outputValidation.Reason == null ? "" : $" {outputValidation.Reason}";
+                        CoreLogger.WriteLine($"Output validation: {outputValidation.Status} ({outputValidation.Artifacts.Count} artifact(s), {errors} error(s)).{reason}");
+                    }
                     WriteRunManifest(dumpSuccess);
 
                     return CreateResult(dumpSuccess, dumpError);
@@ -799,6 +819,7 @@ namespace Il2CppDumper.Core
                 GenerateDummyDll = source.GenerateDummyDll,
                 GenerateStruct = source.GenerateStruct,
                 GenerateJsonDump = source.GenerateJsonDump,
+                ValidateOutputs = source.ValidateOutputs,
                 GenerateRunManifest = source.GenerateRunManifest,
                 GenerateProtectionReport = source.GenerateProtectionReport,
                 GenerateOneofMap = source.GenerateOneofMap,

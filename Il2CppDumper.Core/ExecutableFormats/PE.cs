@@ -211,6 +211,28 @@ namespace Il2CppDumper
             return true;
         }
 
+        internal bool IsExecutableRva(ulong rva)
+        {
+            if (rva == 0 || rva > ulong.MaxValue - ImageBase)
+            {
+                return false;
+            }
+            foreach (var section in sections)
+            {
+                if (rva < section.VirtualAddress)
+                {
+                    continue;
+                }
+                var delta = rva - section.VirtualAddress;
+                if (delta < Math.Min(section.VirtualSize, section.SizeOfRawData))
+                {
+                    return (section.Characteristics & 0x20000000) != 0 &&
+                        (ulong)section.PointerToRawData + delta < Length;
+                }
+            }
+            return false;
+        }
+
         public override ulong GetRVA(ulong pointer)
         {
             return pointer - ImageBase;

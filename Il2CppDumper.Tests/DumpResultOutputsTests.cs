@@ -200,6 +200,11 @@ namespace Il2CppDumper.Tests
                 });
 
                 Assert.True(first.Success, first.Error);
+                Assert.Null(first.OutputValidation);
+                using (var firstManifest = JsonDocument.Parse(File.ReadAllText(first.Outputs["run-manifest.json"])))
+                {
+                    Assert.False(firstManifest.RootElement.TryGetProperty("outputValidation", out _));
+                }
                 Assert.True(first.Outputs.ContainsKey("DummyDll"));
                 var dummyDllDir = Path.Combine(outDir, "DummyDll");
                 Assert.True(Directory.Exists(dummyDllDir));
@@ -207,6 +212,7 @@ namespace Il2CppDumper.Tests
 
                 // Run 2: DummyDll disabled
                 config.GenerateDummyDll = false;
+                config.ValidateOutputs = true;
                 var second = Dumper.Dump(new DumpRequest
                 {
                     ExecutablePath = wasmPath,
@@ -216,6 +222,14 @@ namespace Il2CppDumper.Tests
                 });
 
                 Assert.True(second.Success, second.Error);
+                Assert.NotNull(second.OutputValidation);
+                Assert.Equal("notRun", second.OutputValidation!.Status);
+                Assert.Empty(second.OutputValidation.Artifacts);
+                using (var manifest = JsonDocument.Parse(File.ReadAllText(second.Outputs["run-manifest.json"])))
+                {
+                    Assert.True(manifest.RootElement.GetProperty("success").GetBoolean());
+                    Assert.Equal("notRun", manifest.RootElement.GetProperty("outputValidation").GetProperty("status").GetString());
+                }
                 Assert.False(second.Outputs.ContainsKey("DummyDll"));
                 Assert.DoesNotContain(second.ProducedFiles, f => f.StartsWith(dummyDllDir, StringComparison.OrdinalIgnoreCase));
 

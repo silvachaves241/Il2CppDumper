@@ -38,6 +38,10 @@ namespace Il2CppDumper.Core
         [JsonPropertyName("error")]
         public string? Error { get; set; }
 
+        [JsonPropertyName("outputValidation")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public OutputValidationReport? OutputValidation { get; set; }
+
         [JsonPropertyName("outputs")]
         public List<string> Outputs { get; set; } = new();
     }
@@ -247,6 +251,7 @@ namespace Il2CppDumper.Core
                 };
 
                 var dumpResult = Dumper.Dump(request);
+                resultEntry.OutputValidation = dumpResult.OutputValidation;
                 if (dumpResult.Success)
                 {
                     resultEntry.Success = true;
