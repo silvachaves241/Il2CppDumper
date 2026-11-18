@@ -1708,7 +1708,7 @@ namespace Il2CppDumper.Diff
             }
         }
 
-        private class ParsedArtifacts
+        internal class ParsedArtifacts
         {
             public DumpDiffEndpoint Endpoint { get; set; } = new();
             public JsonDumpModel Model { get; set; } = new();
@@ -1718,7 +1718,7 @@ namespace Il2CppDumper.Diff
             public string? LiteralsOmission { get; set; }
         }
 
-        private static (DiffArtifactInventory Inventory, ParsedArtifacts Artifacts) ReadDeclarations(string inputPath, string label)
+        internal static (DiffArtifactInventory Inventory, ParsedArtifacts Artifacts) ReadDeclarations(string inputPath, string label)
         {
             string dir;
             string dumpJsonPath;

@@ -32,7 +32,7 @@ namespace Il2CppDumper.Diff
             }
         }
 
-        private static HashSet<string> Validate(ImageSelection selection, IEnumerable<JsonDumpType> types, string side)
+        internal static HashSet<string> Validate(ImageSelection selection, IEnumerable<JsonDumpType> types, string side)
         {
             if (selection.Resolved is not { Count: > 0 } || selection.Resolved.Count > selection.SourceImageCount)
                 throw new InvalidDataException($"Invalid {side} image selection: expected a nonempty list of resolved images within the source image count.");

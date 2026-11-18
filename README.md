@@ -357,6 +357,22 @@ Os dois modos podem emitir `renameCandidates`, com grupos de tipos e campos que 
 
 As listas nominais, o `summary`, os vereditos de `--drift` e os códigos de saída continuam calculados pelas regras de cada modo. Uma hipótese de renomeação pode acompanhar adições, remoções ou mudanças de leiaute no mesmo relatório.
 
+### Comparação parcial de dumps legados
+
+Use `--legacy` quando pelo menos um dos lados tiver uma pasta `DummyDll` com assemblies gerenciados anotados pelo Il2CppDumper. Passe o caminho da pasta `DummyDll` ou do dump que a contém. O outro lado pode ser outra pasta desse formato ou um `dump.json` com `image` e `typeToken`. Ao indicar a pasta do dump, um `dump.json` presente tem prioridade. Para selecionar os assemblies explicitamente, informe o caminho até `DummyDll`.
+
+```powershell
+Il2CppDumper.Diff --legacy anterior/DummyDll atual/dump.json relatorios
+```
+
+O arquivo `legacy-diff.json` tem `coverage: "partial"` e registra o formato, a origem e a verificação de manifesto de cada entrada. Para `DummyDll`, inclui o SHA-256 de cada assembly de imagem lido. Se a pasta do dump tiver `run-manifest.json`, os assemblies vêm do inventário e passam pela mesma verificação de tamanho e hash das saídas JSON. Uma declaração JSON ausente que consta no manifesto continua sendo erro.
+
+Em imagens com nomes iguais, o relatório compara nomes de tipos sob o mesmo token TypeDef original. A coluna `originalToken` vem da anotação `TokenAttribute` do assembly auxiliar `Il2CppDummyDll` ou de `typeToken` no JSON. `reconstructedToken` mostra o token atribuído ao recriar a DLL quando o relatório exibe um tipo. Mudanças de nome e tokens presentes em apenas um lado são observações de inventário. O mesmo token pode ser reaproveitado entre builds.
+
+Imagens disponíveis de um só lado, tipos sem token original e nomes indisponíveis por hierarquia inválida aparecem como lacunas de cobertura. `sharedOriginalTokens` conta todos os tokens em comum. `comparedTokens` conta somente os pares com nome de tipo disponível nos dois lados. Comparações de membros, offsets, endereços e literais exigem as entradas dos modos convencionais. `dump.cs` e `script.json` isolados não são aceitos.
+
+`0` indica que o recorte comparado não apresentou diferenças. `1` indica nome divergente ou token presente em apenas um lado de uma imagem comparada. `2` indica erro de entrada, inclusive quando nenhum nome pode ser comparado por imagem e token original. Use `--legacy` ou `--drift` em invocações separadas.
+
 ## Referência de configuração
 
 Os padrões abaixo valem para `new Config()` e o `config.json` distribuído, exceto onde indicado. No lote, inclua as mesmas chaves no objeto `config` da entrada.

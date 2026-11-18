@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text.Json;
 
@@ -32,6 +33,19 @@ namespace Il2CppDumper.Diff
             : ReadVerifiedJson(declarationName, declaration);
 
         public bool HasUnlistedDeclarations => outputs != null && declaration == null;
+
+        internal bool HasManifest => outputs != null;
+        internal bool HasListedDeclarations => declaration != null;
+
+        internal IEnumerable<string> OutputPaths => outputs?.Select(entry => entry?.Path).OfType<string>()
+            ?? Enumerable.Empty<string>();
+
+        internal byte[] ReadListedFile(string fileName)
+        {
+            var output = FindOutput(fileName)
+                ?? throw new InvalidDataException($"{label} {fileName} is not listed in {RunManifestWriter.FileName}.");
+            return ReadVerifiedBytes(fileName, output);
+        }
 
         public JsonDocument? ReadOptional(string fileName, out string? omission)
         {
@@ -116,7 +130,7 @@ namespace Il2CppDumper.Diff
             }
         }
 
-        private JsonDocument ReadVerifiedJson(string fileName, RunManifestOutput output)
+        private byte[] ReadVerifiedBytes(string fileName, RunManifestOutput output)
         {
             byte[] bytes;
             try
@@ -139,6 +153,12 @@ namespace Il2CppDumper.Diff
             if (!string.Equals(hash, output.Sha256, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException($"{label} {fileName} SHA-256 mismatch against {RunManifestWriter.FileName}.");
 
+            return bytes;
+        }
+
+        private JsonDocument ReadVerifiedJson(string fileName, RunManifestOutput output)
+        {
+            var bytes = ReadVerifiedBytes(fileName, output);
             // Parse the verified snapshot, including legacy files that use a UTF-8 BOM.
             ReadOnlyMemory<byte> json = bytes;
             if (bytes.Length >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf)
