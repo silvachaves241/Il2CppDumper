@@ -7,19 +7,23 @@ namespace Il2CppDumper.Core
     public sealed class OutputValidationReport
     {
         [JsonPropertyName("status")]
+        [JsonInclude]
         public string Status { get; internal set; } = "notRun";
 
         [JsonPropertyName("reason")]
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        [JsonInclude]
         public string? Reason { get; internal set; }
 
         [JsonPropertyName("artifacts")]
-        public List<OutputArtifactValidation> Artifacts { get; } = new();
+        [JsonInclude]
+        public List<OutputArtifactValidation> Artifacts { get; private set; } = new();
     }
 
     public sealed class OutputArtifactValidation
     {
-        internal OutputArtifactValidation(string path, string category)
+        [JsonConstructor]
+        public OutputArtifactValidation(string path, string category)
         {
             Path = path;
             Category = category;
@@ -35,16 +39,20 @@ namespace Il2CppDumper.Core
         public string Status => ErrorCount > 0 ? "failed" : Limitations.Count > 0 ? "partial" : "passed";
 
         [JsonPropertyName("checks")]
-        public Dictionary<string, int> Checks { get; } = new();
+        [JsonInclude]
+        public Dictionary<string, int> Checks { get; private set; } = new();
 
         [JsonPropertyName("limitations")]
-        public List<string> Limitations { get; } = new();
+        [JsonInclude]
+        public List<string> Limitations { get; private set; } = new();
 
         [JsonPropertyName("errorCount")]
+        [JsonInclude]
         public int ErrorCount { get; private set; }
 
         [JsonPropertyName("findings")]
-        public List<OutputValidationFinding> Findings { get; } = new();
+        [JsonInclude]
+        public List<OutputValidationFinding> Findings { get; private set; } = new();
 
         internal void Error(string category, string location, string detail)
         {

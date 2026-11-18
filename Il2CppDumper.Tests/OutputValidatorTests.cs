@@ -59,8 +59,14 @@ namespace Il2CppDumper.Tests
             using (binary)
             {
                 var result = OutputValidator.Validate(root, new[] { path, Path.Combine(root, "DummyDll") }, metadata, binary);
-                Assert.Equal("failed", result.Status);
-                var artifact = Assert.Single(result.Artifacts);
+                var manifest = JsonSerializer.Deserialize<RunManifest>(JsonSerializer.Serialize(
+                    new RunManifest { Success = true, OutputValidation = result }))!;
+                Assert.True(manifest.Success);
+                Assert.NotNull(manifest.OutputValidation);
+                Assert.Equal("failed", manifest.OutputValidation.Status);
+                var artifact = Assert.Single(manifest.OutputValidation.Artifacts);
+                Assert.Equal("failed", artifact.Status);
+                Assert.Equal(1, artifact.ErrorCount);
                 Assert.Equal("DummyDll/__Generated/__Generated", artifact.Path);
                 Assert.Equal(2, artifact.Checks["PropertyMap"]);
                 var error = Assert.Single(artifact.Findings);

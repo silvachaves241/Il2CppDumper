@@ -233,7 +233,11 @@ namespace Il2CppDumper
                         var sidecarPath = Path.Combine(outputDir, DumpMetadataWriter.FileName);
                         var sidecar = DumpMetadataWriter.WriteInitial(outputDir, il2cppPath, candidateMetadataPath, config);
                         var writtenFiles = new[] { sidecarPath };
-                        RunManifestWriter.Write(outputDir, config, DateTime.UtcNow, 0, false, new RunManifestCounts(), new RunManifestWarnings(), writtenFiles, sidecar?.Inputs);
+                        var validation = config.ValidateOutputs
+                            ? new OutputValidationReport { Reason = "Generation did not reach post-export validation." }
+                            : null;
+                        RunManifestWriter.Write(outputDir, config, DateTime.UtcNow, 0, false,
+                            new RunManifestCounts(), new RunManifestWarnings(), writtenFiles, sidecar?.Inputs, validation);
                     }
                     catch (Exception e)
                     {
