@@ -73,6 +73,11 @@ namespace Il2CppDumper
         private int invokerTableIndexSize = 4;
         private int adjustorThunkIndexSize = 4;
         private int genericContainerSizeV106;
+        private int assemblyRecordSize = AssemblyRecordWithModuleTokenSize;
+        private int nestedTypeEntrySize;
+
+        private const int AssemblyRecordSize = 68;
+        private const int AssemblyRecordWithModuleTokenSize = AssemblyRecordSize + sizeof(uint);
 
         /// <summary>Reads IL2CPP metadata from a readable, seekable stream, including a read-only stream.</summary>
         /// <param name="stream">The input stream, closed when the metadata reader is disposed.</param>
@@ -102,6 +107,7 @@ namespace Il2CppDumper
             {
                 header = ReadMetadataHeaderV38();
                 SetupMetadataIndexSizes();
+                ValidateFixedSections();
                 imageDefs = ReadMetadataClassArray<Il2CppImageDefinition>(header.images);
                 assemblyDefs = ReadMetadataClassArray<Il2CppAssemblyDefinition>(header.assemblies);
                 typeDefs = ReadMetadataClassArray<Il2CppTypeDefinition>(header.typeDefinitions);
@@ -181,7 +187,7 @@ namespace Il2CppDumper
                 ? ReadMetadataIndexArray(header.genericParameterConstraints, typeIndexSize)
                 : ReadClassArray<int>(header.genericParameterConstraintsOffset, header.genericParameterConstraintsSize / 4);
             vtableMethods = Version >= 38
-                ? ReadClassArray<uint>((uint)header.vtableMethods.offset, header.vtableMethods.count)
+                ? ReadMetadataClassArray<uint>(header.vtableMethods)
                 : ReadClassArray<uint>(header.vtableMethodsOffset, header.vtableMethodsSize / 4);
             stringLiterals = Version >= 38
                 ? ReadMetadataClassArray<Il2CppStringLiteral>(header.stringLiterals)
@@ -271,6 +277,9 @@ namespace Il2CppDumper
 
         private T[] ReadMetadataClassArray<T>(Il2CppSectionMetadata section) where T : new()
         {
+            if (section.count == 0)
+                return Array.Empty<T>();
+
             Position = (ulong)section.offset;
             var result = new T[section.count];
             for (var i = 0; i < result.Length; i++)
@@ -284,6 +293,8 @@ namespace Il2CppDumper
         {
             if (typeof(T) == typeof(Il2CppImageDefinition))
                 return (T)(object)ReadImageDefinition();
+            if (typeof(T) == typeof(Il2CppAssemblyDefinition))
+                return (T)(object)ReadAssemblyDefinition();
             if (typeof(T) == typeof(Il2CppTypeDefinition))
                 return (T)(object)ReadTypeDefinition();
             if (typeof(T) == typeof(Il2CppMethodDefinition))
@@ -396,7 +407,7 @@ namespace Il2CppDumper
 
             typeDefinitionIndexSize = GetIndexSize(header.typeDefinitions.count);
             genericContainerIndexSize = GetIndexSize(header.genericContainers.count);
-            var actualInterfaceOffsetPairSize = header.interfaceOffsets.count == 0 ? 8 : header.interfaceOffsets.sectionSize / header.interfaceOffsets.count;
+            var actualInterfaceOffsetPairSize = GetSectionItemSize(header.interfaceOffsets, 8);
             typeIndexSize = actualInterfaceOffsetPairSize switch
             {
                 8 => 4,
@@ -420,13 +431,15 @@ namespace Il2CppDumper
                 genericParameterIndexSize = GetIndexSize(header.genericParameters.count);
                 fieldIndexSize = GetIndexSize(header.fields.count);
                 defaultValueDataIndexSize = GetIndexSize(header.fieldAndParameterDefaultValueData.count);
-                genericContainerSizeV106 = GetSectionItemSize(header.genericContainers, 7 + genericParameterIndexSize);
+                var minimumContainerSize = 7 + genericParameterIndexSize;
+                genericContainerSizeV106 = Math.Max(minimumContainerSize,
+                    GetSectionItemSize(header.genericContainers, minimumContainerSize));
             }
             if (Version >= 108)
             {
                 var methodSpecCount = header.methodSpecsOnGenericType.count + header.genericMethodSpecsOnType.count + header.methodSpecs.count;
                 genericMethodIndexSize = GetIndexSize(methodSpecCount);
-                invokerTableIndexSize = GetSectionItemSize(header.invokerIndices, GetIndexSize(header.invokerIndices.count));
+                invokerTableIndexSize = ValidateIndexSection(header.invokerIndices, nameof(header.invokerIndices), emptyWidth: 1);
                 adjustorThunkIndexSize = GetIndexSize(header.genericMethodFunctionsDefinitionsWithAdjustor.count);
                 var genericMethodSpecOnTypeSize = GetSectionItemSize(header.genericMethodSpecsOnType, 0);
                 var methodSpecOnGenericTypeSize = GetSectionItemSize(header.methodSpecsOnGenericType, 0);
@@ -443,8 +456,102 @@ namespace Il2CppDumper
             }
         }
 
+        private void ValidateFixedSections()
+        {
+            void Validate<T>(Il2CppSectionMetadata section, string name) =>
+                ValidateFixedSection(section, name, SizeOf(typeof(T)));
+
+            // Both layouts use the same prefix. Some v39 files omit the trailing module token.
+            var assemblies = header.assemblies;
+            assemblyRecordSize = assemblies.count > 0 && (long)assemblies.count * AssemblyRecordSize == assemblies.sectionSize
+                ? AssemblyRecordSize
+                : AssemblyRecordWithModuleTokenSize;
+            if ((long)assemblies.count * assemblyRecordSize != assemblies.sectionSize)
+                throw InvalidFixedSection(assemblies, nameof(header.assemblies),
+                    $"{AssemblyRecordSize} or {AssemblyRecordWithModuleTokenSize} bytes per record");
+
+            Validate<Il2CppAssemblyDefinition>(assemblies, nameof(header.assemblies));
+            Validate<Il2CppImageDefinition>(header.images, nameof(header.images));
+            Validate<Il2CppTypeDefinition>(header.typeDefinitions, nameof(header.typeDefinitions));
+            Validate<Il2CppMethodDefinition>(header.methods, nameof(header.methods));
+            Validate<Il2CppParameterDefinition>(header.parameters, nameof(header.parameters));
+            Validate<Il2CppFieldDefinition>(header.fields, nameof(header.fields));
+            Validate<Il2CppFieldDefaultValue>(header.fieldDefaultValues, nameof(header.fieldDefaultValues));
+            Validate<Il2CppParameterDefaultValue>(header.parameterDefaultValues, nameof(header.parameterDefaultValues));
+            Validate<Il2CppPropertyDefinition>(header.properties, nameof(header.properties));
+            Validate<Il2CppEventDefinition>(header.events, nameof(header.events));
+            Validate<Il2CppGenericContainer>(header.genericContainers, nameof(header.genericContainers));
+            Validate<Il2CppGenericParameter>(header.genericParameters, nameof(header.genericParameters));
+            Validate<Il2CppStringLiteral>(header.stringLiterals, nameof(header.stringLiterals));
+            Validate<Il2CppFieldRef>(header.fieldRefs, nameof(header.fieldRefs));
+            Validate<Il2CppCustomAttributeDataRange>(header.attributeDataRanges, nameof(header.attributeDataRanges));
+            Validate<uint>(header.vtableMethods, nameof(header.vtableMethods));
+            ValidateFixedSection(header.interfaces, nameof(header.interfaces), typeIndexSize);
+            ValidateFixedSection(header.genericParameterConstraints, nameof(header.genericParameterConstraints), typeIndexSize);
+            nestedTypeEntrySize = ValidateIndexSection(header.nestedTypes, nameof(header.nestedTypes));
+
+            // These fixed sections are described by the header but are not materialized by this reader.
+            ValidateFixedSection(header.interfaceOffsets, nameof(header.interfaceOffsets), typeIndexSize + sizeof(int));
+            ValidateFixedSection(header.fieldMarshaledSizes, nameof(header.fieldMarshaledSizes), fieldIndexSize + typeIndexSize + sizeof(int));
+            Validate<int>(header.referencedAssemblies, nameof(header.referencedAssemblies));
+            ValidateFixedSection(header.unresolvedIndirectCallParameterTypes, nameof(header.unresolvedIndirectCallParameterTypes), typeIndexSize);
+            Validate<Il2CppRange>(header.unresolvedIndirectCallParameterRanges, nameof(header.unresolvedIndirectCallParameterRanges));
+            ValidateFixedSection(header.windowsRuntimeTypeNames, nameof(header.windowsRuntimeTypeNames), sizeof(uint) + typeIndexSize);
+            ValidateIndexSection(header.exportedTypeDefinitions, nameof(header.exportedTypeDefinitions));
+
+            if (Version >= 104)
+                ValidateFixedSection(header.typeInlineArrays, nameof(header.typeInlineArrays), typeIndexSize + sizeof(int));
+            if (Version >= 108)
+            {
+                Validate<Il2CppMethodSpecOnGenericType>(header.methodSpecsOnGenericType, nameof(header.methodSpecsOnGenericType));
+                Validate<Il2CppGenericMethodSpecOnType>(header.genericMethodSpecsOnType, nameof(header.genericMethodSpecsOnType));
+                Validate<Il2CppMethodSpec>(header.methodSpecs, nameof(header.methodSpecs));
+                Validate<Il2CppGenericMethodFunctionsDefinitions>(header.genericMethodFunctionsDefinitions, nameof(header.genericMethodFunctionsDefinitions));
+                Validate<Il2CppGenericMethodFunctionsDefinitionsWithAdjustor>(header.genericMethodFunctionsDefinitionsWithAdjustor,
+                    nameof(header.genericMethodFunctionsDefinitionsWithAdjustor));
+                Validate<Il2CppTokenRangePair>(header.rgctxRanges, nameof(header.rgctxRanges));
+                Validate<Il2CppRGCTXDefinition>(header.rgctxValues, nameof(header.rgctxValues));
+                ValidateFixedSection(header.staticConstructorTypeIndices, nameof(header.staticConstructorTypeIndices), typeDefinitionIndexSize);
+            }
+            if (Version >= 110)
+            {
+                Validate<Il2CppGeneratedMethodTypeInfo>(header.generatedMethodTypeInfos, nameof(header.generatedMethodTypeInfos));
+                Validate<Il2CppGeneratedMethodToken>(header.generatedMethodTokens, nameof(header.generatedMethodTokens));
+            }
+        }
+
+        private int ValidateIndexSection(Il2CppSectionMetadata section, string name, int emptyWidth = sizeof(int))
+        {
+            // Payload index width can differ from the width of the index fields in its consumers.
+            var width = section.count > 0 ? section.sectionSize / section.count : emptyWidth;
+            if (width != 1 && width != 2 && width != 4)
+                throw InvalidFixedSection(section, name, "1, 2 or 4 bytes per record");
+
+            ValidateFixedSection(section, name, width);
+            return width;
+        }
+
+        private void ValidateFixedSection(Il2CppSectionMetadata section, string name, int width)
+        {
+            if (section.count == 0 && section.sectionSize == 0)
+                return;
+
+            if (width <= 0 || section.count < 0 || section.sectionSize < 0 ||
+                (long)section.count * width != section.sectionSize ||
+                section.offset < 0 || (ulong)section.offset + (ulong)section.sectionSize > Length)
+                throw InvalidFixedSection(section, name,
+                    $"{width} bytes per record and a section contained in the metadata stream");
+        }
+
+        private InvalidDataException InvalidFixedSection(Il2CppSectionMetadata section, string name, string expected) =>
+            new($"Invalid metadata section '{name}' (v{Version}, offset {section.offset}, size {section.sectionSize}, " +
+                $"count {section.count}). Expected width/layout: {expected}.");
+
         private int[] ReadMetadataIndexArray(Il2CppSectionMetadata section, int indexSize)
         {
+            if (section.count == 0)
+                return Array.Empty<int>();
+
             Position = (ulong)section.offset;
             var result = new int[section.count];
             for (var i = 0; i < result.Length; i++)
@@ -458,54 +565,9 @@ namespace Il2CppDumper
         {
             if (Version >= 38)
             {
-                return ReadNestedTypeIndicesV38Plus(header.nestedTypes);
+                return ReadMetadataIndexArray(header.nestedTypes, nestedTypeEntrySize);
             }
             return ReadNestedTypeIndicesLegacy(header.nestedTypesOffset, header.nestedTypesSize);
-        }
-
-        private int[] ReadNestedTypeIndicesV38Plus(Il2CppSectionMetadata section)
-        {
-            if (section == null)
-            {
-                throw new InvalidDataException("Metadata nestedTypes section metadata is missing.");
-            }
-
-            if (section.count < 0)
-            {
-                throw new InvalidDataException($"Invalid nestedTypes count: {section.count}.");
-            }
-
-            if (section.count == 0)
-            {
-                if (section.sectionSize != 0)
-                {
-                    throw new InvalidDataException($"Invalid nestedTypes section size {section.sectionSize} for count 0.");
-                }
-                return Array.Empty<int>();
-            }
-
-            if (section.sectionSize <= 0)
-            {
-                throw new InvalidDataException($"Invalid nestedTypes section size: {section.sectionSize}.");
-            }
-
-            if (section.sectionSize % section.count != 0)
-            {
-                throw new InvalidDataException($"NestedTypes section size {section.sectionSize} is not divisible by count {section.count}.");
-            }
-
-            var width = section.sectionSize / section.count;
-            if (width != 1 && width != 2 && width != 4)
-            {
-                throw new InvalidDataException($"Unsupported nestedTypes entry width: {width}. Expected 1, 2, or 4 bytes.");
-            }
-
-            if (section.offset < 0 || (ulong)section.offset + (ulong)section.sectionSize > Length)
-            {
-                throw new InvalidDataException($"NestedTypes section [offset: {section.offset}, size: {section.sectionSize}] extends beyond metadata stream length {Length}.");
-            }
-
-            return ReadMetadataIndexArray(section, width);
         }
 
         private int[] ReadNestedTypeIndicesLegacy(uint offset, int size)
@@ -540,6 +602,17 @@ namespace Il2CppDumper
             var byteValue = ReadByte();
             return byteValue == byte.MaxValue ? -1 : byteValue;
         }
+
+        private Il2CppAssemblyDefinition ReadAssemblyDefinition() => new()
+        {
+            imageIndex = ReadInt32(),
+            token = ReadUInt32(),
+            unusedCustomAttributeIndex = ReadInt32(),
+            referencedAssemblyStart = ReadInt32(),
+            referencedAssemblyCount = ReadInt32(),
+            aname = ReadClass<Il2CppAssemblyNameDefinition>(),
+            moduleToken = assemblyRecordSize == AssemblyRecordWithModuleTokenSize ? ReadUInt32() : 0
+        };
 
         private Il2CppImageDefinition ReadImageDefinition() => new()
         {
@@ -1327,8 +1400,13 @@ namespace Il2CppDumper
 
         public int SizeOf(Type type)
         {
+            if (type.IsPrimitive)
+                return GetPrimitiveTypeSize(type.Name);
+
             if (Version >= 38)
             {
+                if (type == typeof(Il2CppAssemblyDefinition))
+                    return assemblyRecordSize;
                 if (type == typeof(Il2CppImageDefinition))
                     return 4 + 4 + typeDefinitionIndexSize + 4 + typeDefinitionIndexSize + 4 + methodIndexSize + 4 + 4 + 4
                         + (Version >= 108 ? 4 + 4 + 4 + typeDefinitionIndexSize + 4 : 0)
@@ -1375,7 +1453,7 @@ namespace Il2CppDumper
                     return 4;
             }
             var size = 0;
-            foreach (var i in type.GetFields())
+            foreach (var i in type.GetFields(BindingFlags.Instance | BindingFlags.Public))
             {
                 var attr = (VersionAttribute)Attribute.GetCustomAttribute(i, typeof(VersionAttribute));
                 if (attr != null)
@@ -1405,12 +1483,15 @@ namespace Il2CppDumper
             }
             return size;
 
-            static int GetPrimitiveTypeSize(string name)
+            int GetPrimitiveTypeSize(string name)
             {
                 return name switch
                 {
                     "Int32" or "UInt32" => 4,
                     "Int16" or "UInt16" => 2,
+                    "Byte" => 1,
+                    // BinaryStream.ReadClass treats 64-bit fields as native pointers.
+                    "Int64" or "UInt64" => Is32Bit ? 4 : 8,
                     _ => 0,
                 };
             }

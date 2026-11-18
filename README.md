@@ -119,6 +119,8 @@ foreach (string caminho in resultado.ProducedFiles)
 
 Para inspecionar apenas os metadados, use `Metadata(Stream)` com um fluxo legível que permita reposicionar a leitura. O leitor assume a propriedade do fluxo e o fecha ao ser descartado. Operações de escrita e relocação precisam de um fluxo gravável.
 
+A partir do formato v38, o leitor confere tamanho, contagem e limites das seções de registros fixos antes de carregar suas tabelas. Se a descrição for incompatível com a largura de leitura, o diagnóstico identifica a seção e a versão do metadata. A tabela de assemblies aceita registros de 68 bytes e de 72 bytes com token de módulo.
+
 ```csharp
 using System;
 using System.IO;
