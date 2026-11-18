@@ -174,12 +174,9 @@ namespace Il2CppDumper
                 {
                     var typeDef = metadata.typeDefs[typeDefIndex];
                     var typeModel = CreateTypeModel(decompiler, executor, metadata, il2Cpp, config, imageDef, typeDef, typeDefIndex);
-                    if (selection != null)
-                    {
-                        typeModel.imageId = imageId;
-                        typeModel.typeDefIndex = typeDefIndex;
-                        typeModel.typeToken = typeDef.token;
-                    }
+                    typeModel.imageId = imageId;
+                    typeModel.typeDefIndex = typeDefIndex;
+                    typeModel.typeToken = typeDef.token;
                     typeModelMap[typeDef] = typeModel;
                 }
             }

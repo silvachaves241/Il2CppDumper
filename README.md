@@ -142,7 +142,7 @@ As seleções se somam, sem duplicar imagens, e mantêm a ordem e os índices or
 
 | Saída | Efeito da seleção |
 | --- | --- |
-| `dump.cs`, `dump-by-image/`, `dump.json` | Incluem apenas as declarações selecionadas. O JSON registra `imageId`, `typeDefIndex` e `typeToken`. Um tipo aninhado cujo tipo externo ficou fora da seleção é emitido na raiz com o nome qualificado. |
+| `dump.cs`, `dump-by-image/`, `dump.json` | Incluem apenas as declarações selecionadas. Um tipo aninhado cujo tipo externo ficou fora da seleção é emitido na raiz com o nome qualificado. |
 | `DummyDll/` | Conjunto completo de assemblies e dependências. Em uma execução com seleção, arquivos de mesmo nome são atualizados e arquivos de outras execuções podem permanecer no diretório. |
 | Mapas nativos, literais, cabeçalho, `oneof` e marcadores | Abrangem a entrada inteira quando habilitados. A saída Frida também abrange a entrada inteira e omite o enriquecimento de assinaturas quando o JSON está limitado às imagens selecionadas. |
 | Proveniência e validação | Usam o par completo de entradas. A validação examina os artefatos registrados pela execução. |
@@ -160,6 +160,10 @@ O índice, o JSON estruturado e o manifesto registram `imageSelection` quando ap
 ### dump.json
 
 Formato estruturado para automação. A raiz tem `types`; percorra também `nested` para incluir os tipos aninhados. Cada definição pode trazer `image`, `assembly`, `fullName`, `bases`, `size`, `fields`, `properties`, `methods`, `enums` e `attributes` como `[Serializable]`. Leia o esquema em [DumpJson.cs](Il2CppDumper.Core/Outputs/DumpJson.cs).
+
+O JSON completo e o filtrado registram `imageId` (índice da imagem), `typeDefIndex` (índice global da definição de tipo) e `typeToken` (token numérico do TypeDef) para cada declaração, inclusive em todos os níveis de `nested`. Os índices começam em zero e conservam os valores do metadata original quando há seleção. O token é 0 quando o leitor não disponibiliza um token para o tipo. Use essas coordenadas para cruzar artefatos do mesmo dump. Índices e tokens podem mudar entre builds, e um token pode se repetir em imagens diferentes.
+
+Dumps completos de versões anteriores podem omitir essas três propriedades. Consumidores que validam o esquema estritamente devem aceitá-las tanto no JSON completo quanto no filtrado. O campo de raiz `imageSelection` aparece quando há seleção por imagem.
 
 Correlacione tipos por `<image>!<fullName>` ou, na ausência da imagem, por `<assembly>!<fullName>`. Campos com `isStatic: true` usam o armazenamento estático. Trate um `offset` nulo como indisponível. Assinaturas gerenciadas vêm de `methods`. Para endereços nativos, consulte o mapa `script.json` da mesma execução e use a identidade do método disponível ali.
 
