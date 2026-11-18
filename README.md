@@ -374,8 +374,6 @@ Tool-neutral bookmark export (`EmitBookmarks`, default `false`). Emits structure
 
 ### Diffing (Il2CppDumper.Diff)
 
-Compare directories with equivalent declaration coverage and current sidecars. For filtered exports, check both `imageSelection` values before interpreting removals. The comparison tool discovers optional sidecars by filename, so use fresh output directories or confirm the files against both run manifests before comparing. [Image-scope tracking](https://github.com/silvachaves241/Il2CppDumper/issues/112) · [Sidecar provenance tracking](https://github.com/silvachaves241/Il2CppDumper/issues/113)
-
 Standalone comparison tool consuming two structured dumps (`dump.json` and `script.json` address maps) and emitting a machine-readable delta `dump-diff.json`.
 
 ```
@@ -383,15 +381,21 @@ Il2CppDumper.Diff <left> <right> <output>
 ```
 
 #### Inputs
-* `<left>`: Directory containing `dump.json` (and optionally `script.json`, `stringliteral-indexed.json`, `dump-metadata.json`) or direct path to `dump.json`.
-* `<right>`: Directory containing `dump.json` (and optionally `script.json`, `stringliteral-indexed.json`, `dump-metadata.json`) or direct path to `dump.json`.
+* `<left>`: Directory containing `dump.json` or direct path to the baseline JSON dump.
+* `<right>`: Directory containing `dump.json` or direct path to the updated JSON dump.
 * `<output>`: Output directory (where `dump-diff.json` will be written) or full path to destination json file.
 * Note: `dump.cs` text is never an input.
 
 #### Exit codes
-* `0`: Identical (no differences found).
+* `0`: No differences in the sections compared. Check the report notes for omitted sections.
 * `1`: Differences found.
 * `2`: Usage / input error.
+
+#### Optional address and literal maps
+
+The default diff checks the `run-manifest.json` in each input directory, including the parent directory of an explicit `dump.json` path. The selected JSON dump, `script.json`, and `stringliteral-indexed.json` are verified against their recorded byte lengths and SHA-256 hashes when listed. An optional map contributes to its comparison only when both inputs supply it. Unlisted maps are ignored and the relevant `methods.note` or `literals.note` explains the missing coverage. When the selected dump itself is unlisted, that input contributes declarations only. An unreadable or invalid inventory, a missing recorded map, or an integrity mismatch produces exit code `2` and leaves the report destination untouched.
+
+For directories without a manifest, the diff still looks for the optional maps by filename. Use a fresh directory or known matching files for legacy comparisons.
 
 #### Type identity & ambiguity policy
 
@@ -442,7 +446,7 @@ Types are correlated across builds using the stable composite key `<image>!<full
     "addressChanged": [
       { "type": "Namespace.TypeName", "method": "MethodName", "left": "0x1000", "right": "0x2000" }
     ],
-    "note": "Optional explanation if script.json is missing on one side"
+    "note": "Optional explanation of missing coverage or unresolved ambiguity"
   },
   "literals": {
     "addedByIndex": [ { "index": 12, "value": "new text" } ],
@@ -459,7 +463,8 @@ Types are correlated across builds using the stable composite key `<image>!<full
 
 **Português:** Ferramenta autônoma de comparação estruturada (`Il2CppDumper.Diff`), consumindo dois dumps estruturados (`dump.json` e mapas de endereço de `script.json`) e emitindo um delta legível por máquina (`dump-diff.json`).
 * **Entradas:** diretórios ou caminhos diretos para `dump.json` (e opcionalmente `script.json`, `stringliteral-indexed.json`, `dump-metadata.json`) de ambas as versões. `ScriptMethod.MethodSignature` é consumido como entrada opcional para distinguir sobrecargas e operadores de conversão. `dump.cs` nunca é consumido.
-* **Códigos de saída:** `0` = idênticos, `1` = diferenças encontradas, `2` = erro de uso ou entrada.
+* **Mapas opcionais:** Em uma pasta com `run-manifest.json`, o diff verifica o tamanho e o SHA-256 do dump e dos mapas registrados. A regra também vale para um caminho direto para `dump.json`. Mapas ausentes do inventário ficam fora da comparação e o motivo aparece no relatório. Se o dump estiver fora do inventário, só suas declarações entram na comparação. Um mapa registrado que sumiu ou teve seu conteúdo alterado gera erro. Em pastas sem manifesto, os mapas continuam sendo localizados pelo nome.
+* **Códigos de saída:** `0` = sem diferenças nas seções comparadas, `1` = diferenças encontradas, `2` = erro de uso ou entrada.
 * **Identidade de tipos e ambiguidade:** tipos são correlacionados pela chave estável `<image>!<fullName>` (ou `<assembly>!<fullName>`). Dumps legados com nomes únicos mantêm compatibilidade via `fullName`; colisões sem imagem/assembly geram erro explícito com código `2`. `DumpDiffTypeChange` emite campos aditivos `image` e `assembly`; `DumpDiffAddressChange` emite adicionalmente `methodSignature` como saída quando disponível. Permutações de métodos homônimos sem posse geram ambiguidade explícita em vez de falso negativo por igualdade de multiconjunto.
 * **Esquema:** inclui hashes de proveniência (`dump-metadata.json` quando disponível ou SHA-256 do arquivo em streaming), tipos adicionados/removidos/alterados, métodos com endereços alterados, literais por índice e sumário.
 
