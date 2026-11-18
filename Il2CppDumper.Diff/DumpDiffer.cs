@@ -88,7 +88,8 @@ namespace Il2CppDumper.Diff
             var result = new DumpDiffResult
             {
                 left = leftArtifacts.Endpoint,
-                right = rightArtifacts.Endpoint
+                right = rightArtifacts.Endpoint,
+                renameCandidates = RenameCandidateFinder.Find(reconciled)
             };
 
             // 1. Compare Types

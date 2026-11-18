@@ -26,6 +26,9 @@ namespace Il2CppDumper.Diff
         [JsonPropertyName("structs")]
         public List<FieldOffsetStructDrift> structs { get; set; } = new();
 
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public RenameCandidates? renameCandidates { get; set; }
+
         [JsonIgnore]
         public bool HasDrift => structs.Count > 0;
     }

@@ -347,6 +347,16 @@ Para diretório ou caminho direto, o Diff usa o `run-manifest.json` da pasta, qu
 }
 ```
 
+### Possíveis renomeações
+
+Os dois modos podem emitir `renameCandidates`, com grupos de tipos e campos que merecem comparação. `status: "candidate"` indica uma correspondência plausível, ainda sujeita a revisão. `status: "ambiguous"` lista as alternativas em `left` e `right` e os motivos em `ambiguities`.
+
+- **Tipos** são pesquisados entre nomes adicionados e removidos na mesma imagem. `evidence` registra o caminho com GUID normalizado de `<PrivateImplementationDetails>`, o ordinal de máquina de estados com forma compatível ou a coincidência da forma declarada. A forma usa as bases, os campos e as assinaturas dos métodos na ordem do dump. Na regra geral, os offsets recuperados também entram na comparação. Token e TypeDef coincidentes servem como evidência adicional. Um token isolado ou em conflito gera ambiguidade.
+- **Campos** são pesquisados em um tipo já pareado pelo comparador nominal. Um candidato exige nomes diferentes, o mesmo tipo declarado e uma posição de instância exclusiva em ambos os dumps. Tipos diferentes ou offsets compartilhados geram ambiguidade.
+- Um par de tipos candidato pode trazer `declarationChanges` com os valores originais das seções alteradas, `matchingInstanceOffsets` com os offsets coincidentes por nome e `layoutChanges` quando há diferença observada de offsets ou tamanho. A lista de filhos diretos é comparada pelo caminho relativo ao pai.
+
+As listas nominais, o `summary`, os vereditos de `--drift` e os códigos de saída continuam calculados pelas regras de cada modo. Uma hipótese de renomeação pode acompanhar adições, remoções ou mudanças de leiaute no mesmo relatório.
+
 ## Referência de configuração
 
 Os padrões abaixo valem para `new Config()` e o `config.json` distribuído, exceto onde indicado. No lote, inclua as mesmas chaves no objeto `config` da entrada.

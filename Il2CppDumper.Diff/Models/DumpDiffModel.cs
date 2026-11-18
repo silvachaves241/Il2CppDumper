@@ -14,6 +14,9 @@ namespace Il2CppDumper.Diff
         public DumpDiffLiterals literals { get; set; } = new();
         public DumpDiffSummary summary { get; set; } = new();
 
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public RenameCandidates? renameCandidates { get; set; }
+
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public bool hasAmbiguousMethodAddresses { get; set; }
 

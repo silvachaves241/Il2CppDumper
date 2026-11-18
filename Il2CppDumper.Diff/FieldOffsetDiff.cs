@@ -79,84 +79,79 @@ namespace Il2CppDumper.Diff
         {
             var reconciled = TypeReconciler.Reconcile(leftModel, rightModel);
 
-            var driftedStructs = new List<FieldOffsetStructDrift>();
-
-            foreach (var item in reconciled)
+            return new FieldOffsetDriftReport
             {
-                var leftType = item.Left;
-                var rightType = item.Right;
-                var typeName = item.Key;
+                structs = reconciled.Select(item => CompareType(item, out _))
+                    .OfType<FieldOffsetStructDrift>()
+                    .OrderBy(item => item.@struct, StringComparer.Ordinal)
+                    .ToList(),
+                renameCandidates = RenameCandidateFinder.Find(reconciled)
+            };
+        }
 
-                // Collect instance fields that have an offset (exclude static and constants/literals without offset)
-                var leftInstanceFields = (leftType?.fields ?? new List<JsonDumpField>())
-                    .Where(f => !f.isStatic && TryParseHexOffset(f.offset, out _))
-                    .GroupBy(f => f.name)
-                    .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+        internal static FieldOffsetStructDrift? CompareType(ReconciledType item, out int matchingInstanceOffsets)
+        {
+            matchingInstanceOffsets = 0;
+            var leftType = item.Left;
+            var rightType = item.Right;
 
-                var rightInstanceFields = (rightType?.fields ?? new List<JsonDumpField>())
-                    .Where(f => !f.isStatic && TryParseHexOffset(f.offset, out _))
-                    .GroupBy(f => f.name)
-                    .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+            // Collect instance fields that have an offset (exclude static and constants/literals without offset)
+            var leftInstanceFields = (leftType?.fields ?? new List<JsonDumpField>())
+                .Where(f => !f.isStatic && TryParseHexOffset(f.offset, out _))
+                .GroupBy(f => f.name)
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
 
-                // Calculate max offset in left instance fields
-                ulong? maxLeftOffset = null;
-                foreach (var f in leftInstanceFields.Values)
+            var rightInstanceFields = (rightType?.fields ?? new List<JsonDumpField>())
+                .Where(f => !f.isStatic && TryParseHexOffset(f.offset, out _))
+                .GroupBy(f => f.name)
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+
+            // Calculate max offset in left instance fields
+            ulong? maxLeftOffset = null;
+            foreach (var f in leftInstanceFields.Values)
+            {
+                if (TryParseHexOffset(f.offset, out var off))
                 {
-                    if (TryParseHexOffset(f.offset, out var off))
+                    if (!maxLeftOffset.HasValue || off > maxLeftOffset.Value)
                     {
-                        if (!maxLeftOffset.HasValue || off > maxLeftOffset.Value)
-                        {
-                            maxLeftOffset = off;
-                        }
+                        maxLeftOffset = off;
                     }
                 }
+            }
 
-                var driftedFields = new List<FieldOffsetFieldDrift>();
+            var driftedFields = new List<FieldOffsetFieldDrift>();
 
-                // 1. Shifted & Unchanged (common fields)
-                var commonFieldNames = leftInstanceFields.Keys
-                    .Intersect(rightInstanceFields.Keys)
-                    .OrderBy(x => x, StringComparer.Ordinal)
-                    .ToList();
+            // 1. Shifted & Unchanged (common fields)
+            var commonFieldNames = leftInstanceFields.Keys
+                .Intersect(rightInstanceFields.Keys)
+                .OrderBy(x => x, StringComparer.Ordinal)
+                .ToList();
 
-                // Calculate max offset among pre-existing fields in updated (right) layout
-                ulong? maxPreexistingRightOffset = null;
-                foreach (var fName in commonFieldNames)
+            // Calculate max offset among pre-existing fields in updated (right) layout
+            ulong? maxPreexistingRightOffset = null;
+            foreach (var fName in commonFieldNames)
+            {
+                var rf = rightInstanceFields[fName];
+                if (TryParseHexOffset(rf.offset, out var off))
                 {
-                    var rf = rightInstanceFields[fName];
-                    if (TryParseHexOffset(rf.offset, out var off))
+                    if (!maxPreexistingRightOffset.HasValue || off > maxPreexistingRightOffset.Value)
                     {
-                        if (!maxPreexistingRightOffset.HasValue || off > maxPreexistingRightOffset.Value)
-                        {
-                            maxPreexistingRightOffset = off;
-                        }
+                        maxPreexistingRightOffset = off;
                     }
                 }
+            }
 
-                foreach (var fName in commonFieldNames)
+            foreach (var fName in commonFieldNames)
+            {
+                var lf = leftInstanceFields[fName];
+                var rf = rightInstanceFields[fName];
+
+                var leftHasOffset = TryParseHexOffset(lf.offset, out var leftOff);
+                var rightHasOffset = TryParseHexOffset(rf.offset, out var rightOff);
+
+                if (leftHasOffset && rightHasOffset)
                 {
-                    var lf = leftInstanceFields[fName];
-                    var rf = rightInstanceFields[fName];
-
-                    var leftHasOffset = TryParseHexOffset(lf.offset, out var leftOff);
-                    var rightHasOffset = TryParseHexOffset(rf.offset, out var rightOff);
-
-                    if (leftHasOffset && rightHasOffset)
-                    {
-                        if (leftOff != rightOff)
-                        {
-                            driftedFields.Add(new FieldOffsetFieldDrift
-                            {
-                                name = fName,
-                                left = lf.offset,
-                                right = rf.offset,
-                                drift = FieldOffsetDriftType.Shifted,
-                                severity = FieldOffsetSeverity.BreaksExternalReaders
-                            });
-                        }
-                        // else: unchanged -> omitted
-                    }
-                    else if (lf.offset != rf.offset)
+                    if (leftOff != rightOff)
                     {
                         driftedFields.Add(new FieldOffsetFieldDrift
                         {
@@ -167,107 +162,112 @@ namespace Il2CppDumper.Diff
                             severity = FieldOffsetSeverity.BreaksExternalReaders
                         });
                     }
+                    else
+                    {
+                        matchingInstanceOffsets++;
+                    }
                 }
-
-                // 2. Removed fields (present in left, missing in right)
-                var removedFieldNames = leftInstanceFields.Keys
-                    .Except(rightInstanceFields.Keys)
-                    .OrderBy(x => x, StringComparer.Ordinal);
-
-                foreach (var fName in removedFieldNames)
+                else if (lf.offset != rf.offset)
                 {
-                    var lf = leftInstanceFields[fName];
                     driftedFields.Add(new FieldOffsetFieldDrift
                     {
                         name = fName,
                         left = lf.offset,
-                        right = null,
-                        drift = FieldOffsetDriftType.Removed,
-                        severity = FieldOffsetSeverity.BreaksExternalReaders
-                    });
-                }
-
-                // 3. Added fields (missing in left, present in right)
-                var addedFieldNames = rightInstanceFields.Keys
-                    .Except(leftInstanceFields.Keys)
-                    .OrderBy(x => x, StringComparer.Ordinal);
-
-                foreach (var fName in addedFieldNames)
-                {
-                    var rf = rightInstanceFields[fName];
-                    var rightHasOffset = TryParseHexOffset(rf.offset, out var rightOff);
-
-                    bool isAtEnd = false;
-                    if (rightHasOffset)
-                    {
-                        if (leftInstanceFields.Count == 0)
-                        {
-                            isAtEnd = true;
-                        }
-                        else if (commonFieldNames.Count > 0 && maxLeftOffset.HasValue && maxPreexistingRightOffset.HasValue)
-                        {
-                            isAtEnd = rightOff > maxLeftOffset.Value && rightOff > maxPreexistingRightOffset.Value;
-                        }
-                    }
-
-                    string severity = isAtEnd
-                        ? FieldOffsetSeverity.LeafConsumersMaySurvive
-                        : FieldOffsetSeverity.BreaksExternalReaders;
-
-                    driftedFields.Add(new FieldOffsetFieldDrift
-                    {
-                        name = fName,
-                        left = null,
                         right = rf.offset,
-                        drift = FieldOffsetDriftType.Added,
-                        severity = severity
-                    });
-                }
-
-                // Deterministic ordering of drifted fields: by field name
-                driftedFields = driftedFields
-                    .OrderBy(f => f.name, StringComparer.Ordinal)
-                    .ToList();
-
-                // Struct size comparison
-                var sizeObj = new FieldOffsetSize
-                {
-                    left = leftType?.size,
-                    right = rightType?.size
-                };
-
-                var sizeChanged = !AreSizesEqual(leftType?.size, rightType?.size);
-
-                // Include struct if there are drifted fields OR struct size changed
-                if (driftedFields.Count > 0 || sizeChanged)
-                {
-                    driftedStructs.Add(new FieldOffsetStructDrift
-                    {
-                        @struct = item.Key,
-                        image = item.Image,
-                        assembly = item.Assembly,
-                        size = sizeObj,
-                        fields = driftedFields,
-                        verdict = new FieldOffsetVerdict
-                        {
-                            shifted = driftedFields.Count(f => f.drift == FieldOffsetDriftType.Shifted),
-                            removed = driftedFields.Count(f => f.drift == FieldOffsetDriftType.Removed),
-                            added = driftedFields.Count(f => f.drift == FieldOffsetDriftType.Added)
-                        }
+                        drift = FieldOffsetDriftType.Shifted,
+                        severity = FieldOffsetSeverity.BreaksExternalReaders
                     });
                 }
             }
 
-            // Deterministic ordering of structs: by struct name
-            driftedStructs = driftedStructs
-                .OrderBy(s => s.@struct, StringComparer.Ordinal)
+            // 2. Removed fields (present in left, missing in right)
+            var removedFieldNames = leftInstanceFields.Keys
+                .Except(rightInstanceFields.Keys)
+                .OrderBy(x => x, StringComparer.Ordinal);
+
+            foreach (var fName in removedFieldNames)
+            {
+                var lf = leftInstanceFields[fName];
+                driftedFields.Add(new FieldOffsetFieldDrift
+                {
+                    name = fName,
+                    left = lf.offset,
+                    right = null,
+                    drift = FieldOffsetDriftType.Removed,
+                    severity = FieldOffsetSeverity.BreaksExternalReaders
+                });
+            }
+
+            // 3. Added fields (missing in left, present in right)
+            var addedFieldNames = rightInstanceFields.Keys
+                .Except(leftInstanceFields.Keys)
+                .OrderBy(x => x, StringComparer.Ordinal);
+
+            foreach (var fName in addedFieldNames)
+            {
+                var rf = rightInstanceFields[fName];
+                var rightHasOffset = TryParseHexOffset(rf.offset, out var rightOff);
+
+                bool isAtEnd = false;
+                if (rightHasOffset)
+                {
+                    if (leftInstanceFields.Count == 0)
+                    {
+                        isAtEnd = true;
+                    }
+                    else if (commonFieldNames.Count > 0 && maxLeftOffset.HasValue && maxPreexistingRightOffset.HasValue)
+                    {
+                        isAtEnd = rightOff > maxLeftOffset.Value && rightOff > maxPreexistingRightOffset.Value;
+                    }
+                }
+
+                string severity = isAtEnd
+                    ? FieldOffsetSeverity.LeafConsumersMaySurvive
+                    : FieldOffsetSeverity.BreaksExternalReaders;
+
+                driftedFields.Add(new FieldOffsetFieldDrift
+                {
+                    name = fName,
+                    left = null,
+                    right = rf.offset,
+                    drift = FieldOffsetDriftType.Added,
+                    severity = severity
+                });
+            }
+
+            // Deterministic ordering of drifted fields: by field name
+            driftedFields = driftedFields
+                .OrderBy(f => f.name, StringComparer.Ordinal)
                 .ToList();
 
-            return new FieldOffsetDriftReport
+            // Struct size comparison
+            var sizeObj = new FieldOffsetSize
             {
-                schemaVersion = 1,
-                structs = driftedStructs
+                left = leftType?.size,
+                right = rightType?.size
             };
+
+            var sizeChanged = !AreSizesEqual(leftType?.size, rightType?.size);
+
+            // Include struct if there are drifted fields OR struct size changed
+            if (driftedFields.Count > 0 || sizeChanged)
+            {
+                return new FieldOffsetStructDrift
+                {
+                    @struct = item.Key,
+                    image = item.Image,
+                    assembly = item.Assembly,
+                    size = sizeObj,
+                    fields = driftedFields,
+                    verdict = new FieldOffsetVerdict
+                    {
+                        shifted = driftedFields.Count(f => f.drift == FieldOffsetDriftType.Shifted),
+                        removed = driftedFields.Count(f => f.drift == FieldOffsetDriftType.Removed),
+                        added = driftedFields.Count(f => f.drift == FieldOffsetDriftType.Added)
+                    }
+                };
+            }
+            return null;
         }
 
         private static string ResolveDumpJsonPath(string inputPath, string label)
@@ -313,7 +313,7 @@ namespace Il2CppDumper.Diff
             return model;
         }
 
-        private static bool TryParseHexOffset(string? offsetStr, out ulong offset)
+        internal static bool TryParseHexOffset(string? offsetStr, out ulong offset)
         {
             offset = 0;
             if (string.IsNullOrWhiteSpace(offsetStr))
