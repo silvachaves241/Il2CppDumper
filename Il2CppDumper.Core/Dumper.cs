@@ -772,6 +772,7 @@ namespace Il2CppDumper.Core
                 ProtectionReportWriter.FileName,
                 RunManifestWriter.FileName,
                 "dump.cs",
+                ImageDeclarationExport.IndexArtifact,
                 "dump.json",
                 "script.json",
                 "stringliteral.json",
@@ -809,6 +810,8 @@ namespace Il2CppDumper.Core
         {
             return new Config
             {
+                GenerateAggregateDump = source.GenerateAggregateDump,
+                GeneratePerImageDump = source.GeneratePerImageDump,
                 DumpMethod = source.DumpMethod,
                 DumpField = source.DumpField,
                 DumpProperty = source.DumpProperty,

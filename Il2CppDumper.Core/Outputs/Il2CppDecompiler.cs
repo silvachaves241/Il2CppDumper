@@ -61,22 +61,87 @@ namespace Il2CppDumper
             CustomAttributeFailedCount = 0;
             AttributeDecodeFailures.Clear();
             WrittenFiles.Clear();
+            ErrorMessage = null;
+            DumpModel = null;
             var dumpCsPath = Path.Combine(outputDir, "dump.cs");
-            var writer = new StreamWriter(new FileStream(dumpCsPath, FileMode.Create), new UTF8Encoding(false));
-            WrittenFiles.Add(dumpCsPath);
-            //dump image
-            for (var imageIndex = 0; imageIndex < metadata.imageDefs.Length; imageIndex++)
+            var split = config.GeneratePerImageDump ? new ImageDeclarationExport(outputDir) : null;
+
+            void RecordOutputError(string message, Exception exception)
             {
-                var imageDef = metadata.imageDefs[imageIndex];
-                writer.Write($"// Image {imageIndex}: {metadata.GetStringFromIndex(imageDef.nameIndex)} - {imageDef.typeStart}\n");
+                success = false;
+                ErrorMessage = ErrorMessage == null ? message : ErrorMessage + Environment.NewLine + message;
+                CoreLogger.WriteLine(message);
+                CoreLogger.WriteLine(exception);
             }
-            //dump type
-            for (var imageIndex = 0; imageIndex < metadata.imageDefs.Length; imageIndex++)
+
+            StreamWriter OpenAggregate()
             {
-                var imageDef = metadata.imageDefs[imageIndex];
+                if (!config.GenerateAggregateDump)
+                {
+                    return null;
+                }
                 try
                 {
-                    var imageName = metadata.GetStringFromIndex(imageDef.nameIndex);
+                    return new StreamWriter(new FileStream(dumpCsPath, FileMode.Create), new UTF8Encoding(false));
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    RecordOutputError("ERROR: Could not open dump.cs", e);
+                    return null;
+                }
+            }
+
+            static string ImageHeader(int index, string name, int start) => $"// Image {index}: {name} - {start}\n";
+
+            using var aggregate = OpenAggregate();
+            bool aggregateHealthy = aggregate != null;
+            if (aggregateHealthy)
+            {
+                try
+                {
+                    for (int i = 0; i < metadata.imageDefs.Length; i++)
+                    {
+                        var image = metadata.imageDefs[i];
+                        aggregate.Write(ImageHeader(i, metadata.GetStringFromIndex(image.nameIndex), image.typeStart));
+                    }
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    aggregateHealthy = false;
+                    RecordOutputError("ERROR: Could not write dump.cs image headers", e);
+                }
+            }
+            for (var imageIndex = 0; (aggregateHealthy || split != null) && imageIndex < metadata.imageDefs.Length; imageIndex++)
+            {
+                var imageDef = metadata.imageDefs[imageIndex];
+                var imageName = metadata.GetStringFromIndex(imageDef.nameIndex);
+                var entry = split?.AddImage(imageIndex, imageName, imageDef.typeStart, imageDef.typeCount);
+                ImageDeclarationExport.StagedFile imageFile = null;
+                if (entry != null)
+                {
+                    try
+                    {
+                        imageFile = split.OpenImage(entry);
+                        imageFile.Writer.Write(ImageHeader(imageIndex, imageName, imageDef.typeStart));
+                    }
+                    catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                    {
+                        imageFile?.Dispose();
+                        imageFile = null;
+                        entry.Error = e.Message;
+                        RecordOutputError($"ERROR: Could not open declaration output for image {imageIndex}", e);
+                    }
+                }
+                using var staged = imageFile;
+                if (staged == null && !aggregateHealthy)
+                {
+                    continue;
+                }
+                TextWriter writer = staged == null ? aggregate
+                    : aggregateHealthy ? new ImageDeclarationExport.TeeWriter(aggregate, staged.Writer) : staged.Writer;
+                int declarationCount = 0;
+                try
+                {
                     var typeEnd = imageDef.typeStart + imageDef.typeCount;
                     for (int typeDefIndex = imageDef.typeStart; typeDefIndex < typeEnd; typeDefIndex++)
                     {
@@ -470,23 +535,81 @@ namespace Il2CppDumper
                             }
                         }
                         writer.Write("}\n");
+                        declarationCount++;
                     }
                 }
                 catch (Exception e)
                 {
                     success = false;
-                    ErrorMessage = "ERROR: Some errors in dumping";
+                    ErrorMessage ??= "ERROR: Some errors in dumping";
                     CoreLogger.WriteLine("ERROR: Some errors in dumping");
-                    writer.Write("/*");
-                    writer.Write(e);
-                    writer.Write("*/\n}\n");
+                    if (entry != null && staged != null)
+                    {
+                        entry.Error = e.Message;
+                    }
+                    if (aggregateHealthy)
+                    {
+                        try
+                        {
+                            aggregate.Write("/*");
+                            aggregate.Write(e);
+                            aggregate.Write("*/\n}\n");
+                        }
+                        catch (Exception writeError) when (writeError is IOException or UnauthorizedAccessException)
+                        {
+                            aggregateHealthy = false;
+                            RecordOutputError("ERROR: Could not write dump.cs", writeError);
+                        }
+                    }
+                    continue;
+                }
+
+                if (staged != null)
+                {
+                    try
+                    {
+                        var path = staged.Publish();
+                        entry.Path = Path.GetFileName(path);
+                        entry.DeclarationCount = declarationCount;
+                        WrittenFiles.Add(path);
+                    }
+                    catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                    {
+                        entry.Error = e.Message;
+                        RecordOutputError($"ERROR: Could not publish declaration output for image {imageIndex}", e);
+                    }
                 }
             }
             if (config.DumpAttribute && CustomAttributeFailedCount > 0)
             {
                 log.LogWarning($"WARNING: Custom attribute decoding completed with {CustomAttributeFailedCount} failure(s) ({CustomAttributeWrittenCount} written, {CustomAttributeFailedCount} skipped).");
             }
-            writer.Close();
+            if (aggregate != null)
+            {
+                try
+                {
+                    aggregate.Close();
+                    if (aggregateHealthy)
+                    {
+                        WrittenFiles.Add(dumpCsPath);
+                    }
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    RecordOutputError("ERROR: Could not finish dump.cs", e);
+                }
+            }
+            if (split != null)
+            {
+                try
+                {
+                    WrittenFiles.Add(split.WriteIndex(metadata.Version));
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    RecordOutputError("ERROR: Could not write the per-image declaration index", e);
+                }
+            }
             if (config.GenerateJsonDump)
             {
                 try

@@ -156,6 +156,17 @@ The checks reopen assembly metadata, verify PropertyMap, EventMap and NestedClas
 
 ### Outputs
 
+#### Declaration dumps by image
+
+Set `"GeneratePerImageDump": true` in `config.json`, the batch entry's `config`, or `Config.GeneratePerImageDump` in the library. `GenerateAggregateDump` (default `true`) controls the existing `dump.cs` independently. Set it to `false` for split-only exports. With both options off, no declaration files are produced. Other output switches remain independent.
+
+Each split file starts with its original image header and uses the same declaration formatting as `dump.cs`. `DumpTypeDefIndex` (default `true`) controls the inline TypeDefIndex and image labels in both formats. The index always retains the original image ID, name, first type index, and source type count. Filenames use the original image ID and a bounded, sanitized name. An empty image gets a header-only file.
+
+`dump-by-image/index.json` includes the metadata version and each image's status, declaration count, and path relative to the index. The status is `written`, `empty`, or `failed`. Failed images carry an error and no path. Successfully published files and the index appear in `DumpResult.ProducedFiles` and in the run manifest, which also records input and output hashes. `DumpResult.Outputs["dump-by-image/index.json"]` points to the current index when it was written. Reusing a directory leaves old files in place. Use the current index or manifest to determine membership. During a partial failure, completed images remain inventoried while failed images have no current file.
+
+The C#-like declaration dumps describe recovered metadata and addresses. Compilability and recovery of original source are outside their scope. DummyDll files are generated managed assemblies with stub bodies. The native implementations reside in the input binary.
+
+
 #### DummyDll
 
 Folder, containing all restored dll files

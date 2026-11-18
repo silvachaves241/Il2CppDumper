@@ -3,6 +3,8 @@ namespace Il2CppDumper
 {
     public class Config
     {
+        public bool GenerateAggregateDump { get; set; } = true;
+        public bool GeneratePerImageDump { get; set; } = false;
         public bool DumpMethod { get; set; } = true;
         public bool DumpField { get; set; } = true;
         public bool DumpProperty { get; set; } = true;
