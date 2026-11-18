@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -41,6 +42,40 @@ namespace Il2CppDumper
             string outputDir = null;
 
             var argList = args.ToList();
+            var imageSelectors = new List<string>();
+            for (int i = 0; i < argList.Count;)
+            {
+                var arg = argList[i];
+                string selector;
+                int consumed;
+                if (arg.Equals("--image", StringComparison.OrdinalIgnoreCase))
+                {
+                    selector = i + 1 < argList.Count && !argList[i + 1].StartsWith("--", StringComparison.Ordinal)
+                        ? argList[i + 1] : null;
+                    consumed = 2;
+                }
+                else if (arg.StartsWith("--image=", StringComparison.OrdinalIgnoreCase))
+                {
+                    selector = arg.Substring("--image=".Length);
+                    consumed = 1;
+                }
+                else
+                {
+                    i++;
+                    continue;
+                }
+                if (string.IsNullOrWhiteSpace(selector))
+                {
+                    Console.Error.WriteLine("ERROR: --image requires an exact image name or id:N.");
+                    Environment.ExitCode = 2;
+                    return 2;
+                }
+                imageSelectors.Add(selector);
+                argList.RemoveRange(i, consumed);
+            }
+            if (imageSelectors.Count > 0)
+                config.ImageSelectors = imageSelectors.ToArray();
+
             if (argList.RemoveAll(a => a.Equals("--output-json", StringComparison.OrdinalIgnoreCase)) > 0)
             {
                 config.GenerateJsonDump = true;
@@ -352,8 +387,8 @@ namespace Il2CppDumper
 
         static void ShowHelp()
         {
-            Console.WriteLine($"usage: {AppDomain.CurrentDomain.FriendlyName} <executable-file> <global-metadata> <output-directory> [--output-json]");
-            Console.WriteLine($"       {AppDomain.CurrentDomain.FriendlyName} --batch <batch-file> [--stop-on-first-error] [--output-json]");
+            Console.WriteLine($"usage: {AppDomain.CurrentDomain.FriendlyName} <executable-file> <global-metadata> <output-directory> [--output-json] [--image <name|id:N>]...");
+            Console.WriteLine($"       {AppDomain.CurrentDomain.FriendlyName} --batch <batch-file> [--stop-on-first-error] [--output-json] [--image <name|id:N>]...");
             Console.WriteLine($"       {AppDomain.CurrentDomain.FriendlyName} --help | -h");
             Console.WriteLine($"       {AppDomain.CurrentDomain.FriendlyName} --version | -v");
         }

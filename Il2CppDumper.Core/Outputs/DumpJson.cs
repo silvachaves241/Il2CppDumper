@@ -11,6 +11,10 @@ namespace Il2CppDumper
 {
     public class JsonDumpModel
     {
+        [JsonPropertyName("imageSelection")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public ImageSelection? ImageSelection { get; set; }
+
         public List<JsonDumpType> types { get; set; } = new();
     }
 
@@ -20,6 +24,12 @@ namespace Il2CppDumper
         public string? image { get; set; }
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public string? assembly { get; set; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public int? imageId { get; set; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public int? typeDefIndex { get; set; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public uint? typeToken { get; set; }
         public string fullName { get; set; } = string.Empty;
         public List<string> bases { get; set; } = new();
         public List<string> attributes { get; set; } = new();
@@ -143,23 +153,33 @@ namespace Il2CppDumper
             return Create(decompiler, executor, config);
         }
 
-        public static JsonDumpModel Create(Il2CppDecompiler decompiler, Il2CppExecutor executor, Config config)
+        public static JsonDumpModel Create(Il2CppDecompiler decompiler, Il2CppExecutor executor, Config config) =>
+            Create(decompiler, executor, config, ImageSelection.Resolve(executor.metadata, config.ImageSelectors));
+
+        internal static JsonDumpModel Create(Il2CppDecompiler decompiler, Il2CppExecutor executor, Config config, ImageSelection? selection)
         {
             var metadata = executor.metadata;
             var il2Cpp = executor.il2Cpp;
-            var model = new JsonDumpModel();
+            var model = new JsonDumpModel { ImageSelection = selection };
 
             var typeModelMap = new Dictionary<Il2CppTypeDefinition, JsonDumpType>();
             var nestedChildren = new HashSet<Il2CppTypeDefinition>();
 
-            // 1. Create all type models
-            foreach (var imageDef in metadata.imageDefs)
+            // 1. Create type models from the chosen images, using the original metadata arrays.
+            foreach (var imageId in ImageSelection.ImageIds(metadata, selection))
             {
+                var imageDef = metadata.imageDefs[imageId];
                 var typeEnd = imageDef.typeStart + imageDef.typeCount;
                 for (var typeDefIndex = imageDef.typeStart; typeDefIndex < typeEnd && typeDefIndex < metadata.typeDefs.Length; typeDefIndex++)
                 {
                     var typeDef = metadata.typeDefs[typeDefIndex];
                     var typeModel = CreateTypeModel(decompiler, executor, metadata, il2Cpp, config, imageDef, typeDef, typeDefIndex);
+                    if (selection != null)
+                    {
+                        typeModel.imageId = imageId;
+                        typeModel.typeDefIndex = typeDefIndex;
+                        typeModel.typeToken = typeDef.token;
+                    }
                     typeModelMap[typeDef] = typeModel;
                 }
             }

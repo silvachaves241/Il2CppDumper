@@ -42,6 +42,10 @@ namespace Il2CppDumper.Core
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public OutputValidationReport? OutputValidation { get; set; }
 
+        [JsonPropertyName("imageSelection")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public ImageSelection? ImageSelection { get; set; }
+
         [JsonPropertyName("outputs")]
         public List<string> Outputs { get; set; } = new();
     }
@@ -252,6 +256,7 @@ namespace Il2CppDumper.Core
 
                 var dumpResult = Dumper.Dump(request);
                 resultEntry.OutputValidation = dumpResult.OutputValidation;
+                resultEntry.ImageSelection = dumpResult.ImageSelection;
                 if (dumpResult.Success)
                 {
                     resultEntry.Success = true;

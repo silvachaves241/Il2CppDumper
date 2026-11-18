@@ -37,6 +37,7 @@ namespace Il2CppDumper.Core
                 var manifestWarnings = new RunManifestWarnings();
 
                 var config = request.Config != null ? CloneConfig(request.Config) : new Config();
+                ImageSelection? selection = null;
                 OutputValidationReport? outputValidation = config.ValidateOutputs ? new OutputValidationReport
                 {
                     Reason = "Generation did not reach post-export validation."
@@ -86,7 +87,7 @@ namespace Il2CppDumper.Core
                         warnings,
                         outputs,
                         produced
-                    ) { OutputValidation = outputValidation };
+                    ) { OutputValidation = outputValidation, ImageSelection = selection };
                 }
 
                 if (Directory.Exists(outputDir))
@@ -158,7 +159,8 @@ namespace Il2CppDumper.Core
                             manifestWarnings,
                             writtenFiles,
                             inputs,
-                            outputValidation
+                            outputValidation,
+                            selection
                         );
                         if (manifest != null)
                         {
@@ -266,7 +268,19 @@ namespace Il2CppDumper.Core
                         return CreateResult(false, "ERROR: An error occurred while processing.");
                     }
 
-                    var dumpSuccess = ExecuteDump(metadata, il2Cpp, config, outputDir, out var dumpError, out counts, out manifestWarnings, out var execWrittenFiles, Path.GetFileName(request.ExecutablePath));
+                    try
+                    {
+                        selection = ImageSelection.Resolve(metadata, config.ImageSelectors);
+                    }
+                    catch (ArgumentException ex)
+                    {
+                        var message = $"ERROR: Invalid image selection. {ex.Message}";
+                        CoreLogger.WriteLine(message);
+                        WriteRunManifest(false);
+                        return CreateResult(false, message);
+                    }
+
+                    var dumpSuccess = ExecuteDump(metadata, il2Cpp, config, outputDir, out var dumpError, out counts, out manifestWarnings, out var execWrittenFiles, Path.GetFileName(request.ExecutablePath), selection);
                     writtenFiles.AddRange(execWrittenFiles);
                     if (config.ValidateOutputs)
                     {
@@ -529,13 +543,15 @@ namespace Il2CppDumper.Core
             out RunManifestCounts counts,
             out RunManifestWarnings manifestWarnings,
             out List<string> writtenFiles,
-            string? moduleName = null)
+            string? moduleName = null,
+            ImageSelection? selection = null)
         {
             if (!outputDir.EndsWith(Path.DirectorySeparatorChar.ToString()) && !outputDir.EndsWith(Path.AltDirectorySeparatorChar.ToString()))
             {
                 outputDir += Path.DirectorySeparatorChar;
             }
             var success = true;
+            selection ??= ImageSelection.Resolve(metadata, config.ImageSelectors);
             var errors = new List<string>();
             counts = new RunManifestCounts();
             manifestWarnings = new RunManifestWarnings();
@@ -548,7 +564,7 @@ namespace Il2CppDumper.Core
             CoreLogger.WriteLine("Dumping...");
             var executor = new Il2CppExecutor(metadata, il2Cpp);
             var decompiler = new Il2CppDecompiler(executor);
-            if (!decompiler.Decompile(config, outputDir))
+            if (!decompiler.Decompile(config, outputDir, selection))
             {
                 success = false;
                 if (!string.IsNullOrEmpty(decompiler.ErrorMessage))
@@ -617,7 +633,8 @@ namespace Il2CppDumper.Core
                 CoreLogger.WriteLine("Generate dummy dll...");
                 try
                 {
-                    DummyAssemblyExporter.Export(executor, outputDir, config.DummyDllAddToken, writtenFiles);
+                    DummyAssemblyExporter.Export(executor, outputDir, config.DummyDllAddToken, writtenFiles,
+                        preserveExisting: selection != null);
                     writtenFiles.Add(Path.Combine(outputDir, "DummyDll"));
 
                     CoreLogger.WriteLine("Done!");
@@ -640,7 +657,8 @@ namespace Il2CppDumper.Core
                 }
                 else
                 {
-                    var dumpModel = decompiler?.DumpModel;
+                    // A partial model cannot disambiguate signatures for the full native method list.
+                    var dumpModel = selection == null ? decompiler.DumpModel : null;
 
                     if (config.EmitFridaScript)
                     {
@@ -810,6 +828,7 @@ namespace Il2CppDumper.Core
         {
             return new Config
             {
+                ImageSelectors = source.ImageSelectors is { } selectors ? (string[])selectors.Clone() : null,
                 GenerateAggregateDump = source.GenerateAggregateDump,
                 GeneratePerImageDump = source.GeneratePerImageDump,
                 DumpMethod = source.DumpMethod,

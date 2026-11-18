@@ -9,6 +9,8 @@ namespace Il2CppDumper.Core
         public bool Success;
         /// <summary>Post-export checks when enabled. Success remains the generation outcome.</summary>
         public OutputValidationReport? OutputValidation { get; internal set; }
+        /// <summary>Original image coordinates for a resolved declaration selection.</summary>
+        public ImageSelection? ImageSelection { get; internal set; }
 
         public string? Error;           // mirrors the #8 failure text
         public IReadOnlyList<string> Warnings;
