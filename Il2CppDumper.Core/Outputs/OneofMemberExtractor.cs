@@ -61,6 +61,7 @@ namespace Il2CppDumper
     {
         public const string FileName = "oneof-members.json";
         public const string AmbiguityFileName = "oneof-ambiguities.json";
+        private const int MaxProtobufFieldNumber = (1 << 29) - 1;
 
         public static readonly JsonSerializerOptions JsonOptions = new()
         {
@@ -141,7 +142,7 @@ namespace Il2CppDumper
             var oneofGroups = new List<(string Property, string Offset, List<(string Name, int Tag)> Tags)>();
 
             bool matchedOrdinaryField = false;
-            (int Field, List<(string Name, int Tag)> Tags, OneofAmbiguity Warning)? interruptedRun = null;
+            (int Field, int Offset, List<(string Name, int Tag)> Tags, OneofAmbiguity Warning)? interruptedRun = null;
             var fieldEnd = typeDef.fieldStart + typeDef.field_count;
             for (int i = typeDef.fieldStart; i < fieldEnd && i < metadata.fieldDefs.Length; i++)
             {
@@ -227,6 +228,7 @@ namespace Il2CppDumper
                         pendingConsts.Clear();
                     }
                     else if (interruptedRun is { } run && run.Field == i - 1 &&
+                        run.Offset > 0 && run.Offset + (long)il2Cpp.PointerSize <= fieldOffset &&
                         TryResolveInterleavedCases(typeDef, typeDefIndex, i, fieldOffset, run.Tags, out var caseTags))
                     {
                         oneofGroups.Add((fieldName, $"0x{fieldOffset:X}", caseTags));
@@ -259,7 +261,10 @@ namespace Il2CppDumper
                             Reason = $"const run of {pendingConsts.Count} tags ({string.Join(", ", pendingConsts.Select(p => p.Name))}) followed by non-object field '{fieldName}' of type '{fieldTypeName}'"
                         };
                         ambiguities.Add(warning);
-                        interruptedRun = (i, new List<(string Name, int Tag)>(pendingConsts), warning);
+                        if (fieldType.type == Il2CppTypeEnum.IL2CPP_TYPE_STRING)
+                        {
+                            interruptedRun = (i, fieldOffset, new List<(string Name, int Tag)>(pendingConsts), warning);
+                        }
                         pendingConsts.Clear();
                     }
                     // pendingConsts.Count == 0: helper field without field number (e.g. discriminator case enum or _unknownFields); clean.
@@ -341,7 +346,7 @@ namespace Il2CppDumper
             List<(string Name, int Tag)> candidates, out List<(string Name, int Tag)> members)
         {
             members = new();
-            // Only recognize ordinary field / object slot / case enum in consecutive instance fields.
+            // Only recognize string field / object slot / case enum in consecutive instance fields.
             var discriminatorIndex = objectIndex + 1;
             if (objectOffset <= 0 || discriminatorIndex >= (long)owner.fieldStart + owner.field_count ||
                 discriminatorIndex >= metadata.fieldDefs.Length)
@@ -408,6 +413,7 @@ namespace Il2CppDumper
 
                 // Exactly one constant belongs to the ordinary field, and every case maps unambiguously.
                 if (!hasInt32Storage || zeroCases != 1 || tags.Count == 0 || tags.Count != candidates.Count - 1 ||
+                    candidates.Any(c => c.Tag > MaxProtobufFieldNumber) ||
                     candidates.Select(c => c.Tag).Distinct().Count() != candidates.Count ||
                     !tags.IsSubsetOf(candidates.Select(c => c.Tag)))
                 {

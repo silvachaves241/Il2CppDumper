@@ -404,19 +404,24 @@ namespace Il2CppDumper.Tests
         }
 
         [Theory]
-        [InlineData(4, true, 0x30, true)]
-        [InlineData(9, true, 0x30, false)]
-        [InlineData(3, true, 0x30, false)]
-        [InlineData(4, false, 0x30, false)]
-        [InlineData(4, true, 0x38, false)]
-        public void InterleavedTags_RequireMatchingCaseEnumAndProperty(int secondCase, bool hasGetter, int caseOffset, bool recovered)
+        [InlineData(4, true, 0x20, 0x30, false, true)]
+        [InlineData(4, true, 0x20, 0x2C, true, true)]
+        [InlineData(9, true, 0x20, 0x30, false, false)]
+        [InlineData(3, true, 0x20, 0x30, false, false)]
+        [InlineData(4, false, 0x20, 0x30, false, false)]
+        [InlineData(4, true, 0x20, 0x38, false, false)]
+        [InlineData(4, true, 0x28, 0x30, false, false)]
+        [InlineData(4, true, 0x24, 0x30, false, false)]
+        [InlineData(4, true, 0x24, 0x2C, true, true)]
+        public void InterleavedTags_RequireMatchingCaseEnumAndProperty(
+            int secondCase, bool hasGetter, int ordinaryOffset, int caseOffset, bool is32Bit, bool recovered)
         {
             using var env = CreateProtobufEnvironment("abc", new[]
             {
                 ("a", (int?)3, Il2CppTypeEnum.IL2CPP_TYPE_I4, 0UL, true),
                 ("b", 4, Il2CppTypeEnum.IL2CPP_TYPE_I4, 0UL, true),
                 ("c", 5, Il2CppTypeEnum.IL2CPP_TYPE_I4, 0UL, true),
-                ("d", null, Il2CppTypeEnum.IL2CPP_TYPE_STRING, 0x20UL, false),
+                ("d", null, Il2CppTypeEnum.IL2CPP_TYPE_STRING, (ulong)ordinaryOffset, false),
                 ("e", null, Il2CppTypeEnum.IL2CPP_TYPE_OBJECT, 0x28UL, false),
                 ("f", null, Il2CppTypeEnum.IL2CPP_TYPE_VALUETYPE, (ulong)caseOffset, false),
                 ("value__", null, Il2CppTypeEnum.IL2CPP_TYPE_I4, 0UL, false),
@@ -424,7 +429,7 @@ namespace Il2CppDumper.Tests
                 ("h", 3, Il2CppTypeEnum.IL2CPP_TYPE_I4, 0UL, true),
                 ("i", secondCase, Il2CppTypeEnum.IL2CPP_TYPE_I4, 0UL, true)
             });
-            env.Il.Is32Bit = false;
+            env.Il.Is32Bit = is32Bit;
             var owner = env.M.typeDefs[1];
             owner.field_count = 6;
             owner.nested_type_count = 1;
