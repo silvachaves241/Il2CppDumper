@@ -72,10 +72,7 @@ internal sealed class JsonVTableExporter
         var entries = new JsonDumpVTableEntry[type.vtable_count];
         for (var position = 0; position < entries.Length; position++)
         {
-            var tableIndex = (long)type.vtableStart + position;
-            var target = type.vtableStart >= 0 && tableIndex < metadata.vtableMethods.Length
-                ? ResolveTarget(metadata.vtableMethods[(int)tableIndex])
-                : default;
+            var target = VTableMethodResolver.Resolve(metadata, il2Cpp, type, position);
             var slot = target.MethodDefIndex is int index ? metadata.methodDefs[index].slot : ushort.MaxValue;
             entries[position] = new JsonDumpVTableEntry
             {
@@ -119,25 +116,6 @@ internal sealed class JsonVTableExporter
                     method.interfaceDispatch = links;
             }
         }
-    }
-
-    private (int? MethodDefIndex, int? MethodSpecIndex) ResolveTarget(uint encoded)
-    {
-        var usage = (Il2CppMetadataUsage)metadata.GetEncodedIndexTypeForVersion(encoded);
-        var index = (int)metadata.GetDecodedMethodIndex(encoded);
-        if (usage == Il2CppMetadataUsage.kIl2CppMetadataUsageMethodDef)
-            return ((uint)index < (uint)metadata.methodDefs.Length ? index : null, null);
-
-        if (usage == Il2CppMetadataUsage.kIl2CppMetadataUsageMethodRef)
-        {
-            var specs = il2Cpp.methodSpecs;
-            if (specs != null && index < specs.Length && specs[index] is { } spec &&
-                (uint)spec.methodDefinitionIndex < (uint)metadata.methodDefs.Length)
-                return (spec.methodDefinitionIndex, index);
-
-            return (null, index);
-        }
-        return default;
     }
 
     private bool AddInterfaceOrigins(Il2CppTypeDefinition receiver, JsonDumpVTableEntry[] entries)
