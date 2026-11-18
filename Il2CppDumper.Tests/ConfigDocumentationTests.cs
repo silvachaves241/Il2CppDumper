@@ -30,7 +30,7 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
-        public void Readme_English_DocumentsGenerateStruct_AndDoesNotDocumentGenerateScript()
+        public void Readme_PtBr_DocumentsGenerateStruct_AndDoesNotDocumentGenerateScript()
         {
             var repoRoot = FindRepoRoot();
             var readmePath = Path.Combine(repoRoot, "README.md");
@@ -60,13 +60,14 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
-        public void Readme_English_DocumentsDumpPropertyAndDumpAttributeDefaults()
+        public void Readme_PtBr_DocumentsDumpPropertyAndDumpAttributeDefaults()
         {
             var repoRoot = FindRepoRoot();
             var readmePath = Path.Combine(repoRoot, "README.md");
             var content = File.ReadAllText(readmePath);
 
-            Assert.Contains("`DumpProperty` and `DumpAttribute` default to `true`", content);
+            Assert.Contains("| `DumpProperty` | `true` |", content);
+            Assert.Contains("| `DumpAttribute` | `true` |", content);
         }
 
         [Fact]
@@ -80,13 +81,13 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
-        public void Readme_English_DocumentsLibraryUsage_WithDumpRequestContractAndRequireAnyKeyNote()
+        public void Readme_PtBr_DocumentsLibraryUsage_WithDumpRequestContractAndRequireAnyKeyNote()
         {
             var repoRoot = FindRepoRoot();
             var readmePath = Path.Combine(repoRoot, "README.md");
             var content = File.ReadAllText(readmePath);
 
-            Assert.Contains("### Library usage", content);
+            Assert.Contains("## Biblioteca .NET", content);
             Assert.Contains("using Il2CppDumper;", content);
             Assert.Contains("`Il2CppDumper.Core`", content);
             Assert.Contains("DumpRequest", content);
@@ -186,7 +187,7 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
-        public void Config_AllOptionsDocumentedInEnglishReadme_MatchConfigProperties()
+        public void Config_AllOptionsDocumentedInPtBrReadme_MatchConfigProperties()
         {
             var repoRoot = FindRepoRoot();
             var content = File.ReadAllText(Path.Combine(repoRoot, "README.md"));
@@ -236,17 +237,16 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
-        public void Readme_English_DocumentsDumpMetadataJson_WithPortugueseSection()
+        public void Readme_PtBr_DocumentsDumpMetadataJson()
         {
             var repoRoot = FindRepoRoot();
             var readmePath = Path.Combine(repoRoot, "README.md");
             var content = File.ReadAllText(readmePath);
 
-            Assert.Contains("#### dump-metadata.json", content);
+            Assert.Contains("### dump-metadata.json", content);
             Assert.Contains("`sha256`", content);
             Assert.Contains("`metadataVersion`", content);
             Assert.Contains("`generatedAtUtc`", content);
-            Assert.Contains("**Português:**", content);
             Assert.Contains("proveniência", content);
         }
 
@@ -304,13 +304,13 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
-        public void Readme_English_DocumentsDumpJson_WithPortugueseSection()
+        public void Readme_PtBr_DocumentsDumpJson()
         {
             var repoRoot = FindRepoRoot();
             var readmePath = Path.Combine(repoRoot, "README.md");
             var content = File.ReadAllText(readmePath);
 
-            Assert.Contains("#### dump.json", content);
+            Assert.Contains("### dump.json", content);
             Assert.Contains("`GenerateJsonDump`", content);
             Assert.Contains("`types`", content);
             Assert.Contains("`fields`", content);
@@ -320,7 +320,6 @@ namespace Il2CppDumper.Tests
             Assert.Contains("`nested`", content);
             Assert.Contains("`attributes`", content);
             Assert.Contains("[Serializable]", content);
-            Assert.Contains("**Português:**", content);
         }
 
         [Fact]
@@ -359,17 +358,15 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
-        public void Readme_English_DocumentsStringLiteralForensicUsage()
+        public void Readme_PtBr_DocumentsStringLiteralForensicUsage()
         {
             var repoRoot = FindRepoRoot();
             var readmePath = Path.Combine(repoRoot, "README.md");
             var content = File.ReadAllText(readmePath);
 
-            Assert.Contains("#### stringliteral-indexed.json", content);
-            Assert.Contains("**Forensic usage:**", content);
+            Assert.Contains("### stringliteral-indexed.json", content);
             Assert.Contains("`GetStringLiteralFromIndex(n)`", content);
-            Assert.Contains("`dataIndex` and `length`", content);
-            Assert.Contains("**Uso forense:**", content);
+            Assert.Contains("`dataIndex` e `length`", content);
         }
 
         [Fact]
@@ -386,30 +383,30 @@ namespace Il2CppDumper.Tests
             Assert.Contains("**Uso forense:**", content);
         }
         [Fact]
-        public void Readme_English_DocumentsDiffingSection()
+        public void Readme_PtBr_DocumentsDiffingSection()
         {
             var repoRoot = FindRepoRoot();
             var readmePath = Path.Combine(repoRoot, "README.md");
             var content = File.ReadAllText(readmePath);
 
-            Assert.Contains("### Diffing (Il2CppDumper.Diff)", content);
-            Assert.Contains("Il2CppDumper.Diff <left> <right> <output>", content);
-            Assert.Contains("#### Inputs", content);
+            Assert.Contains("## Comparação entre versões", content);
+            Assert.Contains("Il2CppDumper.Diff <anterior> <atual> <saída>", content);
+            Assert.Contains("### Entradas e códigos de saída", content);
             Assert.Contains("`dump.json`", content);
-            Assert.Contains("`dump.cs` text is never an input", content);
-            Assert.Contains("#### Exit codes", content);
-            Assert.Contains("`0`: Identical", content);
-            Assert.Contains("`1`: Differences found", content);
-            Assert.Contains("`2`: Usage / input error", content);
-            Assert.Contains("#### Schema reference (`dump-diff.json`)", content);
+            Assert.Contains("Os relatórios são calculados a partir de dados estruturados", content);
+            Assert.Contains("| `0` | Sem diferenças nas seções comparadas.", content);
+            Assert.Contains("| `1` | Diferenças, alterações de deslocamento ou ambiguidades relevantes encontradas.", content);
+            Assert.Contains("| `2` | Erro de uso ou de entrada.", content);
+            Assert.Contains("#### Exemplo de dump-diff.json", content);
             Assert.Contains("\"addressChanged\"", content);
             Assert.Contains("\"addedByIndex\"", content);
             Assert.Contains("\"valueChangedByIndex\"", content);
             Assert.Contains("\"summary\"", content);
-            Assert.Contains("**Português:**", content);
 
             // B4: Schema confrontation test - ensure the documented schema deserializes cleanly into DumpDiffResult
-            var jsonStart = content.IndexOf("```json", StringComparison.Ordinal);
+            var sectionStart = content.IndexOf("#### Exemplo de dump-diff.json", StringComparison.Ordinal);
+            Assert.True(sectionStart >= 0);
+            var jsonStart = content.IndexOf("```json", sectionStart, StringComparison.Ordinal);
             Assert.True(jsonStart >= 0);
             var codeStart = content.IndexOf('{', jsonStart);
             var codeEnd = content.IndexOf("```", codeStart, StringComparison.Ordinal);
@@ -417,18 +414,18 @@ namespace Il2CppDumper.Tests
 
             var parsed = System.Text.Json.JsonSerializer.Deserialize<Il2CppDumper.Diff.DumpDiffResult>(jsonSnippet);
             Assert.NotNull(parsed);
-            Assert.Equal("f1", parsed.types.changed[0].fields.added[0]);
-            Assert.Equal("f2", parsed.types.changed[0].fields.removed[0]);
-            Assert.Equal("f3", parsed.types.changed[0].fields.changed[0].field);
+            Assert.Equal("novoCampo", parsed.types.changed[0].fields.added[0]);
+            Assert.Equal("campoAntigo", parsed.types.changed[0].fields.removed[0]);
+            Assert.Equal("valor", parsed.types.changed[0].fields.changed[0].field);
             Assert.Equal("int", parsed.types.changed[0].fields.changed[0].left.type);
             Assert.Equal("0x10", parsed.types.changed[0].fields.changed[0].left.offset);
-            Assert.Equal("m1", parsed.types.changed[0].methods.added[0]);
-            Assert.Equal("m2", parsed.types.changed[0].methods.removed[0]);
-            Assert.Equal("m3", parsed.types.changed[0].methods.changed[0].method);
+            Assert.Equal("NovoMetodo", parsed.types.changed[0].methods.added[0]);
+            Assert.Equal("MetodoAntigo", parsed.types.changed[0].methods.removed[0]);
+            Assert.Equal("Ler", parsed.types.changed[0].methods.changed[0].method);
             Assert.Equal("void", parsed.types.changed[0].methods.changed[0].left.returnType);
             Assert.NotNull(parsed.methods.addressChanged);
-            Assert.Equal("Namespace.TypeName", parsed.methods.addressChanged[0].type);
-            Assert.Equal("MethodName", parsed.methods.addressChanged[0].method);
+            Assert.Equal("Exemplo.Tipo", parsed.methods.addressChanged[0].type);
+            Assert.Equal("Executar", parsed.methods.addressChanged[0].method);
         }
 
         [Fact]
@@ -474,22 +471,22 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
-        public void Readme_English_DocumentsFieldOffsetDriftSection()
+        public void Readme_PtBr_DocumentsFieldOffsetDriftSection()
         {
             var repoRoot = FindRepoRoot();
             var readmePath = Path.Combine(repoRoot, "README.md");
             var content = File.ReadAllText(readmePath);
 
-            Assert.Contains("#### Field offset drift report (`field-offset-drift.json`)", content);
-            Assert.Contains("Il2CppDumper.Diff --drift <left> <right> <output>", content);
-            Assert.Contains("`0`: Identical (no field offset drift found).", content);
-            Assert.Contains("`1`: Drift found in one or more structs.", content);
-            Assert.Contains("`2`: Usage / input error.", content);
+            Assert.Contains("### field-offset-drift.json", content);
+            Assert.Contains("Il2CppDumper.Diff --drift <anterior> <atual> <saída>", content);
+            Assert.Contains("| `0` | Sem diferenças nas seções comparadas.", content);
+            Assert.Contains("| `1` | Diferenças, alterações de deslocamento ou ambiguidades relevantes encontradas.", content);
+            Assert.Contains("| `2` | Erro de uso ou de entrada.", content);
             Assert.Contains("`breaks-external-readers`", content);
             Assert.Contains("`leaf-consumers-may-survive`", content);
 
             // Schema confrontation test
-            var sectionStart = content.IndexOf("##### Schema reference (`field-offset-drift.json`)", StringComparison.Ordinal);
+            var sectionStart = content.IndexOf("#### Exemplo de field-offset-drift.json", StringComparison.Ordinal);
             Assert.True(sectionStart >= 0);
             var jsonStart = content.IndexOf("```json", sectionStart, StringComparison.Ordinal);
             Assert.True(jsonStart >= 0);
@@ -501,15 +498,15 @@ namespace Il2CppDumper.Tests
             Assert.NotNull(parsed);
             Assert.Equal(1, parsed.schemaVersion);
             Assert.Single(parsed.structs);
-            Assert.Equal("Ns.Obf", parsed.structs[0].@struct);
+            Assert.Equal("Exemplo.Tipo", parsed.structs[0].@struct);
             Assert.Equal("0x120", parsed.structs[0].size.left);
             Assert.Equal("0x128", parsed.structs[0].size.right);
-            Assert.Equal("hp", parsed.structs[0].fields[0].name);
+            Assert.Equal("valor", parsed.structs[0].fields[0].name);
             Assert.Equal("0x28", parsed.structs[0].fields[0].left);
             Assert.Equal("0x2C", parsed.structs[0].fields[0].right);
             Assert.Equal("shifted", parsed.structs[0].fields[0].drift);
             Assert.Equal("breaks-external-readers", parsed.structs[0].fields[0].severity);
-            Assert.Equal("mp", parsed.structs[0].fields[1].name);
+            Assert.Equal("reserva", parsed.structs[0].fields[1].name);
             Assert.Equal("0x2C", parsed.structs[0].fields[1].left);
             Assert.Null(parsed.structs[0].fields[1].right);
             Assert.Equal("removed", parsed.structs[0].fields[1].drift);
@@ -614,20 +611,19 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
-        public void Readme_English_DocumentsRunManifestJson_WithPortugueseSection()
+        public void Readme_PtBr_DocumentsRunManifestJson()
         {
             var repoRoot = FindRepoRoot();
             var readmePath = Path.Combine(repoRoot, "README.md");
             var content = File.ReadAllText(readmePath);
 
-            Assert.Contains("#### run-manifest.json", content);
+            Assert.Contains("### run-manifest.json", content);
             Assert.Contains("`GenerateRunManifest`", content);
             Assert.Contains("`effectiveConfig`", content);
             Assert.Contains("`counts`", content);
             Assert.Contains("`warnings`", content);
             Assert.Contains("`outputs`", content);
-            Assert.Contains("**Português:**", content);
-            Assert.Contains("manifesto operacional de execução", content);
+            Assert.Contains("Manifesto da execução", content);
         }
 
         [Fact]
@@ -664,7 +660,7 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
-        public void Readme_English_DocumentsStringDecryptor_WithBothShapesAndTrustNote()
+        public void Readme_PtBr_DocumentsStringDecryptor_WithBothShapesAndTrustNote()
         {
             var repoRoot = FindRepoRoot();
             var readmePath = Path.Combine(repoRoot, "README.md");
@@ -676,9 +672,8 @@ namespace Il2CppDumper.Tests
             Assert.Contains("\"xor\"", content);
             Assert.Contains("xor:2b", content);
             Assert.Contains("`raw` (Base64)", content);
-            Assert.Contains("implementations run in the dumper process", content);
-            Assert.Contains("falls back to the raw value", content);
-            Assert.Contains("**Português:**", content);
+            Assert.Contains("executam dentro do processo do exportador", content);
+            Assert.Contains("preserva o valor bruto", content);
         }
 
         [Fact]
@@ -717,20 +712,19 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
-        public void Readme_English_DocumentsNativeAttachEmitters_WithSampleOutputs()
+        public void Readme_PtBr_DocumentsNativeAttachEmitters_WithSampleOutputs()
         {
             var repoRoot = FindRepoRoot();
             var readmePath = Path.Combine(repoRoot, "README.md");
             var content = File.ReadAllText(readmePath);
 
-            Assert.Contains("#### frida_stubs.js", content);
-            Assert.Contains("#### bookmarks.json", content);
+            Assert.Contains("### frida_stubs.js", content);
+            Assert.Contains("### bookmarks.json", content);
             Assert.Contains("`EmitFridaScript`", content);
             Assert.Contains("`EmitBookmarks`", content);
-            Assert.Contains("Process.findModuleByName", content);
-            Assert.Contains("Interceptor.attach(mod.base.add(ptr(method.va)), callbacks)", content);
+            Assert.Contains("`va`", content);
+            Assert.Contains("`sig`", content);
             Assert.Contains("\"category\": \"method\"", content);
-            Assert.Contains("**Português:**", content);
         }
 
         [Fact]
@@ -769,19 +763,18 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
-        public void Readme_English_DocumentsBatchMode_AndStopOnFirstError()
+        public void Readme_PtBr_DocumentsBatchMode_AndStopOnFirstError()
         {
             var repoRoot = FindRepoRoot();
             var readmePath = Path.Combine(repoRoot, "README.md");
             var content = File.ReadAllText(readmePath);
 
-            Assert.Contains("--batch <batch-file.json>", content);
-            Assert.Contains("#### Batch Mode (`--batch <file>`)", content);
+            Assert.Contains("--batch <lote.json>", content);
+            Assert.Contains("### Processamento em lote", content);
             Assert.Contains("batch-result.json", content);
             Assert.Contains("`BatchMode`", content);
             Assert.Contains("`StopOnFirstError`", content);
-            Assert.Contains("**Português:**", content);
-            Assert.Contains("Processamento em lote orientado a arquivo", content);
+            Assert.Contains("diretórios de saída duplicados ou sobrepostos", content);
         }
 
         [Fact]
@@ -849,19 +842,18 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
-        public void Readme_English_DocumentsProtectionReportJson_WithPortugueseSection()
+        public void Readme_PtBr_DocumentsProtectionReportJson()
         {
             var repoRoot = FindRepoRoot();
             var readmePath = Path.Combine(repoRoot, "README.md");
             var content = File.ReadAllText(readmePath);
 
-            Assert.Contains("#### protection-report.json", content);
+            Assert.Contains("### protection-report.json", content);
             Assert.Contains("`GenerateProtectionReport`", content);
             Assert.Contains("`HighEntropySection`", content);
             Assert.Contains("`PackerSectionSignature`", content);
             Assert.Contains("`RedirectionHeuristic`", content);
             Assert.Contains("`MetadataSanity`", content);
-            Assert.Contains("**Português:**", content);
         }
 
         [Fact]
@@ -930,16 +922,15 @@ namespace Il2CppDumper.Tests
         }
 
         [Fact]
-        public void Readme_English_DocumentsOneofMap_WithPortugueseSection()
+        public void Readme_PtBr_DocumentsOneofMap()
         {
             var repoRoot = FindRepoRoot();
             var readmePath = Path.Combine(repoRoot, "README.md");
             var content = File.ReadAllText(readmePath);
 
-            Assert.Contains("#### oneof-members.json", content);
+            Assert.Contains("### oneof-members.json", content);
             Assert.Contains("`GenerateOneofMap`", content);
             Assert.Contains("`oneof-ambiguities.json`", content);
-            Assert.Contains("**Português:**", content);
         }
 
         [Fact]
